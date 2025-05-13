@@ -1,0 +1,17 @@
+{
+    "data": "train.csv",
+    "output_dir": "output",
+    "image_size": 224,
+    "batch_size": 32,
+    "epochs": 50,
+    "test_size": 0.2,
+    "random_seed": 42,
+    "model_path": "model.h5",
+    "mask_path": "mask.npy",
+    "population_size": 50,
+    "n_generations": 20,
+    "patch_size": 16,
+    "visualize": true,
+    "use_genetic_algorithm": false,
+    "use_feature_extraction": false
+}
