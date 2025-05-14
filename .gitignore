@@ -1,4 +1,6 @@
 /.conda
+/.test_data_v2
+/.train_data
 /000295da5dca4af09d5593174e15bb09.jpg
 /0002f7db7beb4bf5879a0cdb7f17209d.jpg
 /0003538364d44952924d83980771e5b7.jpg
@@ -9,3 +11,4 @@
 /000a8769fc78487a9163852d7a2a048d.jpg
 /Project Idea.docx
 /train.csv
+/test.csv
