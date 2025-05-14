@@ -4,6 +4,37 @@ from skimage.feature import graycomatrix, graycoprops
 from skimage.metrics import structural_similarity as ssim
 from skimage.transform import radon
 
+from utils import get_edge_detection, is_natural_scene
+
+# Try to import numba for JIT compilation
+try:
+    import numba
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
+# Define JIT-compiled functions if numba is available
+if NUMBA_AVAILABLE:
+    @numba.jit(nopython=True)
+    def analyze_patch_numba(patch, mean_global, std_global):
+        """JIT-compiled patch analysis"""
+        h, w = patch.shape
+        std_dev = 0.0
+        sum_val = 0.0
+        sum_sq = 0.0
+        
+        for i in range(h):
+            for j in range(w):
+                val = patch[i, j]
+                sum_val += val
+                sum_sq += val * val
+        
+        mean = sum_val / (h * w)
+        variance = (sum_sq / (h * w)) - (mean * mean)
+        std_dev = variance ** 0.5
+        
+        return std_dev, mean, variance / max(std_global, 1e-5)
+
 class StructuralFeaturesExtractor:
     @staticmethod
     def extract_gradient_perfection(image, threshold=0.8, patch_size=16):
@@ -18,8 +49,8 @@ class StructuralFeaturesExtractor:
             gray = (image * 255).astype(np.uint8)
         
         # Use Scharr operators for better gradient detection
-        scharrx = cv2.Scharr(gray, cv2.CV_64F, 1, 0)
-        scharry = cv2.Scharr(gray, cv2.CV_64F, 0, 1)
+        scharrx = get_edge_detection(gray, method='scharr', dx=1, dy=0)
+        scharry = get_edge_detection(gray, method='scharr', dx=0, dy=1)
         
         # Calculate gradient magnitude and direction
         magnitude = np.sqrt(scharrx**2 + scharry**2)
@@ -72,11 +103,11 @@ class StructuralFeaturesExtractor:
         highlighted_patches = perfection_map > threshold
         
         # Create feature map same size as original image
-        feature_map = np.zeros((h, w))
+        feature_map = np.zeros((h, w), dtype=np.uint8)
         for i in range(len(highlighted_patches)):
             for j in range(len(highlighted_patches[0])):
                 if highlighted_patches[i, j]:
-                    feature_map[i*patch_size:(i+1)*patch_size, j*patch_size:(j+1)*patch_size] = 1
+                    feature_map[i*patch_size:(i+1)*patch_size, j*patch_size:(j+1)*patch_size] = 255
         
         return feature_map, perfection_map
     
@@ -162,12 +193,12 @@ class StructuralFeaturesExtractor:
         
         # Create a simplified feature map highlighting regions with periodic patterns
         h, w = gray.shape
-        feature_map = np.zeros((h, w))
+        feature_map = np.zeros((h, w), dtype=np.uint8)
         
         # If we have strong periodic patterns
         if peak_count > 10 and peak_pattern_score > 0.6:
             # Simplified feature map based on detected pattern strength
-            feature_map = np.ones((h, w)) * peak_pattern_score
+            feature_map = np.ones((h, w), dtype=np.uint8) * int(255 * peak_pattern_score)
         
         return feature_map, peak_pattern_score
 
@@ -189,7 +220,7 @@ class StructuralFeaturesExtractor:
         curr_img = gray.copy()
         for i in range(pyramid_levels):
             # Apply edge detection at current scale
-            edges = cv2.Canny(curr_img, 100, 200)
+            edges = get_edge_detection(curr_img, method='canny', low=100, high=200)
             edge_pyramids.append(edges)
             
             # Downscale for next level
@@ -209,7 +240,7 @@ class StructuralFeaturesExtractor:
         # Analyze edge statistics in patches
         h, w = gray.shape
         edge_consistency_map = np.zeros((h // patch_size, w // patch_size))
-        feature_map = np.zeros((h, w))
+        feature_map = np.zeros((h, w), dtype=np.uint8)
         
         # Extract edge orientation histogram for entire image (reference)
         # Use Radon transform for orientation analysis
@@ -269,7 +300,7 @@ class StructuralFeaturesExtractor:
                         
                     if final_score > threshold:
                         edge_consistency_map[i // patch_size, j // patch_size] = final_score
-                        feature_map[i:i+patch_size, j:j+patch_size] = final_score
+                        feature_map[i:i+patch_size, j:j+patch_size] = int(255 * final_score)
         
         return feature_map, edge_consistency_map
 
@@ -293,7 +324,7 @@ class StructuralFeaturesExtractor:
             color_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
         
         h, w = gray.shape
-        feature_map = np.zeros((h, w))
+        feature_map = np.zeros((h, w), dtype=np.uint8)
         
         # Multi-scale symmetry analysis (check at 2 scales)
         symmetry_scores = []
@@ -353,7 +384,7 @@ class StructuralFeaturesExtractor:
         primary_axis = any(is_horizontal for _, is_horizontal, _ in symmetry_scores if is_horizontal)
         
         # Edge density analysis to detect natural vs artificial symmetry
-        edges = cv2.Canny(gray, 100, 200)
+        edges = get_edge_detection(gray, method='canny', low=100, high=200)
         edge_density = np.sum(edges > 0) / (h * w)
         
         # Calculate edge symmetry - natural objects have less perfect edge symmetry
@@ -377,66 +408,9 @@ class StructuralFeaturesExtractor:
         v_edge_symmetry = np.sum(top_edges == bottom_edges) / top_edges.size
         edge_symmetry = max(h_edge_symmetry, v_edge_symmetry)
         
-        # Simplified scene classification using color and edge statistics
-        # These features approximate the capabilities of MobileNet embeddings for basic scene detection
-        
-        # Extract basic color and edge features
-        hsv = cv2.cvtColor(color_img, cv2.COLOR_RGB2HSV)
-        
-        # Color features
-        color_features = []
-        
-        # Divide image into 4 quadrants and extract mean HSV
-        for y_quad in range(2):
-            for x_quad in range(2):
-                y_start = y_quad * h // 2
-                y_end = (y_quad + 1) * h // 2
-                x_start = x_quad * w // 2
-                x_end = (x_quad + 1) * w // 2
-                
-                quad_hsv = hsv[y_start:y_end, x_start:x_end]
-                
-                # Mean HSV values
-                h_mean = np.mean(quad_hsv[:,:,0])
-                s_mean = np.mean(quad_hsv[:,:,1])
-                v_mean = np.mean(quad_hsv[:,:,2])
-                
-                color_features.extend([h_mean, s_mean, v_mean])
-        
-        # Edge features
-        edge_ratio = np.sum(edges > 0) / edges.size
-        
-        # Horizontal and vertical edge ratios (detect architectural structures)
-        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        horizontal_edges = np.sum(np.abs(sobelx) > 30) / edges.size
-        vertical_edges = np.sum(np.abs(sobely) > 30) / edges.size
-        directionality = abs(horizontal_edges - vertical_edges) / max(horizontal_edges + vertical_edges, 0.001)
-        
-        # Simple scene classification
-        # Check for sky (usually blue, high in image)
-        top_quarter = hsv[:h//4, :, :]
-        hue_top = np.mean(top_quarter[:, :, 0])
-        sat_top = np.mean(top_quarter[:, :, 1])
-        val_top = np.mean(top_quarter[:, :, 2])
-        
-        # Check for water (usually blue/green, low in image)
-        bottom_quarter = hsv[3*h//4:, :, :]
-        hue_bottom = np.mean(bottom_quarter[:, :, 0])
-        sat_bottom = np.mean(bottom_quarter[:, :, 1])
-        val_bottom = np.mean(bottom_quarter[:, :, 2])
-        
-        # Check for sky characteristics (blue hue, low saturation, high value)
-        is_sky_top = (85 < hue_top < 130) and sat_top < 80 and val_top > 150
-        
-        # Check for water characteristics (blue/green hue, medium saturation)
-        is_water_bottom = (85 < hue_bottom < 150) and 50 < sat_bottom < 180
-        
-        # Check for architectural scene (straight lines, regular patterns)
-        has_straight_lines = directionality > 0.4 and edge_ratio > 0.05
-        
-        # Detect if scene is naturally symmetrical
-        is_natural_symmetrical = (is_sky_top or is_water_bottom or has_straight_lines)
+        # Use is_natural_scene function from utils.py
+        scene_info = is_natural_scene(image)
+        is_natural_symmetrical = (scene_info['is_sky'] or scene_info['is_water'] or scene_info['is_architectural'])
         
         # Calculate final symmetry score, accounting for natural symmetry
         symmetry_score = combined_symmetry
@@ -444,10 +418,10 @@ class StructuralFeaturesExtractor:
         # Reduce score for naturally symmetrical content
         if is_natural_symmetrical:
             # Natural symmetry adjustment factor
-            if is_sky_top or is_water_bottom:
+            if scene_info['is_sky'] or scene_info['is_water']:
                 # Natural scenes with sky/water tend to be somewhat symmetrical
                 natural_reduction = 0.25
-            elif has_straight_lines and edge_symmetry > 0.7:
+            elif scene_info['is_architectural'] and edge_symmetry > 0.7:
                 # Architectural scenes often have symmetry
                 natural_reduction = 0.3
             else:
@@ -469,12 +443,14 @@ class StructuralFeaturesExtractor:
                 mid_y = h // 2
                 for y in range(h):
                     weight = 1 - min(abs(y - mid_y) / (h/4), 1.0)
-                    feature_map[y, :] = max(feature_map[y, :], weight * symmetry_score)
+                    intensity = int(255 * weight * symmetry_score)
+                    feature_map[y, :] = np.maximum(feature_map[y, :], intensity)
             else:  # Vertical primary axis
                 # Highlight vertical axis
                 mid_x = w // 2
                 for x in range(w):
                     weight = 1 - min(abs(x - mid_x) / (w/4), 1.0)
-                    feature_map[:, x] = max(feature_map[:, x], weight * symmetry_score)
+                    intensity = int(255 * weight * symmetry_score)
+                    feature_map[:, x] = np.maximum(feature_map[:, x], intensity)
         
         return feature_map, symmetry_score

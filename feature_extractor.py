@@ -290,6 +290,8 @@ class AIFeatureExtractor:
             warnings.warn(f"Error in perceptual hash analysis: {str(e)}")
             return np.zeros((224, 224)), 0
 
+    # No need to implement process_large_image as it's already defined in utils.py
+
     @staticmethod
     def extract_all_features(image, config=None, image_path=None):
         """Extract all AI detection features and combine them using dynamic weighting"""
@@ -297,11 +299,20 @@ class AIFeatureExtractor:
         if config is None:
             config = AIDetectionConfig()
         
+        # Set dynamic resolution based on image size
+        if hasattr(config, 'set_dynamic_resolution'):
+            config.set_dynamic_resolution(image.shape[:2])
+        
+        # Check if image is large and should use pyramid processing
+        from utils import process_large_image
+        if max(image.shape[:2]) > 1024:
+            return process_large_image(image, config, image_path)
+        
         # Extract features with config parameters
         gradient_map, gradient_score = StructuralFeaturesExtractor.extract_gradient_perfection(
             image, 
             threshold=config.gradient_threshold,
-            patch_size=config.patch_size
+            patch_size=config.default_patch_size
         )
         
         pattern_map, pattern_score = StructuralFeaturesExtractor.detect_unnatural_patterns(
@@ -312,7 +323,7 @@ class AIFeatureExtractor:
         edge_map, edge_score = StructuralFeaturesExtractor.analyze_edge_consistency(
             image,
             threshold=config.edge_threshold,
-            patch_size=config.patch_size
+            patch_size=config.default_patch_size
         )
         
         symmetry_map, symmetry_score = StructuralFeaturesExtractor.detect_symmetry(
@@ -322,17 +333,17 @@ class AIFeatureExtractor:
         
         noise_map, noise_score = TextureFeaturesExtractor.detect_noise_patterns(
             image,
-            patch_size=config.patch_size
+            patch_size=config.default_patch_size
         )
         
         texture_map, texture_score = TextureFeaturesExtractor.analyze_texture_quality(
             image,
-            patch_size=config.patch_size
+            patch_size=config.default_patch_size
         )
         
         color_map, color_score = TextureFeaturesExtractor.analyze_color_coherence(
             image,
-            patch_size=config.patch_size
+            patch_size=config.default_patch_size
         )
         
         hash_map, hash_score = AIFeatureExtractor.check_perceptual_hash(
