@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import tensorflow as tf
 from tensorflow.keras.preprocessing.image import load_img, img_to_array # type: ignore
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
@@ -16,21 +17,22 @@ def load_and_preprocess_images(image_paths, target_size=(224, 224)):
         target_size: Tuple of (height, width) to resize images to
         
     Returns:
-        numpy array of preprocessed images
+        numpy array of preprocessed images, list of successfully loaded indices
     """
     images = []
-    for path in image_paths:
+    valid_indices = []
+    for i, path in enumerate(image_paths):
         try:
             img = load_img(path, target_size=target_size)
             img_array = img_to_array(img)
             img_array = img_array / 255.0  # Normalize pixel values
             images.append(img_array)
+            valid_indices.append(i)
         except Exception as e:
             print(f"Error loading image {path}: {e}")
-            # Add a blank image if loading fails
-            images.append(np.zeros(target_size + (3,)))
+            # We don't add a placeholder image anymore, just track which ones worked
     
-    return np.array(images)
+    return np.array(images), valid_indices
 
 
 def load_data_from_csv(csv_path):
@@ -45,7 +47,7 @@ def load_data_from_csv(csv_path):
     """
     df = pd.read_csv(csv_path)
     
-    # Assuming the CSV has columns: 'image_path' and 'label' (0 for human, 1 for AI)
+    # Assuming the CSV has columns: 'file_name' and 'label' (0 for human, 1 for AI)
     image_paths = df['file_name'].values
     labels = df['label'].values
     
@@ -108,17 +110,17 @@ def preprocess_dataset(X_train_paths, X_test_paths, target_size=(224, 224)):
         target_size: Tuple of (height, width) to resize images to
         
     Returns:
-        Tuple of (X_train, X_test) preprocessed image arrays
+        Tuple of (X_train, X_test) preprocessed image arrays, and (y_train_filtered, y_test_filtered)
     """
     print("Loading and preprocessing training images...")
-    X_train = load_and_preprocess_images(X_train_paths, target_size)
+    X_train, train_valid_indices = load_and_preprocess_images(X_train_paths, target_size)
     
     print("Loading and preprocessing test images...")
-    X_test = load_and_preprocess_images(X_test_paths, target_size)
+    X_test, test_valid_indices = load_and_preprocess_images(X_test_paths, target_size)
     
-    return X_train, X_test
+    return X_train, X_test, train_valid_indices, test_valid_indices
 
-def evaluate_model(model, X_test, X_test_features, y_test):
+def evaluate_model(model, X_test, X_test_features, y_test, config):
     """
     Evaluate model performance and generate classification report.
     
@@ -131,14 +133,25 @@ def evaluate_model(model, X_test, X_test_features, y_test):
     Returns:
         Dictionary with evaluation metrics
     """
-    # Create test dataset input format
-    test_input = {
-        'image_input': X_test,
-        'feature_input': X_test_features
-    }
+     # Create test dataset input format based on available inputs
+    if X_test_features is None:
+        # If no feature input is available, only use image input
+        test_input = X_test
+        # Or if your model expects a dictionary with only 'image_input':
+        # test_input = {'image_input': X_test}
+    else:
+        # If both inputs are available
+        test_input = {
+            'image_input': X_test,
+            'feature_input': X_test_features
+        }
     
+    # Create dataset based on your model's input requirements
+    test_dataset = tf.data.Dataset.from_tensor_slices((test_input, y_test))
+    test_dataset = test_dataset.batch(config.batch_size).prefetch(tf.data.AUTOTUNE)
+
     # Evaluate model
-    test_loss, test_acc = model.evaluate(test_input, y_test)
+    test_loss, test_acc = model.evaluate(test_dataset)
     
     # Make predictions
     y_pred_prob = model.predict(test_input)

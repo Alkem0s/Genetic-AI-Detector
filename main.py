@@ -3,7 +3,7 @@ import json
 import numpy as np
 from types import SimpleNamespace
 from tensorflow.keras.preprocessing.image import load_img, img_to_array # type: ignore
-from sklearn.metrics import classification_report, confusion_matrix
+# from sklearn.metrics import classification_report, confusion_matrix
 import tensorflow as tf
 
 # Import our custom modules
@@ -89,22 +89,27 @@ def generate_default_mask(config):
 def train_model_workflow(config, model_path, mask_path):
     """Execute the full training workflow"""
     print("\n=== Step 1: Loading and preprocessing data ===")
-    X_train_paths, X_test_paths, y_train, y_test = load_and_split_data(
+    X_train_paths, X_test_paths, y_train_unfiltered, y_test_unfiltered = load_and_split_data(
         config.data, 
         test_size=config.test_size, 
         random_state=config.random_seed
     )
     
     # Preprocess images
-    X_train, X_test = preprocess_dataset(
+    X_train, X_test, train_valid_indices, test_valid_indices = preprocess_dataset(
         X_train_paths, 
         X_test_paths, 
         target_size=(config.image_size, config.image_size)
     )
+    
+    # Filter the labels to match the successfully loaded images
+    y_train = y_train_unfiltered[train_valid_indices]
+    y_test = y_test_unfiltered[test_valid_indices]
+    
     print(f"Loaded {len(X_train)} training images and {len(X_test)} test images")
     
-    # Decide whether to use genetic algorithm or default mask
-    if config.use_genetic_algorithm:
+    # Default mask (needed even when not using feature extraction for consistency)
+    if config.use_genetic_algorithm and config.use_feature_extraction:
         print("\n=== Step 2: Running genetic algorithm for feature optimization ===")
         # Initialize and run genetic feature optimizer
         optimizer = GeneticFeatureOptimizer(
@@ -141,18 +146,19 @@ def train_model_workflow(config, model_path, mask_path):
         X_test_features, _ = AIFeatureExtractor.generate_feature_maps(X_test, best_mask, image_paths=X_test_paths)
         print(f"Generated feature maps of shape {X_train_features.shape} for training data")
         print(f"Generated feature maps of shape {X_test_features.shape} for test data")
+        feature_channels = X_train_features.shape[-1]
     else:
         print("\n=== Step 3: Skipping feature extraction ===")
-        # Use empty features when feature extraction is disabled
-        feature_dim = 1  # Minimal placeholder
-        X_train_features = None, None
-        X_test_features = None, None # np.zeros((len(X_test), feature_dim))
+        # When feature extraction is disabled, set features to None
+        X_train_features = None
+        X_test_features = None
+        feature_channels = 0  # No feature channels when extraction is disabled
     
     print("\n=== Step 4: Building and training the model ===")
     # Initialize model wrapper with appropriate configuration
     model_wrapper = ModelWrapper(
         input_shape=(config.image_size, config.image_size, 3),
-        feature_channels=X_train_features.shape[-1],
+        feature_channels=feature_channels,
         use_features=config.use_feature_extraction
     )
     
@@ -172,7 +178,7 @@ def train_model_workflow(config, model_path, mask_path):
     model = model_wrapper.get_model()
     
     # Evaluate the model
-    metrics = evaluate_model(model, X_test, X_test_features, y_test)
+    metrics = evaluate_model(model, X_test, X_test_features, y_test, config)
     
     # Print evaluation results
     print(f"\nTest accuracy: {metrics['accuracy']:.4f}")
@@ -227,9 +233,8 @@ def predict_image(image_path, model, best_mask, config):
     if config.use_feature_extraction:
         img_features, _ = AIFeatureExtractor.generate_feature_maps(img_array, best_mask)
     else:
-        # Use empty features when feature extraction is disabled
-        feature_dim = 1  # Minimal placeholder
-        img_features = np.zeros((len(img_array), feature_dim))
+        # When feature extraction is disabled, set features to None
+        img_features = None
     
     # Create model wrapper to use for prediction
     model_wrapper = ModelWrapper(use_features=config.use_feature_extraction)

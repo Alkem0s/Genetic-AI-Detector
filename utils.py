@@ -1,8 +1,7 @@
 import numpy as np
 import functools
-from collections import LRU_cache
+from functools import lru_cache
 
-from feature_extractor import AIFeatureExtractor
 
 @functools.lru_cache(maxsize=16)
 def get_edge_detection(image, method='canny', **kwargs):
@@ -40,6 +39,7 @@ def get_edge_detection(image, method='canny', **kwargs):
 
 @staticmethod
 def process_large_image(image, config=None, image_path=None, max_size=1024):
+    from feature_extractor import AIFeatureExtractor
     """Process large images using pyramid approach for memory efficiency"""
     import cv2
     import numpy as np

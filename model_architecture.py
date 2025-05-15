@@ -297,32 +297,71 @@ class ModelWrapper:
         Returns:
             dict: Training history
         """
+        # Verify all inputs have the same number of samples
+        num_samples = len(X_train)
+        if self.use_features and X_train_features is not None:
+            if len(X_train_features) != num_samples:
+                raise ValueError(f"Number of samples in X_train ({num_samples}) and X_train_features ({len(X_train_features)}) must match")
+        
+        if len(y_train) != num_samples:
+            raise ValueError(f"Number of samples in X_train ({num_samples}) and y_train ({len(y_train)}) must match")
+            
         # Split training data into train/validation
-        if 0 < validation_split < 1:
+        if 0 < validation_split < 1 and num_samples > 1:
             from sklearn.model_selection import train_test_split
-            indices = np.arange(len(X_train))
-            train_idx, val_idx = train_test_split(
-                indices, 
-                test_size=validation_split,
-                random_state=42,
-                stratify=y_train
-            )
+            indices = np.arange(num_samples)
+            
+            # Handle case with very few samples - ensure at least 1 sample in each split
+            min_samples = max(1, int(num_samples * min(validation_split, 1-validation_split)))
+            if min_samples < 1:
+                # If too few samples for meaningful split, use all for training
+                train_idx = indices
+                val_idx = []
+            else:
+                try:
+                    train_idx, val_idx = train_test_split(
+                        indices, 
+                        test_size=validation_split,
+                        random_state=42,
+                        stratify=y_train if len(np.unique(y_train)) > 1 else None
+                    )
+                except ValueError:
+                    # If stratification fails (e.g., not enough samples in each class)
+                    train_idx, val_idx = train_test_split(
+                        indices, 
+                        test_size=validation_split,
+                        random_state=42
+                    )
             
             # Split images, features, and labels
             X_tr = X_train[train_idx]
-            X_val = X_train[val_idx]
-            X_tr_features = X_train_features[train_idx] if self.use_features else None
-            X_val_features = X_train_features[val_idx] if self.use_features else None
             y_tr = y_train[train_idx]
-            y_val = y_train[val_idx]
+            
+            # Only use validation if we have validation samples
+            if len(val_idx) > 0:
+                X_val = X_train[val_idx]
+                y_val = y_train[val_idx]
+                
+                # Handle feature maps if using them
+                if self.use_features and X_train_features is not None:
+                    X_tr_features = X_train_features[train_idx]
+                    X_val_features = X_train_features[val_idx]
+                else:
+                    X_tr_features = None
+                    X_val_features = None
+            else:
+                X_val, X_val_features, y_val = None, None, None
+                X_tr_features = X_train_features[train_idx] if self.use_features and X_train_features is not None else None
         else:
-            X_tr, X_tr_features, y_tr = X_train, X_train_features, y_train
+            # Use all data for training, no validation
+            X_tr, y_tr = X_train, y_train
+            X_tr_features = X_train_features if self.use_features and X_train_features is not None else None
             X_val, X_val_features, y_val = None, None, None
 
         # Prepare augmented training dataset
         train_dataset, _ = self.model.prepare_datasets(
             X_tr, 
-            X_tr_features if self.use_features else None,
+            X_tr_features,
             y_tr,
             test_split=0.0,  # No test split needed
             batch_size=batch_size
@@ -330,8 +369,8 @@ class ModelWrapper:
         
         # Prepare validation dataset (no augmentation)
         val_dataset = None
-        if X_val is not None:
-            if self.use_features:
+        if X_val is not None and len(X_val) > 0:
+            if self.use_features and X_val_features is not None:
                 val_dataset = tf.data.Dataset.from_tensor_slices(
                     ({"image_input": X_val, "feature_input": X_val_features}, y_val)
                 ).batch(batch_size)
@@ -363,8 +402,16 @@ class ModelWrapper:
         Returns:
             tuple: (test_loss, test_accuracy)
         """
+        # Verify dimensions match
+        if self.use_features and X_test_features is not None:
+            if len(X_test) != len(X_test_features):
+                raise ValueError(f"Number of samples in X_test ({len(X_test)}) and X_test_features ({len(X_test_features)}) must match")
+        
+        if len(X_test) != len(y_test):
+            raise ValueError(f"Number of samples in X_test ({len(X_test)}) and y_test ({len(y_test)}) must match")
+            
         # Prepare test dataset
-        if self.use_features:
+        if self.use_features and X_test_features is not None:
             test_dataset = tf.data.Dataset.from_tensor_slices((
                 {"image_input": X_test, "feature_input": X_test_features},
                 y_test
@@ -393,11 +440,14 @@ class ModelWrapper:
             image = np.expand_dims(image, axis=0)
         
         # Ensure feature map has batch dimension if we're using features
-        if self.use_features and len(feature_map.shape) == 3:
+        if self.use_features and feature_map is not None and len(feature_map.shape) == 3:
             feature_map = np.expand_dims(feature_map, axis=0)
         
         # Make prediction
-        prediction = self.model.predict(image, feature_map)[0][0] if self.use_features else self.model.predict(image)[0][0]
+        if self.use_features and feature_map is not None:
+            prediction = self.model.predict(image, feature_map)[0][0]
+        else:
+            prediction = self.model.predict(image)[0][0]
         
         # Determine result
         is_ai = prediction > 0.5
@@ -421,8 +471,13 @@ class ModelWrapper:
         Returns:
             list: List of prediction results with labels and confidences
         """
+        # Verify dimensions match if using features
+        if self.use_features and feature_maps is not None:
+            if len(images) != len(feature_maps):
+                raise ValueError(f"Number of images ({len(images)}) and feature_maps ({len(feature_maps)}) must match")
+                
         # Make predictions
-        if self.use_features:
+        if self.use_features and feature_maps is not None:
             predictions = self.model.predict(images, feature_maps).flatten()
         else:
             predictions = self.model.predict(images).flatten()
