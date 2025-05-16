@@ -7,7 +7,6 @@ from PIL import ExifTags
 import os
 import imagehash
 import warnings
-import math
 
 from ai_detection_config import AIDetectionConfig
 from structural_features import StructuralFeaturesExtractor

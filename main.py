@@ -3,7 +3,6 @@ import json
 import numpy as np
 from types import SimpleNamespace
 from tensorflow.keras.preprocessing.image import load_img, img_to_array # type: ignore
-# from sklearn.metrics import classification_report, confusion_matrix
 import tensorflow as tf
 
 # Import our custom modules
