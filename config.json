@@ -3,6 +3,7 @@
     "output_dir": "output",
     "image_size": 224,
     "batch_size": 32,
+    "max_images": 10000,
     "epochs": 50,
     "test_size": 0.2,
     "random_seed": 42,
