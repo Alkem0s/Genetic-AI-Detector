@@ -6,6 +6,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import logging
 
 from ai_detection_config import AIDetectionConfig
+from feature_extractor import FeatureExtractor
 import utils
 
 # Set up logging
@@ -18,8 +19,8 @@ class GeneticFeatureOptimizer:
     Uses DEAP library to evolve optimal feature-based conditional rules that generate 
     dynamic masks per image based on extracted features.
     """
-    
-    def __init__(self, feature_extractor, images, labels, config=None,
+
+    def __init__(self, images, labels, config=None,
                  population_size=50, n_generations=20,
                  crossover_prob=0.5, mutation_prob=0.2, tournament_size=3,
                  use_multiprocessing=True, eval_sample_size=100, random_seed=None,
@@ -43,7 +44,7 @@ class GeneticFeatureOptimizer:
             max_possible_rules: Maximum number of rules allowed in an individual
         """
         self.config = config or AIDetectionConfig()
-        self.feature_extractor = feature_extractor
+        self.feature_extractor = FeatureExtractor(config=self.config)
         self.images = images
         self.labels = labels
         self.patch_size = self.config.patch_size

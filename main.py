@@ -1,4 +1,6 @@
 import os
+
+from feature_extractor import FeatureExtractor
 os.environ['TF_CUDNN_USE_AUTOTUNE'] = '1'
 import json
 import numpy as np
@@ -7,7 +9,6 @@ import tensorflow as tf
 
 # Import our custom modules 
 from data_loader import DataLoader
-from old_feature_extractor import AIFeatureExtractor
 from genetic_algorithm import GeneticFeatureOptimizer
 from model_architecture import ModelWrapper
 from visualization import Visualizer
@@ -109,7 +110,6 @@ def train_model_workflow(config, model_path, mask_path):
         print("\n=== Step 2: Running genetic algorithm for feature optimization ===")
         # Initialize and run genetic feature optimizer on a sample of the data
         optimizer = GeneticFeatureOptimizer(
-            feature_extractor=AIFeatureExtractor,
             images=sample_images,  # Use sample images for GA
             labels=sample_labels,  # Use sample labels for GA
             config=config,
@@ -292,8 +292,8 @@ def predict_image(image_path, model, best_mask, config):
     # Visualize the prediction and features
     if config.visualize and config.use_feature_extraction:
         Visualizer.visualize_ai_features(
-            image_path, 
-            AIFeatureExtractor,
+            image_path,
+            feature_extractor=FeatureExtractor(config),
             mask=best_mask,
             save_path=os.path.join(config.output_dir, 'ai_feature_visualization.png')
         )
