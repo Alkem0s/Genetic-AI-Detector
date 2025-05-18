@@ -162,7 +162,7 @@ class FeatureExtractor:
             patch_size: Size of patches to analyze
             
         Returns:
-            4D array with shape (n_patches_h, n_patches_w, n_features, 1) containing
+            3D array with shape (n_patches_h, n_patches_w, n_features) containing
             average feature values for each patch
         """
         # Extract all features
@@ -190,3 +190,42 @@ class FeatureExtractor:
                     patch_features[h, w, f] = np.mean(feature_stack[y_start:y_end, x_start:x_end, f])
         
         return patch_features
+    
+    def extract_batch_patch_features(self, images: List[np.ndarray], patch_size: int = 16) -> np.ndarray:
+        """
+        Batch processing version of extract_patch_features
+        Returns array shaped as (batch_size, n_patches_h, n_patches_w, n_features)
+        """
+        if not images:
+            return np.array([])
+        
+        # Validate consistent dimensions
+        ref_height, ref_width = images[0].shape[:2]
+        for img in images:
+            if img.shape[:2] != (ref_height, ref_width):
+                raise ValueError("All images in batch must have identical dimensions")
+        
+        # Pre-calculate patch grid
+        n_patches_h = ref_height // patch_size
+        n_patches_w = ref_width // patch_size
+        trunc_h = n_patches_h * patch_size
+        trunc_w = n_patches_w * patch_size
+        
+        # Pre-allocate arrays
+        batch_size = len(images)
+        n_features = len(self.config.feature_weights)
+        batch_patches = np.zeros((batch_size, n_patches_h, n_patches_w, n_features), dtype=np.float32)
+        
+        # Vectorized processing
+        for batch_idx, img in enumerate(images):
+            # Extract features for current image
+            _, feature_stack, _ = self.extract_all_features(img)
+            
+            # Truncate to integer patch multiples and limit to n_features
+            truncated = feature_stack[:trunc_h, :trunc_w, :n_features]  # Fix here
+            
+            # Reshape into patches and compute means
+            reshaped = truncated.reshape(n_patches_h, patch_size, n_patches_w, patch_size, n_features)
+            batch_patches[batch_idx] = reshaped.mean(axis=(1, 3))  # Average over spatial dimensions
+        
+        return batch_patches
