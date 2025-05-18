@@ -1,4 +1,5 @@
 import os
+os.environ['TF_CUDNN_USE_AUTOTUNE'] = '1'
 import json
 import numpy as np
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ import tensorflow as tf
 
 # Import our custom modules 
 from data_loader import DataLoader
-from feature_extractor import AIFeatureExtractor
+from old_feature_extractor import AIFeatureExtractor
 from genetic_algorithm import GeneticFeatureOptimizer
 from model_architecture import ModelWrapper
 from visualization import Visualizer
@@ -17,7 +18,7 @@ def load_config(config_path):
     # Default configuration
     defaults = {
         "output_dir": "output",
-        "image_size": 224,
+        "image_size": None,
         "batch_size": 32,
         "max_images": 1000,
         "epochs": 50,
@@ -93,26 +94,6 @@ def generate_default_mask(config):
     return np.ones((mask_size, mask_size), dtype=np.float32)
 
 
-def update_feature_maps_on_batch(images, mask, feature_extractor):
-    """Process feature maps in small batches to save memory"""
-    batch_size = 32  # Small batch size for feature extraction
-    num_samples = len(images)
-    num_batches = (num_samples + batch_size - 1) // batch_size
-    
-    all_features = []
-    
-    for i in range(num_batches):
-        start_idx = i * batch_size
-        end_idx = min((i + 1) * batch_size, num_samples)
-        
-        batch_images = images[start_idx:end_idx]
-        batch_features, _ = feature_extractor.generate_feature_maps(batch_images, mask)
-        
-        all_features.append(batch_features)
-    
-    return np.vstack(all_features)
-
-
 def train_model_workflow(config, model_path, mask_path):
     """Execute the full training workflow"""
     print("\n=== Step 1: Loading and preparing datasets ===")
@@ -120,11 +101,10 @@ def train_model_workflow(config, model_path, mask_path):
     data_loader = DataLoader(config)
     
     # Create the datasets
-    train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets(config.data)
+    train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets(config)
     
     print(f"Created TensorFlow dataset pipeline for training and testing")
     
-    # Default mask (needed even when not using feature extraction for consistency)
     if config.use_genetic_algorithm and config.use_feature_extraction:
         print("\n=== Step 2: Running genetic algorithm for feature optimization ===")
         # Initialize and run genetic feature optimizer on a sample of the data
@@ -146,6 +126,7 @@ def train_model_workflow(config, model_path, mask_path):
             Visualizer.visualize_optimized_patch_mask(best_mask, 
                                                     save_path=os.path.join(config.output_dir, 'optimized_patches.png'))
     else:
+        # Default mask (needed even when not using feature extraction for consistency)
         print("\n=== Step 2: Skipping genetic algorithm, using default mask ===")
         best_mask = generate_default_mask(config)
         stats = None
@@ -316,9 +297,6 @@ def predict_image(image_path, model, best_mask, config):
             mask=best_mask,
             save_path=os.path.join(config.output_dir, 'ai_feature_visualization.png')
         )
-        
-        # Optional: Visualize prediction results
-        # (This would need to be adapted to the new workflow)
     
     return result
 

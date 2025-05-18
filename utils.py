@@ -37,9 +37,56 @@ def get_edge_detection(image, method='canny', **kwargs):
     else:
         raise ValueError(f"Unknown edge detection method: {method}")
 
+
+@staticmethod
+def remove_black_bars(img, threshold=10):
+    """
+    Remove black padding bars from an image while maintaining content aspect ratio.
+    Handles both PIL Images and numpy arrays.
+    
+    Args:
+        img: Input image (PIL Image or numpy array)
+        threshold: Intensity threshold for considering pixels as black (0-255)
+    
+    Returns:
+        Cropped image (same type as input) without black bars
+    """
+    # Convert to numpy array if PIL Image
+    if isinstance(img, Image.Image):
+        pil_mode = img.mode
+        img_np = np.array(img)
+        return_pil = True
+    else:
+        img_np = img.copy()
+        return_pil = False
+
+    # Convert to grayscale for bar detection
+    if img_np.ndim == 3:
+        gray = np.mean(img_np, axis=2)
+    else:
+        gray = img_np
+
+    # Find content boundaries
+    mask = gray > threshold
+    coords = np.argwhere(mask)
+    
+    if coords.size == 0:  # Entire image is black
+        return img
+    
+    y0, x0 = coords.min(axis=0)
+    y1, x1 = coords.max(axis=0) + 1
+    
+    # Crop image
+    cropped = img_np[y0:y1, x0:x1]
+    
+    # Convert back to PIL if original was PIL
+    if return_pil:
+        return Image.fromarray(cropped, mode=pil_mode)
+    return cropped
+
 @staticmethod
 def process_large_image(image, config=None, image_path=None, max_size=1024):
-    from feature_extractor import AIFeatureExtractor
+    from old_feature_extractor import AIFeatureExtractor
     """Process large images using pyramid approach for memory efficiency"""
     import cv2
     import numpy as np

@@ -1,4 +1,3 @@
-
 import os
 import tensorflow as tf
 import pandas as pd
@@ -62,36 +61,61 @@ class DataLoader:
     def _process_path(self, file_path, label):
         """
         Process a single image file path.
-        
+
         Args:
             file_path: Path to the image file
             label: Label for the image
-            
+
         Returns:
             Tuple of (processed_image, label)
         """
         # Read the image file
         img = tf.io.read_file(file_path)
-        
+
         # Decode and process the image
         try:
-            # Try to decode as JPEG first
             img = tf.image.decode_jpeg(img, channels=3)
         except:
             try:
-                # Try PNG if JPEG fails
                 img = tf.image.decode_png(img, channels=3)
             except:
-                # Use decode_image as fallback for other formats
                 img = tf.image.decode_image(img, channels=3, expand_animations=False)
-        
-        # Resize the image
-        img = tf.image.resize(img, [self.image_size, self.image_size])
-        
-        # Normalize pixel values
+
+        # Get original dimensions
+        original_height = tf.shape(img)[0]
+        original_width = tf.shape(img)[1]
+
+        # Calculate scaling factor to preserve aspect ratio
+        height_ratio = tf.cast(self.image_size, tf.float32) / tf.cast(original_height, tf.float32)
+        width_ratio = tf.cast(self.image_size, tf.float32) / tf.cast(original_width, tf.float32)
+        scale_ratio = tf.minimum(height_ratio, width_ratio)
+
+        # Calculate new dimensions
+        new_height = tf.cast(tf.cast(original_height, tf.float32) * scale_ratio, tf.int32)
+        new_width = tf.cast(tf.cast(original_width, tf.float32) * scale_ratio, tf.int32)
+
+        # Resize image while maintaining aspect ratio
+        img = tf.image.resize(img, [new_height, new_width], preserve_aspect_ratio=True)
+
+        # Use actual resized shape (in case resize rounds)
+        resized_shape = tf.shape(img)
+        pad_top = (self.image_size - resized_shape[0]) // 2
+        pad_left = (self.image_size - resized_shape[1]) // 2
+
+        # Pad image to fit target size
+        img = tf.image.pad_to_bounding_box(
+            img,
+            offset_height=pad_top,
+            offset_width=pad_left,
+            target_height=self.image_size,
+            target_width=self.image_size
+        )
+
+        # Normalize to [0, 1]
         img = tf.cast(img, tf.float32) / 255.0
-        
+
         return img, label
+
     
     def _configure_for_performance(self, dataset, is_training=False):
         """
@@ -148,7 +172,7 @@ class DataLoader:
         
         return image
     
-    def create_datasets(self, csv_path):
+    def create_datasets(self, config):
         """
         Create train and test datasets from CSV file.
         
@@ -159,7 +183,7 @@ class DataLoader:
             Tuple of (train_ds, val_ds)
         """
         # Parse CSV
-        df = self._parse_csv(csv_path)
+        df = self._parse_csv(config.data)
         
         # Split into train and test
         train_df, test_df = train_test_split(
@@ -203,18 +227,44 @@ class DataLoader:
         sample_images = []
         sample_labels = []
         
-        # Load a small batch for feature extraction/genetic algorithm
-        for path, label in zip(sample_df['file_name'], sample_df['label']):
-            try:
-                img = tf.keras.preprocessing.image.load_img(path, 
-                                                           target_size=(self.image_size, self.image_size))
-                img_array = tf.keras.preprocessing.image.img_to_array(img) / 255.0
-                sample_images.append(img_array)
-                sample_labels.append(label)
-            except Exception as e:
-                print(f"Error loading sample image {path}: {e}")
-        
-        sample_images = np.array(sample_images)
-        sample_labels = np.array(sample_labels)
-        
+        if config.use_genetic_algorithm:
+            # Load a small batch for feature extraction/genetic algorithm
+            for path, label in zip(sample_df['file_name'], sample_df['label']):
+                try:
+                    # Load image
+                    img = tf.keras.preprocessing.image.load_img(path)
+                    img_array = tf.keras.preprocessing.image.img_to_array(img)
+
+                    # Get original dimensions
+                    h, w = img_array.shape[:2]
+                    
+                    # Calculate scaling factor
+                    scale = min(self.image_size / h, self.image_size / w)
+                    new_h, new_w = int(h * scale), int(w * scale)
+
+                    # Resize image using TensorFlow (preserves aspect ratio)
+                    img_resized = tf.image.resize(img_array, [new_h, new_w], preserve_aspect_ratio=True)
+                    img_resized = img_resized.numpy()
+
+                    # Create black canvas
+                    canvas = np.zeros((self.image_size, self.image_size, 3), dtype=np.float32)
+
+                    # Compute offsets for centering
+                    offset_h = (self.image_size - img_resized.shape[0]) // 2
+                    offset_w = (self.image_size - img_resized.shape[1]) // 2
+
+                    # Place resized image onto canvas
+                    canvas[offset_h:offset_h + img_resized.shape[0], offset_w:offset_w + img_resized.shape[1], :] = img_resized
+
+                    # Normalize
+                    canvas = canvas / 255.0
+
+                    sample_images.append(canvas)
+                    sample_labels.append(label)
+                except Exception as e:
+                    print(f"Error loading sample image {path}: {e}")
+                
+            sample_images = np.array(sample_images)
+            sample_labels = np.array(sample_labels)
+            
         return train_ds, test_ds, sample_images, sample_labels

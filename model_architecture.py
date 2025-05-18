@@ -84,7 +84,7 @@ class AIDetectorModel:
         # Flatten and dense layers
         x = layers.Flatten()(x)
         x = layers.Dropout(0.5)(x)
-        x = layers.Dense(512, activation='relu')(x)
+        x = layers.Dense(224, activation='relu')(x)
         x = layers.Dropout(0.3)(x)
         
         # Output layer
@@ -114,9 +114,8 @@ class AIDetectorModel:
         """
         return tf.keras.Sequential([
             layers.RandomFlip("horizontal"),
-            layers.RandomRotation(0.1),
-            layers.RandomZoom(0.1),
-            layers.RandomContrast(0.1),
+            layers.RandomTranslation(height_factor=0.05, width_factor=0.05),
+            layers.RandomBrightness(0.05),
         ])
     
     def train(self, train_dataset, validation_dataset=None, epochs=50, output_model_path='human_ai_detector_model.h5'):
@@ -266,7 +265,7 @@ class ModelWrapper:
         """
         if self.feature_extractor is None:
             # Import on demand to avoid circular imports
-            from feature_extractor import AIFeatureExtractor
+            from old_feature_extractor import AIFeatureExtractor
             self.feature_extractor = AIFeatureExtractor()
         
         # Check if we have the mask
@@ -337,7 +336,7 @@ class ModelWrapper:
                 # Generate features using the mask
                 if self.feature_extractor is None:
                     # Import on demand to avoid circular imports
-                    from feature_extractor import AIFeatureExtractor
+                    from old_feature_extractor import AIFeatureExtractor
                     self.feature_extractor = AIFeatureExtractor()
                 
                 # Use a tf.py_function to handle numpy operations
