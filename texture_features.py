@@ -1,418 +1,375 @@
+import imagehash
 import numpy as np
 import cv2
 from skimage.feature import local_binary_pattern
 from skimage.feature import graycoprops
+from PIL import Image
+from skimage.feature import graycoprops, graycomatrix
 
-from utils import get_edge_detection, cached_glcm, image_hash_to_array
+class TextureFeatureExtractor:
+    def _extract_noise_feature(self, image: np.ndarray) -> np.ndarray:
+        """
+        Analyze noise distribution to detect AI-generated inconsistencies.
 
-class TextureFeaturesExtractor:
-    @staticmethod
-    def detect_noise_patterns(image, patch_size=16):
-        """
-        Detect unnatural noise patterns or lack of natural noise
-        Natural images have characteristic noise patterns that AI often fails to replicate
-        """
-        if len(image.shape) > 2 and image.shape[2] > 1:
-            # For color images, analyze each channel
-            # Vectorized channel processing
-            channels = np.dsplit(image, image.shape[2])
-            blurred_channels = [cv2.GaussianBlur(ch.squeeze(), (5, 5), 0) for ch in channels]
-            noise_maps = [ch.squeeze() - blurred for ch, blurred in zip(channels, blurred_channels)]
-            noise = np.mean(noise_maps, axis=0)
-        else:
-            # For grayscale
-            blurred = cv2.GaussianBlur(image, (5, 5), 0)
-            noise = image - blurred
-        
-        # Convert to standard scale for more consistent analysis
-        noise_std = np.std(noise)
-        noise_normalized = noise / noise_std if noise_std > 0 else noise
-        
-        h, w = noise.shape
-        feature_map = np.zeros((h, w))
-        
-        # Calculate global noise statistics
-        global_mean = np.mean(noise)
-        global_std = np.std(noise)
-        global_mad = np.median(np.abs(noise - np.median(noise)))  # Median Absolute Deviation
-        
-        # Calculate robust global kurtosis estimator (less sensitive to outliers)
-        sorted_noise = np.sort(noise_normalized.flatten())
-        n = len(sorted_noise)
-        q1_pos = int(n * 0.25)
-        q3_pos = int(n * 0.75)
-        q1 = sorted_noise[q1_pos]
-        q3 = sorted_noise[q3_pos]
-        robust_kurtosis = (q3 - q1) / (2 * global_mad) if global_mad > 0 else 1
-        
-        # Calculate noise variance
-        global_var = np.var(noise)
-        
-        # Prepare image for processing
-        gray_image = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY) if len(image.shape) > 2 else (image * 255).astype(np.uint8)
-        
-        # Vectorized patch creation using strided arrays
-        # Pre-allocate arrays for patch scores
-        rows = np.arange(0, h - patch_size, patch_size)
-        cols = np.arange(0, w - patch_size, patch_size)
-        num_rows = len(rows)
-        num_cols = len(cols)
-        
-        noise_pattern_map = np.zeros((num_rows, num_cols))
-        all_stds = np.zeros((num_rows, num_cols))
-        all_entropies = np.zeros((num_rows, num_cols))
-        all_mads = np.zeros((num_rows, num_cols))
-        all_kurtosis = np.ones((num_rows, num_cols))
-        all_vars = np.zeros((num_rows, num_cols))
-        var_diffs = np.zeros((num_rows, num_cols))
-        gray_means = np.zeros((num_rows, num_cols))
-        
-        # Optimized vectorized patch analysis
-        for idx_i, i in enumerate(rows):
-            for idx_j, j in enumerate(cols):
-                patch = noise[i:i+patch_size, j:j+patch_size]
-                patch_norm = noise_normalized[i:i+patch_size, j:j+patch_size]
-                
-                # Calculate patch statistics
-                all_stds[idx_i, idx_j] = np.std(patch)
-                all_entropies[idx_i, idx_j] = -np.sum(np.abs(patch) * np.log2(np.abs(patch) + 1e-10))
-                
-                # Calculate median absolute deviation
-                local_median = np.median(patch)
-                local_mad = np.median(np.abs(patch - local_median))
-                all_mads[idx_i, idx_j] = local_mad
-                
-                # Calculate robust kurtosis
-                sorted_patch = np.sort(patch_norm.flatten())
-                n_local = len(sorted_patch)
-                if n_local > 4:
-                    q1_pos_local = int(n_local * 0.25)
-                    q3_pos_local = int(n_local * 0.75)
-                    q1_local = sorted_patch[q1_pos_local]
-                    q3_local = sorted_patch[q3_pos_local]
-                    all_kurtosis[idx_i, idx_j] = (q3_local - q1_local) / (2 * local_mad) if local_mad > 0 else 1
-                
-                # Calculate variance and relative variance
-                all_vars[idx_i, idx_j] = np.var(patch)
-                if global_var > 0:
-                    var_ratio = all_vars[idx_i, idx_j] / global_var
-                    var_diffs[idx_i, idx_j] = abs(1 - var_ratio)
-                else:
-                    var_diffs[idx_i, idx_j] = 0 if all_vars[idx_i, idx_j] == 0 else 1
-                
-                # Gray mean for content analysis
-                gray_patch = gray_image[i:i+patch_size, j:j+patch_size]
-                gray_means[idx_i, idx_j] = np.mean(gray_patch)
-        
-        # Vectorized scoring based on multiple criteria
-        unnatural_scores = np.zeros_like(all_stds)
-        
-        # Apply scoring masks vectorized
-        unnatural_mask = (all_stds < 0.005)
-        unnatural_scores[unnatural_mask] = 0.8
-        
-        entropy_mask = (all_entropies < 0.1)
-        unnatural_scores[entropy_mask & ~unnatural_mask] = 0.7
-        
-        kurtosis_mask = (np.abs(all_kurtosis - robust_kurtosis) > 1.5)
-        unnatural_scores[kurtosis_mask & ~(unnatural_mask | entropy_mask)] = 0.6
-        
-        var_mask = (var_diffs > 0.7)
-        unnatural_scores[var_mask & ~(unnatural_mask | entropy_mask | kurtosis_mask)] = 0.5
-        
-        # Account for image content - don't penalize naturally smooth areas
-        bright_mask = (gray_means > 240)
-        dark_mask = (gray_means < 30)
-        unnatural_scores[bright_mask | dark_mask] *= 0.3
-        
-        # Fill maps
-        noise_pattern_map = unnatural_scores.copy()
-        
-        # Create full feature map from patch scores
-        for idx_i, i in enumerate(rows):
-            for idx_j, j in enumerate(cols):
-                score = unnatural_scores[idx_i, idx_j]
-                if score > 0:
-                    feature_map[i:i+patch_size, j:j+patch_size] = score
-        
-        # Adjust overall score based on global variance assessment
-        global_variance_magnitude = np.log1p(global_var * 1000)  # Logarithmic scaling
-        if global_variance_magnitude < -5:  # Unnaturally low variance
-            global_adjustment = 1.2  # Increase scores
-        elif global_variance_magnitude > 2:  # High variance (likely natural image noise)
-            global_adjustment = 0.7  # Decrease scores
-        else:
-            global_adjustment = 1.0  # No change
-        
-        feature_map = np.clip(feature_map * global_adjustment, 0, 1)
-        
-        return feature_map, noise_pattern_map
-    
-    @staticmethod
-    def analyze_texture_quality(image, patch_size=32):
-        """
-        Analyze texture quality and consistency
-        AI-generated images often have repeating textures or lack natural texture variation
-        """
-        if len(image.shape) > 2 and image.shape[2] > 1:
-            # Convert to grayscale for texture analysis
-            gray = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
-            # Keep color for content analysis
-            color_img = (image * 255).astype(np.uint8)
-        else:
-            gray = (image * 255).astype(np.uint8)
-            color_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        Args:
+            image: Input image (BGR format if color)
 
+        Returns:
+            2D feature map same size as input image with values between 0 and 1
+        """
+        # Handle input normalization and color conversion
+        if len(image.shape) == 3:
+            # Convert BGR to grayscale and handle float inputs
+            if np.issubdtype(image.dtype, np.floating):
+                gray = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_BGR2GRAY)
+            else:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+            if np.issubdtype(gray.dtype, np.floating):
+                gray = (gray * 255).astype(np.uint8)
+
+        # Extract noise pattern using Gaussian residual
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0).astype(np.float32)
+        noise = gray.astype(np.float32) - blurred
+        noise_normalized = noise / (np.std(noise) + 1e-6)
+
+        # Initialize parameters
+        patch_size = 16
         h, w = gray.shape
         rows = np.arange(0, h - patch_size, patch_size)
         cols = np.arange(0, w - patch_size, patch_size)
-        num_rows = len(rows)
-        num_cols = len(cols)
-        
-        all_stds = np.zeros((num_rows, num_cols))
-        all_entropies = np.zeros((num_rows, num_cols))
-        texture_consistency_map = np.zeros((num_rows, num_cols))
-        feature_map = np.zeros((h, w))
+        feature_map = np.zeros((h, w), dtype=np.float32)
 
-        # 1. Local Binary Patterns for texture encoding
+        # Calculate global statistics
+        global_var = np.var(noise)
+        global_mad = np.median(np.abs(noise - np.median(noise)))
+
+        # Process patches in vectorized manner
+        for i in rows:
+            for j in cols:
+                # Extract noise patch and normalized version
+                patch = noise[i:i+patch_size, j:j+patch_size]
+                patch_norm = noise_normalized[i:i+patch_size, j:j+patch_size]
+
+                # Calculate local statistics
+                local_std = np.std(patch)
+                local_mad = np.median(np.abs(patch - np.median(patch)))
+                local_var = np.var(patch)
+
+                # Calculate entropy of absolute values
+                abs_patch = np.abs(patch_norm)
+                entropy = -np.sum(abs_patch * np.log2(abs_patch + 1e-10))
+
+                # Calculate robust kurtosis estimate
+                sorted_patch = np.sort(patch_norm.flatten())
+                q1, q3 = np.quantile(sorted_patch, [0.25, 0.75])
+                robust_kurtosis = (q3 - q1) / (2 * local_mad) if local_mad > 0 else 1
+
+                # Calculate variance ratio
+                var_ratio = local_var / global_var if global_var > 0 else 0
+                var_diff = abs(1 - var_ratio)
+
+                # Calculate initial score based on multiple criteria
+                score = 0
+                if local_std < 0.005:
+                    score = 0.8
+                elif entropy < 0.1:
+                    score = 0.7
+                elif abs(robust_kurtosis - (q3 - q1)/(2*global_mad)) > 1.5:
+                    score = 0.6
+                elif var_diff > 0.7:
+                    score = 0.5
+
+                # Adjust for bright/dark areas
+                gray_patch = gray[i:i+patch_size, j:j+patch_size]
+                patch_mean = np.mean(gray_patch)
+                if patch_mean > 240 or patch_mean < 30:
+                    score *= 0.3
+
+                # Apply score to feature map
+                feature_map[i:i+patch_size, j:j+patch_size] = score
+
+        # Global variance adjustment
+        global_variance_magnitude = np.log1p(global_var * 1000)
+        if global_variance_magnitude < -5:
+            feature_map = np.clip(feature_map * 1.2, 0, 1)
+        elif global_variance_magnitude > 2:
+            feature_map = np.clip(feature_map * 0.7, 0, 1)
+
+        return feature_map
+    
+    def _extract_texture_feature(self, image: np.ndarray) -> np.ndarray:
+        """
+        Analyze texture consistency and identify AI artifacts in textures.
+
+        Args:
+            image: Input image (BGR format if color)
+
+        Returns:
+            2D feature map same size as input image with values between 0 and 1
+        """
+        # Convert to grayscale and handle input formats
+        if len(image.shape) == 3:
+            if np.issubdtype(image.dtype, np.floating):
+                gray = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_BGR2GRAY)
+            else:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+            if np.issubdtype(gray.dtype, np.floating):
+                gray = (gray * 255).astype(np.uint8)
+
+        h, w = gray.shape
+        patch_size = 32
+        feature_map = np.zeros((h, w), dtype=np.float32)
+
+        # Local Binary Patterns texture analysis
         radius = 2
         n_points = 8 * radius
         lbp = local_binary_pattern(gray, n_points, radius, method='uniform')
 
-        # Simulate CNN embeddings with simple downsampled patches
-        def get_cnn_like_features(img, scale=0.25):
-            small_img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
-            sobelx = get_edge_detection(small_img, method='sobel', dx=1, dy=0, ksize=3)
-            sobely = get_edge_detection(small_img, method='sobel', dx=0, dy=1, ksize=3)
-            magnitude = np.sqrt(sobelx**2 + sobely**2)
-            features = [
-                np.mean(small_img),
-                np.std(small_img),
-                np.mean(magnitude),
-                np.std(magnitude),
-                np.percentile(magnitude, 90)
-            ]
-            return np.array(features)
+        # Edge density analysis
+        edges = cv2.Canny(gray, 50, 150)
+        edge_density = cv2.resize(
+            (cv2.boxFilter(edges, -1, (patch_size, patch_size))) / 255,
+            (w, h)
+        )
 
-        # Get global CNN-like features
-        global_cnn_features = get_cnn_like_features(gray)
+        # GLCM texture analysis
+        glcm = graycomatrix(gray, [1], [0, np.pi/4, np.pi/2, 3*np.pi/4], levels=256, symmetric=True, normed=True)
+        contrast = graycoprops(glcm, 'contrast').mean()
+        energy = graycoprops(glcm, 'energy').mean()
 
-        # 3. Gray-Level Co-occurrence Matrix (GLCM) features with simplified angles
-        # Use cached GLCM computation
-        downsampled = cv2.resize(gray, (max(w//4, 50), max(h//4, 50)))
-        
-        # Hash the image for caching
-        img_hash = tuple(downsampled.flatten())
-        distances = [1, 2]
-        angles = [0, np.pi/2]
-        
-        # Use cached GLCM computation
-        try:
-            glcm = cached_glcm(img_hash, tuple(distances), tuple(angles), 256, True, True)
-            glcm_contrast = graycoprops(glcm, 'contrast').mean()
-            glcm_dissim = graycoprops(glcm, 'dissimilarity').mean()
-            glcm_energy = graycoprops(glcm, 'energy').mean()
-            glcm_corr = graycoprops(glcm, 'correlation').mean()
-        except:
-            # Fallback if caching fails
-            glcm = cv2.resize(gray, (max(w//8, 25), max(h//8, 25)))
-            glcm_contrast = np.std(glcm)
-            glcm_energy = 1.0 / (1.0 + np.var(glcm))
-            glcm_dissim = np.mean(np.abs(glcm - np.mean(glcm)))
-            glcm_corr = 0.5
+        # Process texture patches
+        for i in range(0, h - patch_size, patch_size//2):
+            for j in range(0, w - patch_size, patch_size//2):
+                # Extract patch with overlap handling
+                pi, pj = min(i, h-patch_size), min(j, w-patch_size)
+                patch = gray[pi:pi+patch_size, pj:pj+patch_size]
 
-        global_lbp_hist, _ = np.histogram(lbp.ravel(), bins=n_points+2, range=(0, n_points+2), density=True)
-        global_lbp_entropy = -np.sum(global_lbp_hist * np.log2(global_lbp_hist + 1e-10))
+                # Local texture statistics
+                patch_std = np.std(patch)
+                lbp_hist = np.histogram(lbp[pi:pi+patch_size, pj:pj+patch_size], 
+                                       bins=n_points+2, range=(0, n_points+2))[0]
+                lbp_hist = lbp_hist / (patch_size**2 + 1e-10)
+                lbp_entropy = -np.sum(lbp_hist * np.log2(lbp_hist + 1e-10))
 
-        edges = get_edge_detection(gray, method='canny', threshold1=50, threshold2=150)
-        edge_density = np.sum(edges > 0) / (h * w)
+                # Local GLCM features
+                patch_glcm = graycomatrix(patch, [1], [0], levels=256, symmetric=True, normed=True)
+                patch_contrast = graycoprops(patch_glcm, 'contrast').mean()
+                patch_energy = graycoprops(patch_glcm, 'energy').mean()
 
-        is_smooth_scene = edge_density < 0.05
-        is_textured_scene = edge_density > 0.2
+                # Texture anomaly detection
+                score = 0
+                # Check for low variation
+                if patch_std < 5:
+                    score += 0.4
+                # Check for unusual LBP patterns
+                if lbp_entropy < 2.0:
+                    score += 0.3
+                # Check GLCM consistency
+                if abs(patch_contrast - contrast) > contrast*0.5:
+                    score += 0.2
+                if abs(patch_energy - energy) > energy*0.5:
+                    score += 0.1
 
-        # Vectorized computation for std and entropy across all patches
-        for idx_i, i in enumerate(rows):
-            for idx_j, j in enumerate(cols):
-                patch = gray[i:i+patch_size, j:j+patch_size]
-                all_stds[idx_i, idx_j] = np.std(patch)
-                all_entropies[idx_i, idx_j] = -np.sum(np.abs(patch) * np.log2(np.abs(patch) + 1e-10))
+                # Apply edge density weighting
+                local_edge_density = np.mean(edge_density[pi:pi+patch_size, pj:pj+patch_size])
+                if local_edge_density < 0.05:
+                    score *= 0.5  # Reduce score in smooth areas
+                elif local_edge_density > 0.2:
+                    score *= 1.2  # Increase in textured areas
 
-        # Set initial unnatural scores based on std
-        unnatural_mask = (all_stds < 0.005)
-        unnatural_scores = np.zeros_like(all_stds)
-        unnatural_scores[unnatural_mask] = 0.8
+                # Apply to feature map with Gaussian weighting
+                feature_map[pi:pi+patch_size, pj:pj+patch_size] = np.maximum(
+                    feature_map[pi:pi+patch_size, pj:pj+patch_size],
+                    np.minimum(score, 1.0) * cv2.getGaussianKernel(patch_size, patch_size/3)[:, np.newaxis]
+                )
 
-        # Continue with more detailed patch analysis
-        for idx_i, i in enumerate(rows):
-            for idx_j, j in enumerate(cols):
-                patch = gray[i:i+patch_size, j:j+patch_size]
-                patch_lbp = lbp[i:i+patch_size, j:j+patch_size]
-                patch_lbp_hist, _ = np.histogram(patch_lbp.ravel(), bins=n_points+2, range=(0, n_points+2), density=True)
-                patch_lbp_entropy = -np.sum(patch_lbp_hist * np.log2(patch_lbp_hist + 1e-10))
-                patch_cnn_features = get_cnn_like_features(patch)
-                patch_edges = edges[i:i+patch_size, j:j+patch_size]
-                patch_edge_density = np.sum(patch_edges > 0) / (patch_size * patch_size)
-                
-                # Resize patch for GLCM analysis
-                small_patch = cv2.resize(patch, (20, 20))
-                
-                # Try cached GLCM or compute directly with error handling
-                try:
-                    # Hash the patch for caching
-                    patch_hash = tuple(small_patch.flatten())
-                    patch_glcm = cached_glcm(patch_hash, (1,), (0, np.pi/2), 256, True, True)
-                    patch_contrast = graycoprops(patch_glcm, 'contrast').mean()
-                    patch_energy = graycoprops(patch_glcm, 'energy').mean()
-                except:
-                    # Fallback method if caching fails
-                    patch_contrast = np.std(small_patch)
-                    patch_energy = 1.0 / (1.0 + np.var(small_patch))
+        # Normalize and smooth final result
+        feature_map = cv2.GaussianBlur(feature_map, (15, 15), 3)
+        feature_map -= feature_map.min()
+        feature_map /= feature_map.max() + 1e-10
 
-                # Calculate KL divergence for LBP histograms
-                kl_div_lbp = np.sum(patch_lbp_hist * np.log2((patch_lbp_hist + 1e-10) / (global_lbp_hist + 1e-10)))
-                kl_div_lbp = min(kl_div_lbp, 10)
-                normalized_kl_lbp = kl_div_lbp / 10
-
-                # Calculate feature difference
-                feature_diff = np.linalg.norm(patch_cnn_features - global_cnn_features)
-                max_diff = np.linalg.norm(np.ones_like(global_cnn_features) * 255)
-                normalized_feature_diff = feature_diff / max_diff if max_diff > 0 else 0
-
-                # Set expectation ranges based on image content
-                if is_smooth_scene or (patch_edge_density < 0.05 and np.mean(patch) > 200):
-                    expected_contrast_range = (0, 20)
-                    expected_energy_range = (0.1, 0.5)
-                    expected_lbp_entropy_range = (0, 2)
-                elif is_textured_scene or patch_edge_density > 0.3:
-                    expected_contrast_range = (20, 100)
-                    expected_energy_range = (0.01, 0.2)
-                    expected_lbp_entropy_range = (3, 6)
-                else:
-                    expected_contrast_range = (5, 50)
-                    expected_energy_range = (0.05, 0.3)
-                    expected_lbp_entropy_range = (1, 4)
-
-                # Check if values are within natural ranges
-                contrast_natural = expected_contrast_range[0] <= patch_contrast <= expected_contrast_range[1]
-                energy_natural = expected_energy_range[0] <= patch_energy <= expected_energy_range[1]
-                entropy_natural = expected_lbp_entropy_range[0] <= patch_lbp_entropy <= expected_lbp_entropy_range[1]
-
-                # Collect indicators of unnatural textures
-                unnatural_indicators = []
-                if normalized_kl_lbp < 0.1:
-                    unnatural_indicators.append(0.6)
-                if normalized_feature_diff < 0.1:
-                    unnatural_indicators.append(0.7)
-                if not (contrast_natural and energy_natural and entropy_natural):
-                    failed = sum([not contrast_natural, not energy_natural, not entropy_natural])
-                    unnatural_indicators.append(0.5 * failed / 3)
-                if patch_lbp_entropy < 1.0:
-                    unnatural_indicators.append(0.6)
-
-                # Calculate final texture score
-                if unnatural_indicators:
-                    texture_score = sum(unnatural_indicators) / len(unnatural_indicators)
-                    if is_smooth_scene or (patch_edge_density < 0.05 and np.mean(patch) > 200):
-                        texture_score *= 0.5
-                    texture_consistency_map[idx_i, idx_j] = texture_score
-                    feature_map[i:i+patch_size, j:j+patch_size] = texture_score
-
-        return feature_map, texture_consistency_map
-
-    @staticmethod
-    def analyze_color_coherence(image, patch_size=16):
+        return np.clip(feature_map, 0, 1).astype(np.float32)
+    
+    def _extract_color_feature(self, image: np.ndarray) -> np.ndarray:
         """
-        Analyze color coherence and distribution with improved false positive handling.
-        AI-generated images sometimes have unnatural color relationships.
+        Detect color distribution anomalies common in AI-generated images.
+
+        Args:
+            image: Input image (BGR format if color)
+
+        Returns:
+            2D feature map same size as input image with values between 0 and 1
         """
-        if len(image.shape) <= 2 or image.shape[2] < 3:
-            # Not a color image
-            return np.zeros(image.shape[:2]), 0
-        
+        # Handle non-color images
+        if len(image.shape) != 3 or image.shape[2] != 3:
+            return np.zeros(image.shape[:2], dtype=np.float32)
+
+        # Convert input to proper format
+        if np.issubdtype(image.dtype, np.floating):
+            img_uint8 = (image * 255).astype(np.uint8)
+        else:
+            img_uint8 = image.astype(np.uint8)
+
         # Convert to HSV color space
-        hsv_img = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_RGB2HSV)
-        
-        h, w = image.shape[:2]
-        num_rows = h // patch_size
-        num_cols = w // patch_size
-        color_coherence_map = np.zeros((num_rows, num_cols))
-        feature_map = np.zeros((h, w))
-        
-        # Global hue statistics - using variance metrics instead of entropy
-        hue_data = hsv_img[:,:,0].astype(float)
-        
-        # Handle circular nature of hue (0 and 180 are adjacent)
-        hue_sin = np.sin(2 * np.pi * hue_data / 180)
-        hue_cos = np.cos(2 * np.pi * hue_data / 180)
-        mean_sin = np.mean(hue_sin)
-        mean_cos = np.mean(hue_cos)
-        
-        # Calculate circular variance of hue
-        global_hue_variance = 1 - np.sqrt(mean_sin**2 + mean_cos**2)
-        
-        # Detect if image has limited color palette (natural in some photos)
-        limited_palette = global_hue_variance < 0.3
-        
-        # Detect gradients using Laplacian variance (simpler method)
-        gray = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+        hsv_img = cv2.cvtColor(img_uint8, cv2.COLOR_BGR2HSV)
+        h, w = img_uint8.shape[:2]
+        feature_map = np.zeros((h, w), dtype=np.float32)
+        patch_size = 16
+
+        # Global hue variance calculation
+        hue = hsv_img[:, :, 0].astype(np.float32)
+        hue_rad = np.deg2rad(hue)
+        mean_sin = np.mean(np.sin(hue_rad))
+        mean_cos = np.mean(np.cos(hue_rad))
+        global_hue_var = 1 - np.sqrt(mean_sin**2 + mean_cos**2)
+        limited_palette = global_hue_var < 0.3
+
+        # Edge preservation analysis
+        gray = cv2.cvtColor(img_uint8, cv2.COLOR_BGR2GRAY)
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-        laplacian_var = np.var(laplacian)
-        
-        # Pre-compute patch coordinates
-        patch_coords = [(i, j) for i in range(0, h - patch_size, patch_size) 
-                        for j in range(0, w - patch_size, patch_size)]
-        total_patches = len(patch_coords)
-        suspicious_patches = 0
-        
-        # Process each patch
-        for i, j in patch_coords:
-            patch = hsv_img[i:i+patch_size, j:j+patch_size]
-            
-            # Calculate local hue variance using circular statistics
-            hue_patch = patch[:,:,0].astype(float)
-            hue_sin_patch = np.sin(2 * np.pi * hue_patch / 180)
-            hue_cos_patch = np.cos(2 * np.pi * hue_patch / 180)
-            mean_sin_patch = np.mean(hue_sin_patch)
-            mean_cos_patch = np.mean(hue_cos_patch)
-            local_hue_variance = 1 - np.sqrt(mean_sin_patch**2 + mean_cos_patch**2)
-            
-            # Check local saturation - very low saturation areas should be ignored
-            local_mean_sat = np.mean(patch[:,:,1])
-            
-            # Skip very low saturation areas (naturally occurring in photos)
-            if local_mean_sat < 20:
-                continue
-            
-            # Calculate local Laplacian variance for gradient detection
-            local_lap = laplacian[i:i+patch_size, j:j+patch_size]
-            local_lap_var = np.var(local_lap)
-            
-            # Detect smooth, natural gradients using Laplacian variance ratio
-            smooth_gradient = False
-            if laplacian_var > 0:
-                lap_var_ratio = local_lap_var / laplacian_var
-                smooth_gradient = lap_var_ratio < 0.5 and lap_var_ratio > 0.1
-            
-            # AI images often have unnatural hue variance patterns
-            # For limited palette images, expect more uniform hue variance
-            unnatural_hue = False
-            if limited_palette:
-                unnatural_hue = local_hue_variance < 0.05 and not smooth_gradient
+        global_lap_var = np.var(laplacian)
+
+        # Process patches with vectorized operations
+        for i in range(0, h - patch_size + 1, patch_size):
+            for j in range(0, w - patch_size + 1, patch_size):
+                patch = hsv_img[i:i+patch_size, j:j+patch_size]
+                hue_patch = patch[:, :, 0].astype(np.float32)
+                sat_patch = patch[:, :, 1]
+
+                # Local hue variance
+                hue_rad_patch = np.deg2rad(hue_patch)
+                mean_sin_p = np.mean(np.sin(hue_rad_patch))
+                mean_cos_p = np.mean(np.cos(hue_rad_patch))
+                local_hue_var = 1 - np.sqrt(mean_sin_p**2 + mean_cos_p**2)
+
+                # Skip low saturation areas
+                if np.mean(sat_patch) < 20:
+                    continue
+
+                # Local texture analysis
+                local_lap = laplacian[i:i+patch_size, j:j+patch_size]
+                lap_ratio = np.var(local_lap) / (global_lap_var + 1e-6)
+                smooth_gradient = 0.1 < lap_ratio < 0.5
+
+                # Detect unnatural color consistency
+                unnatural = False
+                if limited_palette:
+                    unnatural = (local_hue_var < 0.05) and not smooth_gradient
+                else:
+                    var_ratio = local_hue_var / (global_hue_var + 1e-6)
+                    unnatural = (var_ratio < 0.3) and not smooth_gradient
+
+                if unnatural and np.mean(sat_patch) > 30:
+                    feature_map[i:i+patch_size, j:j+patch_size] = 1.0
+
+        return feature_map
+    
+    def _extract_hash_feature(self, image: np.ndarray) -> np.ndarray:
+        """
+        Compare perceptual hash similarity to known AI patterns.
+
+        Args:
+            image: Input image (BGR format if color)
+
+        Returns:
+            2D feature map same size as input image with values between 0 and 1
+        """
+        h, w = image.shape[:2]
+        feature_map = np.zeros((h, w), dtype=np.float32)
+
+        try:
+            # Convert to PIL Image with proper color space handling
+            if image.dtype == np.float32 or image.dtype == np.float64:
+                image_uint8 = (image * 255).astype(np.uint8)
             else:
-                # Compare local variance to global - too uniform is suspicious
-                if global_hue_variance > 0:
-                    hue_var_ratio = local_hue_variance / global_hue_variance
-                    unnatural_hue = hue_var_ratio < 0.3 and not smooth_gradient
-            
-            if unnatural_hue and local_mean_sat > 30:
-                row_idx = i // patch_size
-                col_idx = j // patch_size
-                if row_idx < num_rows and col_idx < num_cols:  # Safety check
-                    color_coherence_map[row_idx, col_idx] = 1
-                    feature_map[i:i+patch_size, j:j+patch_size] = 1
-                    suspicious_patches += 1
-        
-        # Calculate overall score, adjusted to reduce false positives
-        overall_score = min(suspicious_patches / max(total_patches, 1) * 1.5, 1.0) if total_patches > 0 else 0
-        
-        return feature_map, overall_score
+                image_uint8 = image.astype(np.uint8)
+
+            if image_uint8.shape[2] == 3:  # BGR to RGB conversion
+                image_pil = Image.fromarray(cv2.cvtColor(image_uint8, cv2.COLOR_BGR2RGB))
+            else:
+                image_pil = Image.fromarray(image_uint8)
+
+            # Calculate multiple perceptual hashes
+            phash = imagehash.phash(image_pil, hash_size=8)
+            dhash = imagehash.dhash(image_pil, hash_size=8)
+
+            # Convert hashes to binary representations
+            phash_bin = bin(int(str(phash), 16))[2:].zfill(64)
+            dhash_bin = bin(int(str(dhash), 16))[2:].zfill(64)
+
+            # 1. Advanced bit-run analysis
+            def analyze_bit_runs(hash_bin):
+                runs = []
+                current_val = hash_bin[0]
+                current_run = 1
+                for bit in hash_bin[1:]:
+                    if bit == current_val:
+                        current_run += 1
+                    else:
+                        runs.append(current_run)
+                        current_val = bit
+                        current_run = 1
+                runs.append(current_run)
+                return {
+                    'max_run': max(runs),
+                    'avg_run': sum(runs)/len(runs),
+                    'std_run': np.std(runs),
+                    'long_runs': sum(1 for r in runs if r > 4)
+                }
+
+            phash_runs = analyze_bit_runs(phash_bin)
+            dhash_runs = analyze_bit_runs(dhash_bin)
+
+            # 2. Regularity pattern detection
+            phash_reg = sum(phash_bin[i] == phash_bin[i+1] for i in range(63)) / 63
+            dhash_reg = sum(dhash_bin[i] == dhash_bin[i+1] for i in range(63)) / 63
+            regularity_score = (phash_reg + dhash_reg) / 2
+
+            # 3. Mirror symmetry analysis
+            phash_sym = sum(phash_bin[i] == phash_bin[63-i] for i in range(32)) / 32
+            dhash_sym = sum(dhash_bin[i] == dhash_bin[63-i] for i in range(32)) / 32
+            symmetry_score = (phash_sym + dhash_sym) / 2
+
+            # 4. Cross-hash consistency analysis
+            cross_sim = sum(p == d for p,d in zip(phash_bin, dhash_bin)) / 64
+
+            # 5. Entropy calculation via bit density
+            phash_density = phash_bin.count('1')/64
+            dhash_density = dhash_bin.count('1')/64
+            entropy_score = (abs(phash_density-0.5) + abs(dhash_density-0.5))/1.0
+
+            # Composite AI probability score
+            ai_score = (
+                0.35 * regularity_score +
+                0.35 * symmetry_score +
+                0.20 * min(max(cross_sim-0.6, 0)/0.4, 1) +  # Scaled cross-sim
+                0.10 * entropy_score
+            )
+
+            # Apply non-linear thresholding
+            if ai_score > 0.85:
+                ai_confidence = min((ai_score - 0.85) / 0.15, 1.0)
+            elif ai_score > 0.7:
+                ai_confidence = (ai_score - 0.7) / 0.15
+            else:
+                ai_confidence = 0
+
+            # Generate radial gradient feature map
+            if ai_confidence > 0:
+                center_y, center_x = h//2, w//2
+                y_coords, x_coords = np.indices((h, w))
+                dist_from_center = np.sqrt((x_coords - center_x)**2 + (y_coords - center_y)**2)
+                max_dist = np.sqrt(center_x**2 + center_y**2)
+
+                # Sigmoid decay function for smooth gradient
+                decay = 1 / (1 + np.exp(12*(dist_from_center/max_dist - 0.5)))
+                feature_map = decay * ai_confidence
+
+        except Exception as e:
+            pass  # Return zero map on any failure
+
+        return np.clip(feature_map, 0, 1).astype(np.float32)

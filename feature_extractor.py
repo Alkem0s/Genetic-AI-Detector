@@ -3,6 +3,8 @@ import cv2
 from typing import Tuple, Dict, List, Any
 
 from ai_detection_config import AIDetectionConfig
+from structural_features import StructuralFeatureExtractor
+from texture_features import TextureFeatureExtractor
 
 class FeatureExtractor:
     """
@@ -55,29 +57,29 @@ class FeatureExtractor:
         # Each feature should be normalized to [0, 1] range
         
         # Example for gradient feature extraction (implement your actual algorithm here)
-        feature_stack[:, :, 0] = self._extract_gradient_feature(image)
-        
+        feature_stack[:, :, 0] = StructuralFeatureExtractor()._extract_gradient_feature(image)
+
         # Example for pattern detection
-        feature_stack[:, :, 1] = self._extract_pattern_feature(image)
-        
+        feature_stack[:, :, 1] = StructuralFeatureExtractor()._extract_pattern_feature(image)
+
         # Noise analysis
-        feature_stack[:, :, 2] = self._extract_noise_feature(image)
-        
+        feature_stack[:, :, 2] = TextureFeatureExtractor()._extract_noise_feature(image)
+
         # Edge coherence
-        feature_stack[:, :, 3] = self._extract_edge_feature(image)
-        
+        feature_stack[:, :, 3] = StructuralFeatureExtractor()._extract_edge_feature(image)
+
         # Symmetry detection
-        feature_stack[:, :, 4] = self._extract_symmetry_feature(image)
-        
+        feature_stack[:, :, 4] = StructuralFeatureExtractor()._extract_symmetry_feature(image)
+
         # Texture analysis
-        feature_stack[:, :, 5] = self._extract_texture_feature(image)
-        
+        feature_stack[:, :, 5] = TextureFeatureExtractor()._extract_texture_feature(image)
+
         # Color distribution analysis
-        feature_stack[:, :, 6] = self._extract_color_feature(image)
-        
+        feature_stack[:, :, 6] = TextureFeatureExtractor()._extract_color_feature(image)
+
         # Perceptual hash comparison
-        feature_stack[:, :, 7] = self._extract_hash_feature(image)
-        
+        feature_stack[:, :, 7] = TextureFeatureExtractor()._extract_hash_feature(image)
+
         # Create visualization image (optional)
         visualization = self._create_visualization(image, feature_stack)
         
@@ -90,161 +92,6 @@ class FeatureExtractor:
         
         return visualization, feature_stack, metadata
     
-    def _extract_gradient_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Extract gradient perfection feature which identifies unnaturally perfect gradients.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        # This should return a 2D array with values normalized to [0,1]
-        # Example: Calculate gradients and measure their regularity
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-        
-        # Compute gradients
-        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        
-        # Example metric: gradient consistency (simplified)
-        # Higher values indicate more consistent/perfect gradients (potentially AI-generated)
-        gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
-        gradient_max = np.max(gradient_magnitude) if np.max(gradient_magnitude) > 0 else 1
-        normalized_gradient = gradient_magnitude / gradient_max
-        
-        # Return a normalized feature map
-        return normalized_gradient
-    
-    def _extract_pattern_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Detect repeating patterns that may indicate AI artifacts.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        # This would detect repeating patterns using frequency domain analysis or other techniques
-        height, width = image.shape[:2]
-        feature_map = np.zeros((height, width), dtype=np.float32)
-        
-        # Example placeholder
-        # Your actual implementation would look for repeating patterns
-        return feature_map
-    
-    def _extract_noise_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Analyze noise distribution to detect AI-generated inconsistencies.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        # This would analyze noise patterns, look for unnaturally clean areas, etc.
-        height, width = image.shape[:2]
-        feature_map = np.zeros((height, width), dtype=np.float32)
-        
-        # Example placeholder
-        # Your actual implementation would analyze noise patterns
-        return feature_map
-    
-    def _extract_edge_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Examine edge coherence and artifacts typical in AI-generated images.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        height, width = image.shape[:2]
-        feature_map = np.zeros((height, width), dtype=np.float32)
-        
-        # Example placeholder
-        # Your actual implementation would detect edge artifacts
-        return feature_map
-    
-    def _extract_symmetry_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Measure unnatural symmetry often present in AI-generated images.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        height, width = image.shape[:2]
-        feature_map = np.zeros((height, width), dtype=np.float32)
-        
-        # Example placeholder
-        # Your actual implementation would detect symmetry anomalies
-        return feature_map
-    
-    def _extract_texture_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Analyze texture consistency and identify AI artifacts in textures.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        height, width = image.shape[:2]
-        feature_map = np.zeros((height, width), dtype=np.float32)
-        
-        # Example placeholder
-        # Your actual implementation would analyze texture patterns
-        return feature_map
-    
-    def _extract_color_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Detect color distribution anomalies common in AI-generated images.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        height, width = image.shape[:2]
-        feature_map = np.zeros((height, width), dtype=np.float32)
-        
-        # Example placeholder
-        # Your actual implementation would analyze color distributions
-        return feature_map
-    
-    def _extract_hash_feature(self, image: np.ndarray) -> np.ndarray:
-        """
-        Compare perceptual hash similarity to known AI patterns.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            2D feature map same size as input image with values between 0 and 1
-        """
-        # Placeholder for actual implementation
-        height, width = image.shape[:2]
-        feature_map = np.zeros((height, width), dtype=np.float32)
-        
-        # Example placeholder
-        # Your actual implementation would use perceptual hashing techniques
-        return feature_map
     
     def _compute_feature_statistics(self, feature_stack: np.ndarray) -> Dict[str, Dict[str, float]]:
         """

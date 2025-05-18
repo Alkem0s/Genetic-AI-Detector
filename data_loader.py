@@ -125,7 +125,6 @@ class DataLoader:
         return img, label
 
 
-    
     def _configure_for_performance(self, dataset, is_training=False):
         """
         Configure dataset for optimal performance.
