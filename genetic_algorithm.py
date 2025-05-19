@@ -5,9 +5,9 @@ from deap import base, creator, tools, algorithms
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import logging
 
-from ai_detection_config import AIDetectionConfig
 from feature_extractor import FeatureExtractor
-import utils
+import global_config
+from utils import utils
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,55 +20,45 @@ class GeneticFeatureOptimizer:
     dynamic masks per image based on extracted features.
     """
 
-    def __init__(self, images, labels, config=None,
-                 population_size=50, n_generations=20,
-                 crossover_prob=0.5, mutation_prob=0.2, tournament_size=3,
-                 use_multiprocessing=True, eval_sample_size=100, random_seed=None,
-                 rules_per_individual=5, max_possible_rules=10):
+    def __init__(self, images, labels, detector_config=None, ga_config=None):
         """
         Initialize the genetic algorithm optimizer.
 
         Args:
-            feature_extractor: Reference to the feature extractor class
             images: Numpy array of preprocessed images
             labels: Numpy array of labels (0 for human, 1 for AI)
-            config: AIDetectionConfig instance or None to use defaults
-            population_size: Size of the genetic algorithm population
-            n_generations: Number of generations to evolve
-            crossover_prob: Probability of crossover
-            mutation_prob: Probability of mutation
-            tournament_size: Tournament size for selection
-            use_multiprocessing: Whether to use multiprocessing for evaluations
-            eval_sample_size: Number of images to use for evaluation (for speed)
-            rules_per_individual: Default number of rules per individual
-            max_possible_rules: Maximum number of rules allowed in an individual
+            detector_config: AIDetectionConfig instance
+            ga_config: GAConfig instance
         """
-        self.config = config or AIDetectionConfig()
-        self.feature_extractor = FeatureExtractor(config=self.config)
+        self.detector_config = detector_config
+        self.ga_config = ga_config
+        self.feature_extractor = FeatureExtractor(config=self.detector_config)
         self.images = images
         self.labels = labels
-        self.patch_size = self.config.patch_size
-        self.population_size = population_size
-        self.n_generations = n_generations
-        self.crossover_prob = crossover_prob
-        self.mutation_prob = mutation_prob
-        self.tournament_size = tournament_size
-        self.use_multiprocessing = use_multiprocessing
-        self.eval_sample_size = min(eval_sample_size, len(images))
-        self.random_seed = random_seed
-        self.rules_per_individual = rules_per_individual
-        self.max_possible_rules = max_possible_rules
-        
+
+        # Load all necessary values from the config
+        self.patch_size = self.detector_config.patch_size
+        self.batch_size = self.detector_config.batch_size
+        self.population_size = self.ga_config.population_size
+        self.n_generations = self.ga_config.n_generations
+        self.crossover_prob = self.ga_config.crossover_prob
+        self.mutation_prob = self.ga_config.mutation_prob
+        self.tournament_size = self.ga_config.tournament_size
+        self.use_multiprocessing = self.ga_config.use_multiprocessing
+        self.eval_sample_size = min(self.ga_config.sample_size_for_ga, len(images))
+        self.rules_per_individual = self.ga_config.rules_per_individual
+        self.max_possible_rules = self.ga_config.max_possible_rules
+        self.random_seed = self.detector_config.random_seed
+
         if self.random_seed is not None:
             random.seed(self.random_seed)
             np.random.seed(self.random_seed)
 
-        # Use config values
-        self.feature_weights = list(self.config.feature_weights.values())
-        
+        # Feature weights (optional)
+        self.feature_weights = list(global_config.feature_weights.values())
+
         # Define feature names for rule generation
-        self.feature_names = ["gradient", "pattern", "noise", "edge", 
-                             "symmetry", "texture", "color", "hash"]
+        self.feature_names = list(global_config.feature_weights.keys())
 
         # Extract image dimensions
         self.img_height, self.img_width = images[0].shape[:2]
@@ -80,6 +70,7 @@ class GeneticFeatureOptimizer:
 
         # Setup DEAP components
         self._setup_deap()
+
     
     def _setup_deap(self):
         """Set up the DEAP genetic algorithm framework"""
@@ -152,59 +143,6 @@ class GeneticFeatureOptimizer:
         
         return individual,
     
-    def generate_mask_from_rules(self, patch_features, rule_set):
-        """
-        Generate a dynamic mask for an image based on precomputed patch features and rule set.
-        
-        Args:
-            patch_features: Precomputed features for each patch in the image
-            rule_set: List of conditional rules to apply
-            
-        Returns:
-            numpy.ndarray: Binary patch mask of shape (n_patches_h, n_patches_w)
-        """
-        # Initialize the patch mask
-        patch_mask = np.zeros((self.n_patches_h, self.n_patches_w), dtype=np.int8)
-        
-        # For each patch, apply the rules
-        for h in range(min(self.n_patches_h, patch_features.shape[0])):
-            for w in range(min(self.n_patches_w, patch_features.shape[1])):
-                # Create a dictionary of feature values for this patch
-                feature_dict = {}
-                for i, feature_name in enumerate(self.feature_names):
-                    if i < patch_features.shape[2]:  # Make sure the feature index is valid
-                        feature_dict[feature_name] = patch_features[h, w, i]
-                
-                # Apply each rule to the patch
-                include_patch = False
-                
-                for rule in rule_set:
-                    feature = rule["feature"]
-                    if feature not in feature_dict:
-                        continue  # Skip rules for unavailable features
-                    
-                    value = feature_dict[feature]
-                    threshold = rule["threshold"]
-                    operator = rule["operator"]
-                    action = rule["action"]
-                    
-                    # Evaluate the rule
-                    condition_met = False
-                    if operator == ">":
-                        condition_met = value > threshold
-                    else:  # operator == "<"
-                        condition_met = value < threshold
-                    
-                    # If the condition is met, apply the action
-                    if condition_met and action == 1:
-                        include_patch = True
-                        break  # One matching rule with action=1 is enough
-                
-                # Set the patch mask value
-                patch_mask[h, w] = 1 if include_patch else 0
-        
-        return patch_mask
-    
     def _extract_patch_features_from_image(self, image):
         """
         Extract patch-level features from an image.
@@ -259,41 +197,54 @@ class GeneticFeatureOptimizer:
         total_active_patches = 0
         connectivity_scores = []
         
-        # For each image, generate a dynamic mask based on rules and evaluate
-        for img, label in zip(sample_images, sample_labels):
-            # Precompute features for this image - extract ONCE only
-            patch_features, feature_stack = self._extract_patch_features_from_image(img)
+        # Process images in batches to improve efficiency
+        for i in range(0, len(sample_images), self.batch_size):
+            # Get current batch
+            batch_images = sample_images[i:i+self.batch_size]
+            batch_labels = sample_labels[i:i+self.batch_size]
             
-            # Generate mask using precomputed patch features
-            patch_mask = self.generate_mask_from_rules(patch_features, individual)
+            # Extract features for all images in batch at once
+            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images, self.patch_size)
             
-            # Track connectivity score
-            conn_score = self._calculate_connectivity(patch_mask)
-            connectivity_scores.append(conn_score)
-            
-            # Track how many patches are active for efficiency calculation
-            active_patches = np.sum(patch_mask)
-            total_active_patches += active_patches
-            
-            # Convert patch mask to pixel mask
-            pixel_mask = utils.convert_patch_mask_to_pixel_mask(patch_mask)
-            
-            # Apply mask to feature stack - reuse precomputed feature stack
-            masked_features = np.zeros_like(feature_stack)
-            for c in range(feature_stack.shape[2]):
-                masked_features[:,:,c] = feature_stack[:,:,c] * pixel_mask
-            
-            # Calculate weighted feature importance using configurable weights
-            total_score = 0
-            for i in range(min(8, feature_stack.shape[2])):  # Ensure we don't go out of bounds
-                total_score += np.sum(masked_features[:,:,i]) * self.feature_weights[i]
-            
-            # Normalize by image size to make it scale-invariant
-            normalized_score = total_score / (self.img_height * self.img_width)
-            
-            # Threshold for AI detection
-            prediction = 1 if normalized_score > 0.01 else 0
-            predictions.append(prediction)
+            # Process each image in the batch
+            for j, (img, label) in enumerate(zip(batch_images, batch_labels)):
+                # Get pre-computed patch features for this image
+                patch_features = batch_patch_features[j]
+                
+                # Generate mask using patch features
+                patch_mask = utils.generate_dynamic_mask(patch_features, individual)
+
+                # Track connectivity score
+                conn_score = self._calculate_connectivity(patch_mask)
+                connectivity_scores.append(conn_score)
+                
+                # Track how many patches are active for efficiency calculation
+                active_patches = np.sum(patch_mask)
+                total_active_patches += active_patches
+                
+                # Convert patch mask to pixel mask
+                pixel_mask = utils.convert_patch_mask_to_pixel_mask(patch_mask, image_shape=(self.img_height, self.img_width), patch_size=self.patch_size)
+                
+                # We need to get the full feature stack for scoring
+                # Extract full feature stack for this image
+                _, feature_stack, _ = self.feature_extractor.extract_all_features(img)
+                
+                # Apply mask to feature stack
+                masked_features = np.zeros_like(feature_stack)
+                for c in range(feature_stack.shape[2]):
+                    masked_features[:,:,c] = feature_stack[:,:,c] * pixel_mask
+                
+                # Calculate weighted feature importance using configurable weights
+                total_score = 0
+                for k in range(min(8, feature_stack.shape[2])):  # Ensure we don't go out of bounds
+                    total_score += np.sum(masked_features[:,:,k]) * self.feature_weights[k]
+                
+                # Normalize by image size to make it scale-invariant
+                normalized_score = total_score / (self.img_height * self.img_width)
+                
+                # Threshold for AI detection
+                prediction = 1 if normalized_score > 0.01 else 0
+                predictions.append(prediction)
         
         # Calculate classification metrics
         accuracy = accuracy_score(sample_labels, predictions)
@@ -342,8 +293,11 @@ class GeneticFeatureOptimizer:
     
     def _calculate_connectivity(self, patch_mask):
         """
-        Calculate how connected the selected patches are.
+        Calculate how connected the selected patches are in a vectorized manner.
         More connected patches are better as they likely represent coherent features.
+        
+        Args:
+            patch_mask: Binary mask of shape (n_patches_h, n_patches_w)
         
         Returns:
             float: Connectivity score between 0 and 1
@@ -351,30 +305,119 @@ class GeneticFeatureOptimizer:
         # If no patches selected, return 0
         if np.sum(patch_mask) == 0:
             return 0
-            
-        # Count adjacent selected patches
-        adjacent_count = 0
-        total_selected = np.sum(patch_mask)
         
-        for i in range(self.n_patches_h):
-            for j in range(self.n_patches_w):
-                if patch_mask[i, j] == 1:
-                    # Check neighbors (up, down, left, right)
-                    for ni, nj in [(i-1, j), (i+1, j), (i, j-1), (i, j+1)]:
-                        if 0 <= ni < self.n_patches_h and 0 <= nj < self.n_patches_w:
-                            if patch_mask[ni, nj] == 1:
-                                adjacent_count += 1
+        # Create shifted masks to check neighbors
+        up = np.roll(patch_mask, shift=-1, axis=0)
+        down = np.roll(patch_mask, shift=1, axis=0)
+        left = np.roll(patch_mask, shift=-1, axis=1)
+        right = np.roll(patch_mask, shift=1, axis=1)
+        
+        # Ensure edges do not wrap around
+        up[-1, :] = 0
+        down[0, :] = 0
+        left[:, -1] = 0
+        right[:, 0] = 0
+        
+        # Count adjacent selected patches
+        adjacent_count = np.sum((patch_mask & up) + (patch_mask & down) + 
+                                (patch_mask & left) + (patch_mask & right))
+        
+        # Total selected patches
+        total_selected = np.sum(patch_mask)
         
         # Normalize by maximum possible adjacencies
         max_adjacencies = min(4 * total_selected - 2 * np.sqrt(total_selected) * 2, 
-                             total_selected * 4)
+                              total_selected * 4)
         
         if max_adjacencies <= 0:
             return 0.5  # Single patch selected
-            
+        
         connectivity = adjacent_count / max_adjacencies
         return connectivity
     
+    def get_feature_importance(self, rule_set):
+        """
+        Analyze which features contribute most based on the rule set.
+        
+        Args:
+            rule_set: The optimized rule set
+            
+        Returns:
+            dict: Feature importance scores
+        """
+        # Initialize feature importance counters
+        feature_scores = {feature: 0 for feature in self.feature_names}
+        
+        # Count feature usage in rules
+        for rule in rule_set:
+            feature = rule['feature']
+            feature_scores[feature] += 1
+        
+        # Sample images to see which features actually contribute to masks
+        indices = random.sample(range(len(self.images)), min(50, len(self.images)))
+        sample_images = self.images[indices]
+        
+        # Track how often each feature's rules are triggered
+        feature_triggers = {feature: 0 for feature in self.feature_names}
+        total_patches_evaluated = 0
+        
+        # Process images in batches
+        for i in range(0, len(sample_images), self.batch_size):
+            # Get current batch
+            batch_images = sample_images[i:i+self.batch_size]
+            
+            # Extract features for all images in batch at once
+            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images, self.patch_size)
+            
+            # Process each image in the batch
+            for j, img in enumerate(batch_images):
+                # Get pre-computed patch features for this image
+                patch_features = batch_patch_features[j]
+                
+                # For each patch, check which feature's rules are triggered
+                for h in range(self.n_patches_h):
+                    for w in range(self.n_patches_w):
+                        # Extract patch feature values from precomputed patch features
+                        patch_feature_dict = {}
+                        for i, feature_name in enumerate(self.feature_names):
+                            if i < patch_features.shape[2]:
+                                patch_feature_dict[feature_name] = patch_features[h, w, i]
+                        
+                        # Check which rules are triggered
+                        for rule in rule_set:
+                            feature = rule["feature"]
+                            if feature not in patch_feature_dict:
+                                continue
+                            
+                            value = patch_feature_dict[feature]
+                            threshold = rule["threshold"]
+                            operator = rule["operator"]
+                            
+                            # Evaluate if rule is triggered
+                            if (operator == ">" and value > threshold) or (operator == "<" and value < threshold):
+                                feature_triggers[feature] += 1
+                        
+                        total_patches_evaluated += 1
+        
+        # Combine rule frequency and trigger frequency
+        for feature in feature_scores:
+            # Normalize rule frequency
+            rule_freq = feature_scores[feature] / max(len(rule_set), 1) if rule_set else 0
+            
+            # Normalize trigger frequency
+            trigger_freq = feature_triggers[feature] / max(total_patches_evaluated, 1) if total_patches_evaluated > 0 else 0
+            
+            # Combined score (70% rule frequency, 30% trigger frequency)
+            feature_scores[feature] = 0.7 * rule_freq + 0.3 * trigger_freq
+        
+        # Normalize to sum to 1
+        total = sum(feature_scores.values())
+        if total > 0:
+            for key in feature_scores:
+                feature_scores[key] = feature_scores[key] / total
+        
+        return feature_scores
+        
     def run(self):
         """
         Execute the genetic algorithm optimization.
@@ -436,12 +479,18 @@ class GeneticFeatureOptimizer:
         sample_images = self.images[sample_indices]
         
         total_active = 0
-        for img in sample_images:
-            # Extract patch features once
-            patch_features, _ = self._extract_patch_features_from_image(img)
-            # Generate mask using precomputed features
-            mask = self.generate_mask_from_rules(patch_features, best_ind)
-            total_active += np.sum(mask)
+        
+        # Process evaluation images in batches
+        for i in range(0, len(sample_images), self.batch_size):
+            batch_images = sample_images[i:i+self.batch_size]
+            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images, self.patch_size)
+            
+            for j, img in enumerate(batch_images):
+                # Get pre-computed patch features
+                patch_features = batch_patch_features[j]
+                # Generate mask using precomputed features
+                mask = utils.generate_dynamic_mask(patch_features, best_ind)
+                total_active += np.sum(mask)
         
         avg_active = total_active / len(sample_images)
         avg_percentage = avg_active / (self.n_patches_h * self.n_patches_w) * 100
@@ -533,77 +582,3 @@ class GeneticFeatureOptimizer:
         
         _recursive_combine(0, {})
         return combinations
-    
-    def get_feature_importance(self, rule_set):
-        """
-        Analyze which features contribute most based on the rule set.
-        
-        Args:
-            rule_set: The optimized rule set
-            
-        Returns:
-            dict: Feature importance scores
-        """
-        # Initialize feature importance counters
-        feature_scores = {feature: 0 for feature in self.feature_names}
-        
-        # Count feature usage in rules
-        for rule in rule_set:
-            feature = rule['feature']
-            feature_scores[feature] += 1
-        
-        # Sample images to see which features actually contribute to masks
-        indices = random.sample(range(len(self.images)), min(50, len(self.images)))
-        sample_images = self.images[indices]
-        
-        # Track how often each feature's rules are triggered
-        feature_triggers = {feature: 0 for feature in self.feature_names}
-        total_patches_evaluated = 0
-        
-        for img in sample_images:
-            # Extract patch features once
-            patch_features, _ = self._extract_patch_features_from_image(img)
-            
-            # For each patch, check which feature's rules are triggered
-            for h in range(self.n_patches_h):
-                for w in range(self.n_patches_w):
-                    # Extract patch feature values from precomputed patch features
-                    patch_feature_dict = {}
-                    for i, feature_name in enumerate(self.feature_names):
-                        if i < patch_features.shape[2]:
-                            patch_feature_dict[feature_name] = patch_features[h, w, i]
-                    
-                    # Check which rules are triggered
-                    for rule in rule_set:
-                        feature = rule["feature"]
-                        if feature not in patch_feature_dict:
-                            continue
-                        
-                        value = patch_feature_dict[feature]
-                        threshold = rule["threshold"]
-                        operator = rule["operator"]
-                        
-                        # Evaluate if rule is triggered
-                        if (operator == ">" and value > threshold) or (operator == "<" and value < threshold):
-                            feature_triggers[feature] += 1
-                    
-                    total_patches_evaluated += 1
-        
-        # Combine rule frequency and trigger frequency
-        for feature in feature_scores:
-            # Normalize rule frequency
-            rule_freq = feature_scores[feature] / max(len(rule_set), 1) if rule_set else 0
-            
-            # Normalize trigger frequency
-            trigger_freq = feature_triggers[feature] / max(total_patches_evaluated, 1) if total_patches_evaluated > 0 else 0
-            
-            # Combined score (70% rule frequency, 30% trigger frequency)
-            feature_scores[feature] = 0.7 * rule_freq + 0.3 * trigger_freq
-        
-        # Normalize to sum to 1
-        total = sum(feature_scores.values())
-        if total > 0:
-            for key in feature_scores:
-                feature_scores[key] = feature_scores[key] / total
-        
-        return feature_scores

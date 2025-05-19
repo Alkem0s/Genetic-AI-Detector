@@ -1,6 +1,9 @@
 import numpy as np
 import functools
 from functools import lru_cache
+from PIL import Image
+
+import global_config
 
 
 @functools.lru_cache(maxsize=16)
@@ -36,6 +39,63 @@ def get_edge_detection(image, method='canny', **kwargs):
         return cv2.Scharr(image, cv2.CV_64F, dx, dy)
     else:
         raise ValueError(f"Unknown edge detection method: {method}")
+
+
+def generate_dynamic_mask(self, patch_features, rule_set):
+    """
+    Generate a dynamic mask using genetic algorithm rules.
+    
+    Args:
+        patch_features (np.ndarray): Features for each patch in the image
+        
+    Returns:
+        np.ndarray: Binary patch mask of shape (n_patches_h, n_patches_w)
+    """
+    
+    # Initialize the patch mask
+    patch_mask = np.zeros((self.n_patches_h, self.n_patches_w), dtype=np.int8)
+    
+    # Feature names used in genetic rules
+    feature_names = global_config.feature_weights.keys()
+    
+    # For each patch, apply the rules
+    for h in range(min(self.n_patches_h, patch_features.shape[0])):
+        for w in range(min(self.n_patches_w, patch_features.shape[1])):
+            # Create a dictionary of feature values for this patch
+            feature_dict = {}
+            for i, feature_name in enumerate(feature_names):
+                if i < patch_features.shape[2]:  # Make sure the feature index is valid
+                    feature_dict[feature_name] = patch_features[h, w, i]
+            
+            # Apply each rule to the patch
+            include_patch = False
+            
+            for rule in rule_set:
+                feature = rule["feature"]
+                if feature not in feature_dict:
+                    continue  # Skip rules for unavailable features
+                
+                value = feature_dict[feature]
+                threshold = rule["threshold"]
+                operator = rule["operator"]
+                action = rule["action"]
+                
+                # Evaluate the rule
+                condition_met = False
+                if operator == ">":
+                    condition_met = value > threshold
+                else:  # operator == "<"
+                    condition_met = value < threshold
+                
+                # If the condition is met, apply the action
+                if condition_met and action == 1:
+                    include_patch = True
+                    break  # One matching rule with action=1 is enough
+            
+            # Set the patch mask value
+            patch_mask[h, w] = 1 if include_patch else 0
+    
+    return patch_mask
 
 
 @staticmethod
@@ -84,42 +144,6 @@ def remove_black_bars(img, threshold=10):
         return Image.fromarray(cropped, mode=pil_mode)
     return cropped
 
-@staticmethod
-def process_large_image(image, config=None, image_path=None, max_size=1024):
-    from old_feature_extractor import AIFeatureExtractor
-    """Process large images using pyramid approach for memory efficiency"""
-    import cv2
-    import numpy as np
-    
-    if config is None:
-        from ai_detection_config import AIDetectionConfig
-        config = AIDetectionConfig()
-    
-    h, w = image.shape[:2]
-    
-    # If image is already small enough, process directly
-    if max(h, w) <= max_size:
-        return AIFeatureExtractor.extract_all_features(image, config, image_path)
-    
-    # Calculate scaling factor
-    scale = max_size / max(h, w)
-    small_h, small_w = int(h * scale), int(w * scale)
-    
-    # Resize image
-    small_image = cv2.resize(image, (small_w, small_h))
-    
-    # Process at smaller scale
-    small_map, small_features, scores = AIFeatureExtractor.extract_all_features(
-        small_image, config, image_path
-    )
-    
-    # Upscale feature maps to original size
-    feature_map = cv2.resize(small_map, (w, h))
-    
-    # Update scores with scale info
-    scores['processing_scale'] = scale
-    
-    return feature_map, None, scores  # No need to upscale feature stack
 
 @functools.lru_cache(maxsize=32)
 def cached_fft2(image_hash):

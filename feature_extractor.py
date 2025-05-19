@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 from typing import Tuple, Dict, List, Any
 
-from ai_detection_config import AIDetectionConfig
+import global_config
 from structural_features import StructuralFeatureExtractor
 from texture_features import TextureFeatureExtractor
 
@@ -14,22 +14,6 @@ class FeatureExtractor:
     The GeneticFeatureOptimizer expects this module to extract features
     from patches of images and return them in a consistent format.
     """
-    
-    def __init__(self, config=None):
-        """
-        Initialize the feature extractor with configuration parameters.
-        
-        Args:
-            config: Configuration object or None to use defaults
-        """
-        if config is None:
-            self.config = AIDetectionConfig()  # Default to AIDetectionConfig
-        else:
-            self.config = config
-        
-        # Each extracted feature should be normalized to range [0.0, 1.0]
-        # where higher values typically indicate stronger AI artifacts presence
-    
     def extract_all_features(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
         """
         Extract all features from an image.
@@ -51,7 +35,7 @@ class FeatureExtractor:
         
         # Initialize feature stack - MUST have the same spatial dimensions as the input image
         # with one channel for each feature type
-        feature_stack = np.zeros((height, width, len(self.config.feature_weights.keys())), dtype=np.float32)
+        feature_stack = np.zeros((height, width, len(global_config.feature_weights.keys())), dtype=np.float32)
 
         # Extract individual features and populate the stack
         # Each feature should be normalized to [0, 1] range
@@ -86,7 +70,7 @@ class FeatureExtractor:
         # Prepare metadata
         metadata = {
             "image_dimensions": (height, width),
-            "feature_weights": self.config.feature_weights,
+            "feature_weights": global_config.feature_weights,
             "feature_statistics": self._compute_feature_statistics(feature_stack)
         }
         
@@ -105,7 +89,7 @@ class FeatureExtractor:
         """
         stats = {}
         
-        for i, feature_name in enumerate(self.config.feature_weights.keys()):
+        for i, feature_name in enumerate(global_config.feature_weights.keys()):
             if i < feature_stack.shape[2]:
                 feature_map = feature_stack[:, :, i]
                 stats[feature_name] = {
@@ -171,7 +155,7 @@ class FeatureExtractor:
         height, width = image.shape[:2]
         n_patches_h = height // patch_size
         n_patches_w = width // patch_size
-        n_features = len(self.config.feature_weights.keys())
+        n_features = len(global_config.feature_weights.keys())
         
         # Initialize patch features array
         patch_features = np.zeros((n_patches_h, n_patches_w, n_features), dtype=np.float32)
@@ -213,7 +197,7 @@ class FeatureExtractor:
         
         # Pre-allocate arrays
         batch_size = len(images)
-        n_features = len(self.config.feature_weights)
+        n_features = len(global_config.feature_weights)
         batch_patches = np.zeros((batch_size, n_patches_h, n_patches_w, n_features), dtype=np.float32)
         
         # Vectorized processing
@@ -222,7 +206,7 @@ class FeatureExtractor:
             _, feature_stack, _ = self.extract_all_features(img)
             
             # Truncate to integer patch multiples and limit to n_features
-            truncated = feature_stack[:trunc_h, :trunc_w, :n_features]  # Fix here
+            truncated = feature_stack[:trunc_h, :trunc_w, :n_features]
             
             # Reshape into patches and compute means
             reshaped = truncated.reshape(n_patches_h, patch_size, n_patches_w, patch_size, n_features)

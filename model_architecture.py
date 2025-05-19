@@ -1,25 +1,34 @@
+import logging
 import tensorflow as tf
 from tensorflow.keras import layers, models, Model, callbacks # type: ignore
 import numpy as np
 import matplotlib.pyplot as plt
+import pickle
+import os
+
+import global_config
+from utils import utils
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('ModelArchitecture')
 
 class AIDetectorModel:
     """
     Class containing model architecture and training functionality for detecting AI-generated images.
     Can be configured to use image inputs only or combined with feature maps from feature extraction.
     """
-    def __init__(self, input_shape=(224, 224, 3), feature_channels=3, use_features=True):
+    def __init__(self, config, feature_channels=8):
         """
         Initialize the model architecture.
         
         Args:
-            input_shape (tuple): Shape of input images (height, width, channels)
+            config (object): Configuration object with model parameters
             feature_channels (int): Number of feature channels from feature extraction
-            use_features (bool): Whether to use feature extraction or run image-only model
         """
-        self.input_shape = input_shape
+        self.config = config
+        self.input_shape = (config.image_size, config.image_size, 3)
         self.feature_channels = feature_channels
-        self.use_features = use_features
+        self.use_features = config.use_feature_extraction
         self.model = self._build_model()
         
     def _build_model(self):
@@ -67,8 +76,13 @@ class AIDetectorModel:
                 # Resize feature map to match x
                 f = layers.Resizing(x_shape[0], x_shape[1])(f)
             
-            # Simple attention mechanism
-            attention = layers.Multiply()([x, f])  # Element-wise multiplication as attention
+            # Enhanced attention mechanism
+            # Global attention weights
+            attn_weights = layers.Conv2D(1, (1, 1), activation='sigmoid')(x)
+            # Apply attention to feature maps
+            f_weighted = layers.Multiply()([f, attn_weights])
+            # Cross-attention
+            attention = layers.Multiply()([x, f_weighted])  # Element-wise multiplication as attention
             enhanced = layers.Add()([x, attention])  # Combine original with attention-weighted
             
             # Continue with the CNN
@@ -198,29 +212,268 @@ class AIDetectorModel:
 
 class ModelWrapper:
     """
-    Wrapper class to provide higher-level functionality for model usage.
-    Handles feature extraction and model training in a unified way.
+    Wrapper class that integrates genetic algorithm dynamic masks with the CNN model.
+    Handles feature extraction using the evolved genetic rules and manages model training.
     """
-    def __init__(self, input_shape=(224, 224, 3), feature_channels=3, use_features=True, mask=None):
+    def __init__(self, config, feature_channels=8, genetic_rules=None):
         """
-        Initialize the model wrapper.
+        Initialize the model wrapper with genetic algorithm integration.
         
         Args:
-            input_shape (tuple): Shape of input images
-            feature_channels (int): Number of feature channels
-            use_features (bool): Whether to use feature extraction
-            mask (np.ndarray, optional): Mask for feature extraction
+            config (object): Configuration object with model parameters
+            feature_channels (int): Number of feature channels from feature extraction
+            genetic_rules (list, optional): List of evolved rules from genetic algorithm
+            patch_size (int): Size of patches for feature extraction
+            feature_cache_dir (str, optional): Directory to cache extracted features
         """
-        self.input_shape = input_shape
-        self.use_features = use_features
+        self.input_shape = (config.image_size, config.image_size, 3)
+        self.use_features = config.use_feature_extraction
         self.feature_channels = feature_channels
-        self.mask = mask
-        self.model = AIDetectorModel(input_shape, feature_channels, use_features)
-        self.feature_extractor = None  # Will be initialized when needed
+        self.patch_size = config.patch_size
+        self.genetic_rules = genetic_rules
         
-    def set_mask(self, mask):
-        """Set the feature extraction mask"""
-        self.mask = mask
+        # Calculate patch grid dimensions
+        self.n_patches_h = self.input_shape[0] // self.patch_size
+        self.n_patches_w = self.input_shape[1] // self.patch_size
+
+        # Initialize the model
+        self.model = AIDetectorModel(config, feature_channels=feature_channels)
+
+        # Feature extraction components will be initialized when needed
+        self.feature_extractor = None
+        
+        # Get the full path to feature cache directory
+        feature_cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
+        self.feature_cache_dir = feature_cache_dir
+
+        # Create feature cache directory if specified
+        if self.feature_cache_dir and not os.path.exists(self.feature_cache_dir):
+            os.makedirs(self.feature_cache_dir)
+            
+        # Cache for precomputed patch features during training
+        self.patch_features_cache = {}
+        
+    def set_genetic_rules(self, genetic_rules):
+        """
+        Set or update the genetic algorithm rules for dynamic mask generation.
+        
+        Args:
+            genetic_rules (list): List of evolved rules from genetic algorithm
+        """
+        self.genetic_rules = genetic_rules
+        logger.info(f"Updated genetic rules: {len(genetic_rules)} rules set")
+        
+        # Clear cache when rules change
+        self.patch_features_cache = {}
+        
+    def load_genetic_rules(self, rules_path):
+        """
+        Load genetic algorithm rules from a file.
+        
+        Args:
+            rules_path (str): Path to the saved genetic rules file
+        """
+        try:
+            with open(rules_path, 'rb') as f:
+                self.genetic_rules = pickle.load(f)
+            logger.info(f"Loaded {len(self.genetic_rules)} genetic rules from {rules_path}")
+        except Exception as e:
+            logger.error(f"Failed to load genetic rules: {e}")
+            raise
+            
+    def save_genetic_rules(self, rules_path):
+        """
+        Save the current genetic rules to a file.
+        
+        Args:
+            rules_path (str): Path to save the genetic rules
+        """
+        if self.genetic_rules:
+            try:
+                with open(rules_path, 'wb') as f:
+                    pickle.dump(self.genetic_rules, f)
+                logger.info(f"Saved {len(self.genetic_rules)} genetic rules to {rules_path}")
+            except Exception as e:
+                logger.error(f"Failed to save genetic rules: {e}")
+                raise
+        else:
+            logger.warning("No genetic rules to save")
+            
+    def _ensure_feature_extractor(self):
+        """Initialize the feature extractor if not already done"""
+        if self.feature_extractor is None:
+            from feature_extractor import FeatureExtractor
+            self.feature_extractor = FeatureExtractor()
+            logger.info("Feature extractor initialized")
+            
+    def _precompute_patch_features(self, images, force_recompute=False):
+        """
+        Precompute patch features for a batch of images.
+        
+        Args:
+            images (np.ndarray): Batch of images
+            force_recompute (bool): Whether to force recomputation even if cached
+            
+        Returns:
+            list: List of patch features for each image
+        """
+        self._ensure_feature_extractor()
+        
+        # Process images in a batch for efficiency
+        batch_features = []
+        
+        # For each image in the batch
+        for i, img in enumerate(images):
+            # Generate a unique key for this image (hash of the image data)
+            img_key = hash(img.tobytes())
+            
+            # Check if we have cached features
+            if not force_recompute and img_key in self.patch_features_cache:
+                batch_features.append(self.patch_features_cache[img_key])
+                continue
+                
+            # If using cache directory, check for file
+            if self.feature_cache_dir:
+                cache_path = os.path.join(self.feature_cache_dir, f"patch_features_{img_key}.npy")
+                if not force_recompute and os.path.exists(cache_path):
+                    try:
+                        patch_features = np.load(cache_path)
+                        self.patch_features_cache[img_key] = patch_features
+                        batch_features.append(patch_features)
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Failed to load cached features: {e}")
+            
+            # Extract patch features for this image
+            patch_features = self.feature_extractor.extract_patch_features(
+                img, patch_size=self.patch_size
+            )
+            
+            # Cache the features
+            self.patch_features_cache[img_key] = patch_features
+            
+            # Save to disk if using cache directory
+            if self.feature_cache_dir:
+                try:
+                    np.save(os.path.join(self.feature_cache_dir, f"patch_features_{img_key}.npy"), patch_features)
+                except Exception as e:
+                    logger.warning(f"Failed to save cached features: {e}")
+                    
+            batch_features.append(patch_features)
+            
+        return batch_features
+        
+    def convert_patch_mask_to_pixel_mask(self, patch_mask):
+        """
+        Convert a patch-level mask to a pixel-level mask.
+        
+        Args:
+            patch_mask (np.ndarray): Binary mask of shape (n_patches_h, n_patches_w)
+            
+        Returns:
+            np.ndarray: Binary mask of shape (height, width)
+        """
+        # Create pixel mask with the same dimensions as the input image
+        pixel_mask = np.zeros((self.input_shape[0], self.input_shape[1]), dtype=np.float32)
+        
+        # Expand each patch to corresponding pixels
+        for h in range(patch_mask.shape[0]):
+            for w in range(patch_mask.shape[1]):
+                if patch_mask[h, w] == 1:
+                    # Calculate the corresponding pixel coordinates
+                    y_start = h * self.patch_size
+                    y_end = min((h + 1) * self.patch_size, self.input_shape[0])
+                    x_start = w * self.patch_size
+                    x_end = min((w + 1) * self.patch_size, self.input_shape[1])
+                    
+                    # Set all pixels in this patch to 1
+                    pixel_mask[y_start:y_end, x_start:x_end] = 1.0
+                    
+        return pixel_mask
+        
+    def _extract_features_with_genetic_mask(self, images, batch=True):
+        """
+        Extract features from images using genetic algorithm dynamic masks.
+        
+        Args:
+            images (np.ndarray or tf.Tensor): Input images
+            batch (bool): Whether images is a batch or single image
+            
+        Returns:
+            np.ndarray: Masked feature maps
+        """
+        self._ensure_feature_extractor()
+            
+        # Convert TensorFlow tensor to NumPy if needed
+        if isinstance(images, tf.Tensor):
+            images_np = images.numpy()
+        else:
+            images_np = images
+            
+        # Handle both single image and batch inputs
+        if not batch:
+            images_np = np.expand_dims(images_np, axis=0)
+            
+        # Precompute patch features for all images in the batch
+        batch_patch_features = self._precompute_patch_features(images_np)
+        
+        # Create masked feature maps for each image
+        batch_masked_features = []
+        
+        for i, img in enumerate(images_np):
+            # Generate dynamic mask using genetic rules
+            patch_features = batch_patch_features[i]
+            patch_mask = utils.generate_dynamic_mask(patch_features, self.genetic_rules)
+            
+            # Convert patch mask to pixel mask
+            pixel_mask = self.convert_patch_mask_to_pixel_mask(patch_mask)
+            
+            # Extract full feature maps
+            _, feature_maps, _ = self.feature_extractor.extract_all_features(img)
+            
+            # Apply mask to feature maps
+            masked_features = np.zeros_like(feature_maps)
+            for c in range(feature_maps.shape[2]):
+                # Expand dimensions of pixel mask if needed (for broadcasting)
+                expanded_mask = np.expand_dims(pixel_mask, axis=2) if pixel_mask.ndim == 2 else pixel_mask
+                masked_features[:,:,c] = feature_maps[:,:,c] * expanded_mask
+                
+            batch_masked_features.append(masked_features)
+            
+        # Stack results for batch processing
+        result = np.stack(batch_masked_features, axis=0)
+        
+        # If input was a single image, remove batch dimension
+        if not batch:
+            result = result[0]
+            
+        return result
+        
+    def extract_batch_features(self, images):
+        """
+        Extract features from a batch of images using genetic dynamic masks.
+        Public method for external use.
+        
+        Args:
+            images (np.ndarray or tf.Tensor): Batch of input images
+            
+        Returns:
+            np.ndarray: Batch of masked feature maps
+        """
+        return self._extract_features_with_genetic_mask(images, batch=True)
+        
+    def extract_single_image_features(self, image):
+        """
+        Extract features from a single image using genetic dynamic masks.
+        Public method for external use.
+        
+        Args:
+            image (np.ndarray or tf.Tensor): Single input image
+            
+        Returns:
+            np.ndarray: Masked feature maps
+        """
+        return self._extract_features_with_genetic_mask(image, batch=False)
         
     def load_model(self, model_path):
         """
@@ -233,156 +486,112 @@ class ModelWrapper:
         # Update use_features from loaded model
         self.use_features = self.model.use_features
     
-    def get_model(self):
+    def save_model(self, model_path):
         """
-        Get the underlying Keras model.
+        Save the current model to disk.
         
-        Returns:
-            tf.keras.Model: The model instance
+        Args:
+            model_path (str): Path to save the model
         """
+        self.model.save(model_path)
+        
+    def get_model(self):
+        """Get the underlying Keras model"""
         return self.model.model
     
     def set_model(self, model):
-        """
-        Set the underlying model.
-        
-        Args:
-            model: Keras model to use
-        """
+        """Set the underlying Keras model"""
         self.model.model = model
         # If it's a Keras model, infer features usage from inputs
         self.use_features = len(model.inputs) > 1
     
-    def _extract_features(self, images):
+    def prepare_dataset(self, dataset):
         """
-        Extract features from images using the mask.
-        
-        Args:
-            images (tf.Tensor): Input images
-            
-        Returns:
-            tf.Tensor: Extracted features
-        """
-        if self.feature_extractor is None:
-            # Import on demand to avoid circular imports
-            from old_feature_extractor import AIFeatureExtractor
-            self.feature_extractor = AIFeatureExtractor()
-        
-        # Check if we have the mask
-        if self.mask is None:
-            raise ValueError("Feature extraction mask not set. Call set_mask() first.")
-        
-        # Handle TensorFlow tensors
-        if isinstance(images, tf.Tensor):
-            images_np = images.numpy()
-        else:
-            images_np = images
-            
-        # Extract features
-        _, feature_maps = self.feature_extractor.generate_feature_maps(images_np, self.mask)
-        
-        return tf.convert_to_tensor(feature_maps, dtype=tf.float32)
-    
-    def _map_dataset_with_features(self, images, labels):
-        """Map function to add features to a dataset batch"""
-        if self.use_features:
-            features = self._extract_features(images)
-            return {'image_input': images, 'feature_input': features}, labels
-        else:
-            return images, labels
-    
-    def _prepare_dataset_with_features(self, dataset):
-        """
-        Prepare a dataset with feature extraction.
+        Prepare a TensorFlow dataset for training by adding feature extraction.
         
         Args:
             dataset (tf.data.Dataset): Input dataset with (images, labels)
             
         Returns:
-            tf.data.Dataset: Dataset with (images, features, labels)
+            tf.data.Dataset: Dataset with features added
         """
-        if self.use_features:
-            # This approach doesn't work well with dataset pipeline
-            # We would need to modify each batch on-the-fly
-            # for better memory efficiency
-            return dataset.map(
-                lambda images, labels: self._map_dataset_with_features(images, labels),
-                num_parallel_calls=tf.data.AUTOTUNE
-            )
-        else:
+        if not self.use_features:
             return dataset
-    
-    def train_with_datasets(self, train_ds, val_split=0.2, epochs=50, model_path='ai_detector_model.h5'):
+            
+        # Function to add features to each batch
+        def add_features_to_batch(images, labels):
+            # Use a tf.py_function to handle numpy operations
+            def extract_features_batch(img_batch):
+                # Extract features using genetic dynamic masks
+                feature_maps = self._extract_features_with_genetic_mask(img_batch)
+                return tf.convert_to_tensor(feature_maps, dtype=tf.float32)
+            
+            features = tf.py_function(
+                func=extract_features_batch,
+                inp=[images],
+                Tout=tf.float32
+            )
+            
+            # Ensure features have the right shape
+            features.set_shape([None, self.input_shape[0], self.input_shape[1], self.feature_channels])
+            
+            return {'image_input': images, 'feature_input': features}, labels
+            
+        # Apply our mapping function to the dataset
+        return dataset.map(
+            add_features_to_batch,
+            num_parallel_calls=tf.data.AUTOTUNE
+        ).prefetch(tf.data.AUTOTUNE)
+        
+    def train(self, train_dataset, validation_dataset=None, epochs=50, model_path='ai_detector_model.h5'):
         """
-        Train the model using TensorFlow datasets.
+        Train the model with the prepared dataset.
         
         Args:
-            train_ds (tf.data.Dataset): Training dataset with (images, labels)
-            val_split (float): Proportion of data to use for validation 
-                               (ignored if using dataset pipeline)
+            train_dataset (tf.data.Dataset): Training dataset
+            validation_dataset (tf.data.Dataset): Optional validation dataset
             epochs (int): Number of training epochs
             model_path (str): Path to save the model
             
         Returns:
             dict: Training history
         """
-        # If using features, we need to process the dataset
+        # Prepare datasets with features if using feature extraction
         if self.use_features:
-            # We'll create a map function for each batch to add features on-the-fly
-            # This way we don't need to preprocess the entire dataset up front
-            
-            @tf.function
-            def add_features_to_batch(images, labels):
-                # Generate features using the mask
-                if self.feature_extractor is None:
-                    # Import on demand to avoid circular imports
-                    from old_feature_extractor import AIFeatureExtractor
-                    self.feature_extractor = AIFeatureExtractor()
-                
-                # Use a tf.py_function to handle numpy operations
-                def extract_features_batch(img_batch):
-                    # Convert to numpy, extract features, convert back to tensor
-                    img_np = img_batch.numpy()
-                    _, feature_maps = self.feature_extractor.generate_feature_maps(img_np, self.mask)
-                    return tf.convert_to_tensor(feature_maps, dtype=tf.float32)
-                
-                features = tf.py_function(
-                    func=extract_features_batch,
-                    inp=[images],
-                    Tout=tf.float32
-                )
-                
-                # Ensure features have the right shape
-                features.set_shape([None, self.input_shape[0], self.input_shape[1], self.feature_channels])
-                
-                return {'image_input': images, 'feature_input': features}, labels
-            
-            # Apply our mapping function to the dataset
-            processed_train_ds = train_ds.map(
-                add_features_to_batch,
-                num_parallel_calls=tf.data.AUTOTUNE
-            ).prefetch(tf.data.AUTOTUNE)
-            
-            # Create validation set (taking val_split from the training set)
-            # For simplicity in this update, we'll skip validation
-            # A proper implementation would create a validation set
-            validation_ds = None
-            
+            prepared_train_ds = self.prepare_dataset(train_dataset)
+            prepared_val_ds = self.prepare_dataset(validation_dataset) if validation_dataset else None
         else:
-            # For non-feature model, use the dataset directly
-            processed_train_ds = train_ds
-            validation_ds = None
-        
+            prepared_train_ds = train_dataset
+            prepared_val_ds = validation_dataset
+            
         # Train the model
         history = self.model.train(
-            processed_train_ds, 
-            validation_dataset=validation_ds,
+            prepared_train_ds,
+            validation_dataset=prepared_val_ds,
             epochs=epochs,
             output_model_path=model_path
         )
         
         return history
-    
+        
+    def evaluate(self, test_dataset):
+        """
+        Evaluate the model on test data.
+        
+        Args:
+            test_dataset (tf.data.Dataset): Test dataset
+            
+        Returns:
+            tuple: (test_loss, test_accuracy)
+        """
+        # Prepare test dataset with features if needed
+        if self.use_features:
+            prepared_test_ds = self.prepare_dataset(test_dataset)
+        else:
+            prepared_test_ds = test_dataset
+            
+        return self.model.evaluate(prepared_test_ds)
+        
     def predict_image(self, image):
         """
         Make a prediction on a single image.
@@ -393,9 +602,9 @@ class ModelWrapper:
         Returns:
             dict: Prediction results
         """
-        # If using features, we need to extract them first
+        # If using features, we need to extract them using genetic masks
         if self.use_features:
-            features = self._extract_features(image)
+            features = self.extract_single_image_features(image)
             inputs = {'image_input': image, 'feature_input': features}
         else:
             inputs = image

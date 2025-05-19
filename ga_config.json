@@ -1,0 +1,11 @@
+{
+    "population_size": 50,
+    "n_generations": 20,
+    "sample_size_for_ga": 1000,
+    "crossover_prob": 0.8,
+    "mutation_prob": 0.2,
+    "tournament_size": 3,
+    "use_multiprocessing": true,
+    "rules_per_individual": 5,
+    "max_possible_rules": 100
+}

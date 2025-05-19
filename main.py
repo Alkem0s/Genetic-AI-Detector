@@ -1,42 +1,45 @@
 import os
-
-from feature_extractor import FeatureExtractor
-os.environ['TF_CUDNN_USE_AUTOTUNE'] = '1'
 import json
+import pickle
+import logging
 import numpy as np
-from types import SimpleNamespace
 import tensorflow as tf
+from types import SimpleNamespace
 
 # Import our custom modules 
 from data_loader import DataLoader
 from genetic_algorithm import GeneticFeatureOptimizer
 from model_architecture import ModelWrapper
 from visualization import Visualizer
+from feature_extractor import FeatureExtractor
+
+# Configure logging
+logger = logging.getLogger('ai_detector')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(handler)
 
 
-def load_config(config_path):
+def load_detector_config(config_path):
     """Load configuration from JSON file and merge with defaults"""
     # Default configuration
     defaults = {
         "output_dir": "output",
         "image_size": None,
         "batch_size": 32,
-        "max_images": 1000,
+        "max_images": 10000,
         "epochs": 50,
         "test_size": 0.2,
         "random_seed": 42,
         "model_path": "ai_detector_model.h5",
-        "mask_path": "optimized_patch_mask.npy",
+        "rules_path": "genetic_rules.pkl",
         "visualize": False,
         "predict": None,
         "skip_training": False,
-        "population_size": 50,
-        "n_generations": 20,
-        "patch_size": 16,
-        "use_genetic_algorithm": True,
         "use_feature_extraction": True,
-        "sample_size_for_ga": 1000,  # Use only this many samples for GA
-        "mixed_precision": True      # Enable mixed precision for better performance
+        "mixed_precision": True,
+        "feature_cache_dir": "feature_cache"
     }
     required = ["data"]
     
@@ -56,137 +59,160 @@ def load_config(config_path):
     # Convert to SimpleNamespace
     return SimpleNamespace(**config)
 
+def load_ga_config(config_path):
+    """Load genetic algorithm configuration from JSON file and merge with defaults"""
+    # Default GA configuration
+    defaults = {
+        "population_size": 50,
+        "n_generations": 20,
+        "sample_size_for_ga": 1000,
+        "crossover_prob": 0.8,
+        "mutation_prob": 0.2,
+        "tournament_size": 3,
+        "use_multiprocessing": True,
+        "rules_per_individual": 5,
+        "max_possible_rules": 100
+    }
+    # Load user configuration
+    with open(config_path, 'r') as f:
+        user_config = json.load(f)
+
+    # Merge defaults with user configuration
+    config = defaults.copy()
+    config.update(user_config)
+
+    # Convert to SimpleNamespace
+    return SimpleNamespace(**config)
 
 def setup_environment(config):
     """Setup environment variables and configurations"""
+    # Set environment variables
+    os.environ['TF_CUDNN_USE_AUTOTUNE'] = '1'
+    
     # Create output directory if it doesn't exist
     os.makedirs(config.output_dir, exist_ok=True)
-    
+
+    # Create feature cache directory
+    os.makedirs(os.path.join(config.output_dir, config.feature_cache_dir), exist_ok=True)
+
     # Set random seeds for reproducibility
     np.random.seed(config.random_seed)
     tf.random.set_seed(config.random_seed)
-    
+
     # Setup GPU memory growth to avoid OOM errors
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
         try:
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
-            print(f"GPU(s) available: {len(gpus)}")
+            logger.info(f"GPU(s) available: {len(gpus)}")
         except RuntimeError as e:
-            print(f"Error setting up GPU: {e}")
+            logger.error(f"Error setting up GPU: {e}")
     else:
-        print("No GPUs found, using CPU")
+        logger.info("No GPUs found, using CPU")
     
     # Enable mixed precision if specified
     if config.mixed_precision:
         policy = tf.keras.mixed_precision.Policy('mixed_float16')
         tf.keras.mixed_precision.set_global_policy(policy)
-        print("Mixed precision enabled (float16)")
+        logger.info("Mixed precision enabled (float16)")
     
-    return os.path.join(config.output_dir, config.model_path), os.path.join(config.output_dir, config.mask_path)
+    # Prepare paths
+    model_path = os.path.join(config.output_dir, config.model_path)
+    rules_path = os.path.join(config.output_dir, config.rules_path)
+
+    return model_path, rules_path
 
 
-def generate_default_mask(config):
-    """Generate a default mask when genetic algorithm is disabled"""
-    # Create a simple uniform mask without optimization
-    print("Generating default feature extraction mask (no genetic optimization)")
-    mask_size = config.image_size // config.patch_size
-    return np.ones((mask_size, mask_size), dtype=np.float32)
-
-
-def train_model_workflow(config, model_path, mask_path):
-    """Execute the full training workflow"""
-    print("\n=== Step 1: Loading and preparing datasets ===")
+def train_ai_detector(detector_config, ga_config, model_path, rules_path):
+    """Train an AI-generated content detector using genetic optimization and CNN"""
+    logger.info("=== Step 1: Loading and preparing datasets ===")
+    
     # Initialize the data loader
-    data_loader = DataLoader(config)
-    
+    data_loader = DataLoader(detector_config)
+
     # Create the datasets
-    train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets(config)
-    
-    print(f"Created TensorFlow dataset pipeline for training and testing")
-    
-    if config.use_genetic_algorithm and config.use_feature_extraction:
-        print("\n=== Step 2: Running genetic algorithm for feature optimization ===")
-        # Initialize and run genetic feature optimizer on a sample of the data
-        optimizer = GeneticFeatureOptimizer(
-            images=sample_images,  # Use sample images for GA
-            labels=sample_labels,  # Use sample labels for GA
-            config=config,
-            population_size=config.population_size,
-            n_generations=config.n_generations
+    train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets(detector_config)
+    logger.info(f"Created TensorFlow dataset pipeline for training and testing")
+
+    if detector_config.visualize:
+        logger.info("=== Step 2: Running genetic algorithm for feature optimization ===")
+        
+        # Initialize the genetic feature optimizer
+        genetic_optimizer = GeneticFeatureOptimizer(
+            images=sample_images,
+            labels=sample_labels,
+            detector_config=detector_config,
+            ga_config=ga_config,
         )
         
-        best_mask, stats = optimizer.run()
+        # Run the genetic algorithm optimization
+        best_rules, ga_stats = genetic_optimizer.run()
         
-        # Visualize genetic algorithm results if requested
-        if config.visualize:
-            Visualizer.plot_genetic_optimization_stats(stats, 
-                                                    save_path=os.path.join(config.output_dir, 'genetic_optimization.png'))
-            Visualizer.visualize_optimized_patch_mask(best_mask, 
-                                                    save_path=os.path.join(config.output_dir, 'optimized_patches.png'))
+        # Save the optimized genetic rules
+        with open(rules_path, 'wb') as f:
+            pickle.dump(best_rules, f)
+        logger.info(f"Saved {len(best_rules)} genetic rules to {rules_path}")
+        
+        # Visualize genetic algorithm results
+        visualizer = Visualizer(output_dir=detector_config.output_dir)
+        visualizer.plot_genetic_algorithm_progress(ga_stats['history'])
+        
+        # Visualize optimized patches
+        sample_image = sample_images[0]
+        patch_mask = genetic_optimizer.rules_to_mask(best_rules)
+        visualizer.plot_patch_mask(
+            image=sample_image,
+            patch_mask=patch_mask,
+            patch_size=detector_config.patch_size
+        )
     else:
-        # Default mask (needed even when not using feature extraction for consistency)
-        print("\n=== Step 2: Skipping genetic algorithm, using default mask ===")
-        best_mask = generate_default_mask(config)
-        stats = None
+        logger.info("=== Step 2: Skipping genetic algorithm ===")
+        best_rules = None
+        ga_stats = None
     
-    # Save the mask (optimized or default)
-    np.save(mask_path, best_mask)
-    print(f"Mask saved to {mask_path}")
+    logger.info("=== Step 3: Building and training the model ===")
     
-    print("\n=== Step 3: Building and training the model ===")
-    # Feature extraction is now done inside the model during training
-    
-    # Initialize model wrapper with appropriate configuration
+    # Initialize model wrapper with optimized genetic rules
     model_wrapper = ModelWrapper(
-        input_shape=(config.image_size, config.image_size, 3),
-        feature_channels=3,  # Default feature channels
-        use_features=config.use_feature_extraction,
-        mask=best_mask      # Pass the mask to the model
+        config=detector_config,
+        genetic_rules=best_rules,
     )
     
-    # Custom training loop for the model
-    history = model_wrapper.train_with_datasets(
+    # Train the model with the optimized features
+    history = model_wrapper.train(
         train_ds=train_ds,
-        val_split=0.2,
-        epochs=config.epochs,
+        epochs=detector_config.epochs,
         model_path=model_path
     )
     
-    print("\n=== Step 4: Evaluating the model ===")
-    # Get the trained model
+    logger.info("=== Step 4: Evaluating the model ===")
     model = model_wrapper.get_model()
     
     # Evaluate on the test dataset
-    metrics = evaluate_model_with_dataset(model, test_ds, config)
+    metrics, y_true, y_pred = evaluate_model(model, test_ds)  # Modified return
     
     # Print evaluation results
-    print(f"\nTest accuracy: {metrics['accuracy']:.4f}")
-    print(f"Test loss: {metrics['loss']:.4f}")
+    logger.info(f"Test accuracy: {metrics['accuracy']:.4f}")
+    logger.info(f"Test loss: {metrics['loss']:.4f}")
     
-    # Visualize results
-    if config.visualize:
-        # Plot training history
-        Visualizer.plot_training_history(history, 
-                                        save_path=os.path.join(config.output_dir, 'training_history.png'))
+    # Visualize training results if requested
+    if detector_config.visualize:
+        visualizer = Visualizer(output_dir=detector_config.output_dir)
+        visualizer.plot_training_history(history)
         
-        # Plot confusion matrix if available
-        if 'confusion_matrix' in metrics:
-            Visualizer.plot_confusion_matrix(metrics['confusion_matrix'], 
-                                           save_path=os.path.join(config.output_dir, 'confusion_matrix.png'))
+        if y_true is not None and y_pred is not None:
+            visualizer.plot_confusion_matrix(y_true, y_pred)
     
-    # Save model artifacts
-    save_model_artifacts(model, best_mask, history, metrics, 
-                         model_path=model_path, 
-                         mask_path=mask_path,
-                         output_dir=config.output_dir)
-    
-    return model, best_mask
+    # Save metrics summary
+    save_metrics(metrics, history, detector_config.output_dir)
+
+    logger.info(f"Model training complete. Model saved to {model_path}")
+    return model_wrapper, best_rules, {"ga_stats": ga_stats, "training_history": history}
 
 
-def evaluate_model_with_dataset(model, test_ds, config):
-    """Evaluate the model using a TensorFlow dataset"""
+def evaluate_model(model, test_ds):
+    """Evaluate model on test dataset and compute metrics"""
     # Evaluate the model
     results = model.evaluate(test_ds, verbose=1)
     
@@ -202,14 +228,7 @@ def evaluate_model_with_dataset(model, test_ds, config):
             'accuracy': None
         }
     
-    # Basic metrics report
-    metrics_report = {
-        'accuracy': metrics['accuracy'],
-        'loss': metrics['loss']
-    }
-    
-    # Compute confusion matrix and classification report (optional)
-    # This would require collecting all predictions and true labels
+    # Compute detailed metrics
     try:
         y_true = []
         y_pred = []
@@ -225,104 +244,28 @@ def evaluate_model_with_dataset(model, test_ds, config):
         # Calculate metrics
         from sklearn.metrics import classification_report, confusion_matrix
         
-        metrics_report['classification_report'] = classification_report(
+        metrics['classification_report'] = classification_report(
             y_true, y_pred, target_names=['Human', 'AI'], output_dict=True
         )
         
-        metrics_report['confusion_matrix'] = confusion_matrix(y_true, y_pred)
+        metrics['confusion_matrix'] = confusion_matrix(y_true, y_pred)
         
-        print("\nClassification Report:")
-        print(classification_report(y_true, y_pred, target_names=['Human', 'AI']))
+        logger.info("\nClassification Report:")
+        logger.info(classification_report(y_true, y_pred, target_names=['Human', 'AI']))
         
-        print("\nConfusion Matrix:")
-        print(metrics_report['confusion_matrix'])
+        logger.info("\nConfusion Matrix:")
+        logger.info(metrics['confusion_matrix'])
         
     except Exception as e:
-        print(f"Warning: Could not compute detailed metrics: {e}")
+        logger.warning(f"Could not compute detailed metrics: {e}")
+        y_true = None
+        y_pred = None
     
-    return metrics_report
+    return metrics, y_true, y_pred
 
 
-def load_existing_model(model_path, mask_path, config):
-    """Load an existing model and mask"""
-    print(f"\nLoading existing model from {model_path}")
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file {model_path} not found!")
-    
-    model_wrapper = ModelWrapper(
-        input_shape=(config.image_size, config.image_size, 3),
-        use_features=config.use_feature_extraction
-    )
-    model_wrapper.load_model(model_path)
-    
-    print(f"Loading mask from {mask_path}")
-    if not os.path.exists(mask_path):
-        raise FileNotFoundError(f"Mask file {mask_path} not found!")
-    
-    best_mask = np.load(mask_path)
-    model_wrapper.set_mask(best_mask)
-    
-    return model_wrapper.get_model(), best_mask
-
-
-def predict_image(image_path, model, best_mask, config):
-    """Make a prediction on a single image"""
-    print(f"\n=== Making prediction for image: {image_path} ===")
-    
-    # Load the image as a TensorFlow tensor
-    img = tf.io.read_file(image_path)
-    img = tf.image.decode_image(img, channels=3, expand_animations=False)
-    img = tf.image.resize(img, [config.image_size, config.image_size])
-    img = tf.cast(img, tf.float32) / 255.0
-    img = tf.expand_dims(img, axis=0)  # Add batch dimension
-    
-    # Create model wrapper to use for prediction
-    model_wrapper = ModelWrapper(
-        input_shape=(config.image_size, config.image_size, 3),
-        use_features=config.use_feature_extraction,
-        mask=best_mask
-    )
-    model_wrapper.set_model(model)
-    
-    # Make prediction
-    result = model_wrapper.predict_image(img)
-    
-    print(f"Prediction: {result['label']} with {result['confidence']:.2%} confidence")
-    
-    # Visualize the prediction and features
-    if config.visualize and config.use_feature_extraction:
-        Visualizer.visualize_ai_features(
-            image_path,
-            feature_extractor=FeatureExtractor(config),
-            mask=best_mask,
-            save_path=os.path.join(config.output_dir, 'ai_feature_visualization.png')
-        )
-    
-    return result
-
-
-def save_model_artifacts(model, best_mask, history, metrics, 
-                         model_path='ai_detector_model.h5',
-                         mask_path='optimized_patch_mask.npy',
-                         output_dir='output'):
-    """
-    Save model and related artifacts.
-    
-    Args:
-        model: Trained model
-        best_mask: Optimized patch mask
-        history: Training history
-        metrics: Evaluation metrics
-        model_path: Path to save model
-        mask_path: Path to save mask
-        output_dir: Directory to save artifacts
-    """
-    # Save model
-    model.save(model_path)
-    
-    # Save patch mask
-    np.save(mask_path, best_mask)
-    
+def save_metrics(metrics, history, output_dir):
+    """Save metrics and training history to files"""
     # Save training history
     if history and hasattr(history, 'history'):
         history_path = os.path.join(output_dir, 'training_history.json')
@@ -348,44 +291,98 @@ def save_model_artifacts(model, best_mask, history, metrics,
         
         json.dump(metrics_json, f)
     
-    print(f"Model saved to {model_path}")
-    print(f"Optimized patch mask saved to {mask_path}")
-    print(f"Training history and metrics saved to {output_dir}")
+    logger.info(f"Training history and metrics saved to {output_dir}")
+
+
+def load_model_and_rules(model_path, rules_path, config):
+    """Load a trained model and genetic rules"""
+    logger.info(f"Loading existing model from {model_path}")
     
-    return {
-        'model_path': model_path,
-        'mask_path': mask_path,
-        'history_path': os.path.join(output_dir, 'training_history.json'),
-        'metrics_path': metrics_path 
-    }
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file {model_path} not found!")
+    
+    # Load genetic rules
+    best_rules = None
+    if os.path.exists(rules_path):
+        with open(rules_path, 'rb') as f:
+            best_rules = pickle.load(f)
+        logger.info(f"Loaded genetic rules from {rules_path}")
+    else:
+        logger.warning(f"Rules file {rules_path} not found. Model will use default features.")
+    
+    # Get the full path to feature cache directory
+    feature_cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
+    
+    # Initialize model wrapper with genetic rules
+    model_wrapper = ModelWrapper(
+        config=config,
+        genetic_rules=best_rules,
+        patch_size=config.patch_size,
+        feature_cache_dir=feature_cache_dir,
+        input_shape=(config.image_size, config.image_size, 3),
+        use_features=config.use_feature_extraction
+    )
+    
+    # Load the model
+    model_wrapper.load_model(model_path)
+    
+    return model_wrapper, best_rules
+
+
+def predict_image(image_path, model_wrapper, config):
+    """Make a prediction on a single image"""
+    logger.info(f"Making prediction for image: {image_path}")
+    
+    # Load and preprocess the image using DataLoader's method
+    data_loader = DataLoader(config)
+    img, _ = data_loader.process_path(image_path, 0)  # Dummy label, not used
+    img = tf.expand_dims(img, axis=0)  # Add batch dimension
+    
+    # Make prediction
+    result = model_wrapper.predict_image(img)
+    
+    logger.info(f"Prediction: {result['label']} with {result['confidence']:.2%} confidence")
+    
+    # Visualize features if requested
+    if config.visualize and config.use_feature_extraction:
+        feature_cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
+        
+        Visualizer.visualize_ai_features(
+            image_path,
+            model_wrapper=model_wrapper,  # Pass model wrapper for feature extraction
+            save_path=os.path.join(config.output_dir, 'ai_feature_visualization.png')
+        )
+    
+    return result
 
 
 def main():
     """Main function to coordinate the workflow"""
-    
     # Load configuration from JSON file
-    config = load_config('config.json')
-    
+    detector_config = load_detector_config('detector_config.json')
+    ga_config = load_ga_config('ga_config.json')
+
+    # Setup environment and get paths
+    model_path, rules_path = setup_environment(detector_config)
+
     # Print configuration mode
-    if config.use_genetic_algorithm and config.use_feature_extraction:
-        print("\n=== Running in FULL MODE (with genetic algorithm and feature extraction) ===")
-    elif config.use_feature_extraction:
-        print("\n=== Running in FEATURE EXTRACTION MODE (without genetic algorithm) ===")
-    elif not config.use_feature_extraction:
-        print("\n=== Running in BASELINE MODE (without genetic algorithm or feature extraction) ===")
-    
-    # Setup environment
-    model_path, mask_path = setup_environment(config)
+    if detector_config.use_feature_extraction:
+        logger.info("=== Running in FULL MODE (with genetic algorithm and feature extraction) ===")
+    else:
+        logger.info("=== Running in BASELINE MODE (without feature extraction) ===")
     
     # Load or train model
-    if config.skip_training and os.path.exists(model_path) and os.path.exists(mask_path):
-        model, best_mask = load_existing_model(model_path, mask_path, config)
+    if detector_config.skip_training and os.path.exists(model_path):
+        model_wrapper, best_rules = load_model_and_rules(model_path, rules_path, detector_config)
     else:
-        model, best_mask = train_model_workflow(config, model_path, mask_path)
-    
+        model_wrapper, best_rules, stats = train_ai_detector(detector_config, ga_config, model_path, rules_path)
+
     # Make prediction if requested
-    if config.predict:
-        predict_image(config.predict, model, best_mask, config)
+    if detector_config.predict:
+        predict_image(detector_config.predict_path, model_wrapper, detector_config)
+
+    logger.info("AI detector pipeline completed successfully")
+    return model_wrapper, best_rules
 
 
 if __name__ == "__main__":

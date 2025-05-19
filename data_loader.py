@@ -57,7 +57,8 @@ class DataLoader:
 
         print(f"Loaded CSV with {len(df)} valid image entries")
         return df
-    
+
+
     def _process_path(self, file_path, label, use_center_crop=True):
         """
         Process a single image file path.
@@ -123,6 +124,12 @@ class DataLoader:
         img = tf.cast(img, tf.float32) / 255.0
 
         return img, label
+
+    def process_path(self, file_path, label, use_center_crop=True):
+        """
+        Public wrapper for _process_path.
+        """
+        return self._process_path(file_path, label, use_center_crop)
 
 
     def _configure_for_performance(self, dataset, is_training=False):
@@ -239,39 +246,15 @@ class DataLoader:
             # Load a small batch for feature extraction/genetic algorithm
             for path, label in zip(sample_df['file_name'], sample_df['label']):
                 try:
-                    # Load image
-                    img = tf.keras.preprocessing.image.load_img(path)
-                    img_array = tf.keras.preprocessing.image.img_to_array(img)
-
-                    # Get original dimensions
-                    h, w = img_array.shape[:2]
-                    
-                    # Calculate scaling factor
-                    scale = min(self.image_size / h, self.image_size / w)
-                    new_h, new_w = int(h * scale), int(w * scale)
-
-                    # Resize image using TensorFlow (preserves aspect ratio)
-                    img_resized = tf.image.resize(img_array, [new_h, new_w], preserve_aspect_ratio=True)
-                    img_resized = img_resized.numpy()
-
-                    # Create black canvas
-                    canvas = np.zeros((self.image_size, self.image_size, 3), dtype=np.float32)
-
-                    # Compute offsets for centering
-                    offset_h = (self.image_size - img_resized.shape[0]) // 2
-                    offset_w = (self.image_size - img_resized.shape[1]) // 2
-
-                    # Place resized image onto canvas
-                    canvas[offset_h:offset_h + img_resized.shape[0], offset_w:offset_w + img_resized.shape[1], :] = img_resized
-
-                    # Normalize
-                    canvas = canvas / 255.0
-
-                    sample_images.append(canvas)
-                    sample_labels.append(label)
+                    # Use the internal _process_path method for consistent preprocessing
+                    img_tensor, lbl = self._process_path(path, label, use_center_crop=False)
+                    # Convert TensorFlow tensor to numpy array
+                    img_array = img_tensor.numpy()
+                    sample_images.append(img_array)
+                    sample_labels.append(lbl)
                 except Exception as e:
                     print(f"Error loading sample image {path}: {e}")
-                
+
             sample_images = np.array(sample_images)
             sample_labels = np.array(sample_labels)
             

@@ -5,6 +5,7 @@ from skimage.transform import radon
 from skimage.feature import graycoprops, graycomatrix
 
 class StructuralFeatureExtractor:
+    EPSILON = 1e-8
     def _extract_gradient_feature(self, image: np.ndarray) -> np.ndarray:
         """
         Extract gradient perfection feature which identifies unnaturally perfect gradients.
@@ -51,7 +52,7 @@ class StructuralFeatureExtractor:
                 dir_patch = direction[i:i+patch_size, j:j+patch_size]
 
                 if patch.std() > 0:
-                    coef_var = patch.std() / patch.mean() if patch.mean() > 0 else float('inf')
+                    coef_var = patch.std() / (patch.mean() + self.EPSILON)
                     coef_var_clipped = min(coef_var, 1.0)
                     perfection_score = 1 - coef_var_clipped
 
@@ -80,7 +81,7 @@ class StructuralFeatureExtractor:
             perfection_map *= (0.5 + high_perfection_ratio * 0.5)
 
         # Upsample to original image size using nearest-neighbor interpolation
-        feature_map = cv2.resize(perfection_map, (w, h), interpolation=cv2.INTER_NEAREST)
+        feature_map = cv2.resize(perfection_map, (w, h), interpolation=cv2.INTER_LINEAR)
 
         # Clip to ensure values are between 0 and 1
         feature_map = np.clip(feature_map, 0, 1)
@@ -208,7 +209,7 @@ class StructuralFeatureExtractor:
         theta = np.linspace(0, 180, 36)
         global_radon = radon(combined_edges, theta=theta, circle=True)
         global_profile = np.sum(global_radon, axis=0)
-        global_profile /= np.sum(global_profile) + 1e-10
+        global_profile /= (np.sum(global_profile) + self.EPSILON)
 
         # Global texture analysis
         glcm = graycomatrix(gray, [1], [0, np.pi/4, np.pi/2, 3*np.pi/4], levels=256, symmetric=True, normed=True)
@@ -232,7 +233,7 @@ class StructuralFeatureExtractor:
                     # Local orientation analysis
                     patch_radon = radon(edge_patch, theta=theta, circle=True)
                     patch_profile = np.sum(patch_radon, axis=0)
-                    patch_profile /= np.sum(patch_profile) + 1e-10
+                    patch_profile /= (np.sum(patch_profile) + self.EPSILON)
 
                     # Orientation entropy
                     entropy = -np.sum(patch_profile * np.log2(patch_profile + 1e-10))
@@ -249,7 +250,7 @@ class StructuralFeatureExtractor:
                     # Contrast adjustment
                     patch_glcm = graycomatrix(gray_patch, [1], [0, np.pi/4, np.pi/2, 3*np.pi/4], levels=256, symmetric=True, normed=True)
                     patch_contrast = np.mean(graycoprops(patch_glcm, 'contrast'))
-                    contrast_ratio = patch_contrast / (global_contrast + 1e-10)
+                    contrast_ratio = patch_contrast / (global_contrast + self.EPSILON)
 
                     if 0.7 < contrast_ratio < 1.3:
                         score *= 0.7
@@ -257,7 +258,7 @@ class StructuralFeatureExtractor:
                     edge_scores[i, j] = score
 
         # Create full-resolution feature map
-        feature_map = cv2.resize(edge_scores, (w, h), interpolation=cv2.INTER_NEAREST)
+        feature_map = cv2.resize(edge_scores, (w, h), interpolation=cv2.INTER_LINEAR)
         feature_map = np.clip(feature_map, 0, 1)
 
         return feature_map.astype(np.float32)
