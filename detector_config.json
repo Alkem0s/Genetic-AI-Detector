@@ -17,5 +17,5 @@
     "predict": false,
     "predict_path": "",
     "skip_training": false,
-    "use_feature_extraction": true
+    "use_feature_extraction": false
 }

@@ -16,9 +16,18 @@ from feature_extractor import FeatureExtractor
 # Configure logging
 logger = logging.getLogger('ai_detector')
 logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(handler)
+
+# Check if handlers already exist to prevent duplicate output
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    
+    # *** IMPORTANT FIX: Prevent propagation to the root logger ***
+    logger.propagate = False 
+    
+    logger.info("Logging configured.")
 
 
 def load_detector_config(config_path):
@@ -181,10 +190,14 @@ def train_ai_detector(detector_config, ga_config, model_path, rules_path):
     
     # Train the model with the optimized features
     history = model_wrapper.train(
-        train_ds=train_ds,
-        epochs=detector_config.epochs,
+        train_dataset=train_ds,
+        validation_dataset=test_ds,
         model_path=model_path
     )
+    
+    # Explicitly save the final model
+    logger.info(f"Saving final trained model to {model_path}")
+    model_wrapper.save_model(model_path)
     
     logger.info("=== Step 4: Evaluating the model ===")
     model = model_wrapper.get_model()
@@ -317,10 +330,6 @@ def load_model_and_rules(model_path, rules_path, config):
     model_wrapper = ModelWrapper(
         config=config,
         genetic_rules=best_rules,
-        patch_size=config.patch_size,
-        feature_cache_dir=feature_cache_dir,
-        input_shape=(config.image_size, config.image_size, 3),
-        use_features=config.use_feature_extraction
     )
     
     # Load the model

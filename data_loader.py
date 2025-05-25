@@ -242,7 +242,7 @@ class DataLoader:
         sample_images = []
         sample_labels = []
         
-        if config.use_genetic_algorithm:
+        if config.use_feature_extraction:
             # Load a small batch for feature extraction/genetic algorithm
             for path, label in zip(sample_df['file_name'], sample_df['label']):
                 try:

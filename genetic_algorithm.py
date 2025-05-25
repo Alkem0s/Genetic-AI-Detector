@@ -7,11 +7,10 @@ import logging
 
 from feature_extractor import FeatureExtractor
 import global_config
-from utils import utils
+import utils
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('GeneticFeatureOptimizer')
+import logging
+logger = logging.getLogger(__name__)
 
 class GeneticFeatureOptimizer:
     """

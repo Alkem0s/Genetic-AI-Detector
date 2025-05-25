@@ -7,10 +7,10 @@ import pickle
 import os
 
 import global_config
-from utils import utils
+import utils
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('ModelArchitecture')
+import logging
+logger = logging.getLogger(__name__)
 
 class AIDetectorModel:
     """
@@ -131,17 +131,16 @@ class AIDetectorModel:
             layers.RandomTranslation(height_factor=0.05, width_factor=0.05),
             layers.RandomBrightness(0.05),
         ])
-    
-    def train(self, train_dataset, validation_dataset=None, epochs=50, output_model_path='human_ai_detector_model.h5'):
+
+    def train(self, train_dataset, validation_dataset=None, output_model_path='human_ai_detector_model.h5'):
         """
         Train the model with callbacks for early stopping and learning rate reduction.
         
         Args:
             train_dataset (tf.data.Dataset): Training dataset
             validation_dataset (tf.data.Dataset): Validation dataset
-            epochs (int): Maximum number of epochs to train
             output_model_path (str): Path to save the best model
-            
+
         Returns:
             dict: Training history
         """
@@ -155,8 +154,8 @@ class AIDetectorModel:
         # Train the model
         history = self.model.fit(
             train_dataset,
-            epochs=epochs,
             validation_data=validation_dataset,
+            epochs=self.config.epochs,
             callbacks=callbacks_list
         )
         
@@ -306,124 +305,149 @@ class ModelWrapper:
             self.feature_extractor = FeatureExtractor()
             logger.info("Feature extractor initialized")
             
-    def _precompute_patch_features(self, images, force_recompute=False):
+    @tf.function
+    def _tf_hash_image(self, image):
         """
-        Precompute patch features for a batch of images.
+        Create a hash key for an image using TensorFlow operations.
         
         Args:
-            images (np.ndarray): Batch of images
+            image (tf.Tensor): Input image
+            
+        Returns:
+            tf.Tensor: Hash value as tensor
+        """
+        # Convert image to bytes and compute hash
+        image_bytes = tf.py_function(
+            func=lambda x: hash(x.numpy().tobytes()),
+            inp=[image],
+            Tout=tf.int64
+        )
+        return image_bytes
+            
+    def _precompute_patch_features(self, images, force_recompute=False):
+        """
+        Precompute patch features for a batch of images using TensorFlow operations.
+        
+        Args:
+            images (tf.Tensor): Batch of images
             force_recompute (bool): Whether to force recomputation even if cached
             
         Returns:
-            list: List of patch features for each image
+            tf.Tensor: Tensor of patch features for each image
         """
         self._ensure_feature_extractor()
         
-        # Process images in a batch for efficiency
-        batch_features = []
+        # Convert to tensor if needed
+        if not isinstance(images, tf.Tensor):
+            images = tf.convert_to_tensor(images, dtype=tf.float32)
         
-        # For each image in the batch
-        for i, img in enumerate(images):
-            # Generate a unique key for this image (hash of the image data)
-            img_key = hash(img.tobytes())
+        # Process images in a batch for efficiency using tf.map_fn
+        def extract_single_patch_features(img):
+            # Generate a unique key for this image (using tensor operations)
+            img_key = self._tf_hash_image(img)
             
-            # Check if we have cached features
-            if not force_recompute and img_key in self.patch_features_cache:
-                batch_features.append(self.patch_features_cache[img_key])
-                continue
-                
-            # If using cache directory, check for file
-            if self.feature_cache_dir:
-                cache_path = os.path.join(self.feature_cache_dir, f"patch_features_{img_key}.npy")
-                if not force_recompute and os.path.exists(cache_path):
-                    try:
-                        patch_features = np.load(cache_path)
-                        self.patch_features_cache[img_key] = patch_features
-                        batch_features.append(patch_features)
-                        continue
-                    except Exception as e:
-                        logger.warning(f"Failed to load cached features: {e}")
-            
-            # Extract patch features for this image
+            # For simplicity in TensorFlow context, we'll always compute features
+            # Caching can be handled at a higher level if needed
             patch_features = self.feature_extractor.extract_patch_features(
                 img, patch_size=self.patch_size
             )
-            
-            # Cache the features
-            self.patch_features_cache[img_key] = patch_features
-            
-            # Save to disk if using cache directory
-            if self.feature_cache_dir:
-                try:
-                    np.save(os.path.join(self.feature_cache_dir, f"patch_features_{img_key}.npy"), patch_features)
-                except Exception as e:
-                    logger.warning(f"Failed to save cached features: {e}")
-                    
-            batch_features.append(patch_features)
-            
+            return patch_features
+        
+        # Use tf.map_fn to process all images in the batch
+        batch_features = tf.map_fn(
+            extract_single_patch_features,
+            images,
+            fn_output_signature=tf.TensorSpec(
+                shape=[self.n_patches_h, self.n_patches_w, len(global_config.feature_weights)],
+                dtype=tf.float32
+            ),
+            parallel_iterations=10
+        )
+        
         return batch_features
         
+    @tf.function
     def convert_patch_mask_to_pixel_mask(self, patch_mask):
         """
-        Convert a patch-level mask to a pixel-level mask.
+        Convert a patch-level mask to a pixel-level mask using TensorFlow operations.
         
         Args:
-            patch_mask (np.ndarray): Binary mask of shape (n_patches_h, n_patches_w)
+            patch_mask (tf.Tensor): Binary mask of shape (n_patches_h, n_patches_w)
             
         Returns:
-            np.ndarray: Binary mask of shape (height, width)
+            tf.Tensor: Binary mask of shape (height, width)
         """
         # Create pixel mask with the same dimensions as the input image
-        pixel_mask = np.zeros((self.input_shape[0], self.input_shape[1]), dtype=np.float32)
+        pixel_mask = tf.zeros((self.input_shape[0], self.input_shape[1]), dtype=tf.float32)
         
-        # Expand each patch to corresponding pixels
-        for h in range(patch_mask.shape[0]):
-            for w in range(patch_mask.shape[1]):
-                if patch_mask[h, w] == 1:
-                    # Calculate the corresponding pixel coordinates
-                    y_start = h * self.patch_size
-                    y_end = min((h + 1) * self.patch_size, self.input_shape[0])
-                    x_start = w * self.patch_size
-                    x_end = min((w + 1) * self.patch_size, self.input_shape[1])
-                    
-                    # Set all pixels in this patch to 1
-                    pixel_mask[y_start:y_end, x_start:x_end] = 1.0
-                    
+        # Use tf.py_function for the nested loop logic
+        def patch_to_pixel_conversion(patch_mask_np, pixel_mask_np):
+            # Convert tensors to numpy for processing
+            patch_mask_np = patch_mask_np.numpy()
+            pixel_mask_np = pixel_mask_np.numpy()
+            
+            # Expand each patch to corresponding pixels
+            for h in range(patch_mask_np.shape[0]):
+                for w in range(patch_mask_np.shape[1]):
+                    if patch_mask_np[h, w] == 1:
+                        # Calculate the corresponding pixel coordinates
+                        y_start = h * self.patch_size
+                        y_end = min((h + 1) * self.patch_size, self.input_shape[0])
+                        x_start = w * self.patch_size
+                        x_end = min((w + 1) * self.patch_size, self.input_shape[1])
+                        
+                        # Set all pixels in this patch to 1
+                        pixel_mask_np[y_start:y_end, x_start:x_end] = 1.0
+                        
+            return pixel_mask_np
+        
+        # Use tf.py_function to handle the conversion
+        pixel_mask = tf.py_function(
+            func=patch_to_pixel_conversion,
+            inp=[patch_mask, pixel_mask],
+            Tout=tf.float32
+        )
+        
+        # Set the shape explicitly
+        pixel_mask.set_shape([self.input_shape[0], self.input_shape[1]])
+        
         return pixel_mask
         
+    @tf.function
     def _extract_features_with_genetic_mask(self, images, batch=True):
         """
-        Extract features from images using genetic algorithm dynamic masks.
+        Extract features from images using genetic algorithm dynamic masks with TensorFlow operations.
         
         Args:
-            images (np.ndarray or tf.Tensor): Input images
+            images (tf.Tensor): Input images
             batch (bool): Whether images is a batch or single image
             
         Returns:
-            np.ndarray: Masked feature maps
+            tf.Tensor: Masked feature maps
         """
         self._ensure_feature_extractor()
-            
-        # Convert TensorFlow tensor to NumPy if needed
-        if isinstance(images, tf.Tensor):
-            images_np = images.numpy()
-        else:
-            images_np = images
+        
+        # Convert to tensor if needed
+        if not isinstance(images, tf.Tensor):
+            images = tf.convert_to_tensor(images, dtype=tf.float32)
             
         # Handle both single image and batch inputs
         if not batch:
-            images_np = np.expand_dims(images_np, axis=0)
+            images = tf.expand_dims(images, axis=0)
             
         # Precompute patch features for all images in the batch
-        batch_patch_features = self._precompute_patch_features(images_np)
+        batch_patch_features = self._precompute_patch_features(images)
         
-        # Create masked feature maps for each image
-        batch_masked_features = []
-        
-        for i, img in enumerate(images_np):
-            # Generate dynamic mask using genetic rules
-            patch_features = batch_patch_features[i]
-            patch_mask = utils.generate_dynamic_mask(patch_features, self.genetic_rules)
+        def process_single_image(args):
+            img, patch_features = args
+            
+            # Generate dynamic mask using genetic rules (using tf.py_function)
+            patch_mask = tf.py_function(
+                func=lambda pf: utils.generate_dynamic_mask(pf.numpy(), self.genetic_rules),
+                inp=[patch_features],
+                Tout=tf.float32
+            )
+            patch_mask.set_shape([self.n_patches_h, self.n_patches_w])
             
             # Convert patch mask to pixel mask
             pixel_mask = self.convert_patch_mask_to_pixel_mask(patch_mask)
@@ -432,22 +456,31 @@ class ModelWrapper:
             _, feature_maps, _ = self.feature_extractor.extract_all_features(img)
             
             # Apply mask to feature maps
-            masked_features = np.zeros_like(feature_maps)
-            for c in range(feature_maps.shape[2]):
-                # Expand dimensions of pixel mask if needed (for broadcasting)
-                expanded_mask = np.expand_dims(pixel_mask, axis=2) if pixel_mask.ndim == 2 else pixel_mask
-                masked_features[:,:,c] = feature_maps[:,:,c] * expanded_mask
-                
-            batch_masked_features.append(masked_features)
+            # Expand pixel mask to match feature maps dimensions
+            pixel_mask_expanded = tf.expand_dims(pixel_mask, axis=-1)
+            pixel_mask_tiled = tf.tile(pixel_mask_expanded, [1, 1, tf.shape(feature_maps)[-1]])
             
-        # Stack results for batch processing
-        result = np.stack(batch_masked_features, axis=0)
+            # Apply the mask
+            masked_features = feature_maps * pixel_mask_tiled
+                
+            return masked_features
+        
+        # Process all images in the batch
+        batch_masked_features = tf.map_fn(
+            process_single_image,
+            (images, batch_patch_features),
+            fn_output_signature=tf.TensorSpec(
+                shape=[self.input_shape[0], self.input_shape[1], self.feature_channels],
+                dtype=tf.float32
+            ),
+            parallel_iterations=10
+        )
         
         # If input was a single image, remove batch dimension
         if not batch:
-            result = result[0]
+            batch_masked_features = batch_masked_features[0]
             
-        return result
+        return batch_masked_features
         
     def extract_batch_features(self, images):
         """
@@ -455,10 +488,10 @@ class ModelWrapper:
         Public method for external use.
         
         Args:
-            images (np.ndarray or tf.Tensor): Batch of input images
+            images (tf.Tensor or np.ndarray): Batch of input images
             
         Returns:
-            np.ndarray: Batch of masked feature maps
+            tf.Tensor: Batch of masked feature maps
         """
         return self._extract_features_with_genetic_mask(images, batch=True)
         
@@ -468,10 +501,10 @@ class ModelWrapper:
         Public method for external use.
         
         Args:
-            image (np.ndarray or tf.Tensor): Single input image
+            image (tf.Tensor or np.ndarray): Single input image
             
         Returns:
-            np.ndarray: Masked feature maps
+            tf.Tensor: Masked feature maps
         """
         return self._extract_features_with_genetic_mask(image, batch=False)
         
@@ -520,20 +553,11 @@ class ModelWrapper:
             
         # Function to add features to each batch
         def add_features_to_batch(images, labels):
-            # Use a tf.py_function to handle numpy operations
-            def extract_features_batch(img_batch):
-                # Extract features using genetic dynamic masks
-                feature_maps = self._extract_features_with_genetic_mask(img_batch)
-                return tf.convert_to_tensor(feature_maps, dtype=tf.float32)
-            
-            features = tf.py_function(
-                func=extract_features_batch,
-                inp=[images],
-                Tout=tf.float32
-            )
+            # Extract features using genetic dynamic masks
+            features = self._extract_features_with_genetic_mask(images)
             
             # Ensure features have the right shape
-            features.set_shape([None, self.input_shape[0], self.input_shape[1], self.feature_channels])
+            features = tf.ensure_shape(features, [None, self.input_shape[0], self.input_shape[1], self.feature_channels])
             
             return {'image_input': images, 'feature_input': features}, labels
             
@@ -543,14 +567,13 @@ class ModelWrapper:
             num_parallel_calls=tf.data.AUTOTUNE
         ).prefetch(tf.data.AUTOTUNE)
         
-    def train(self, train_dataset, validation_dataset=None, epochs=50, model_path='ai_detector_model.h5'):
+    def train(self, train_dataset, validation_dataset=None, model_path='ai_detector_model.h5'):
         """
         Train the model with the prepared dataset.
         
         Args:
             train_dataset (tf.data.Dataset): Training dataset
             validation_dataset (tf.data.Dataset): Optional validation dataset
-            epochs (int): Number of training epochs
             model_path (str): Path to save the model
             
         Returns:
@@ -568,12 +591,11 @@ class ModelWrapper:
         history = self.model.train(
             prepared_train_ds,
             validation_dataset=prepared_val_ds,
-            epochs=epochs,
             output_model_path=model_path
         )
-        
+
         return history
-        
+
     def evaluate(self, test_dataset):
         """
         Evaluate the model on test data.
@@ -602,28 +624,41 @@ class ModelWrapper:
         Returns:
             dict: Prediction results
         """
+        # Convert to tensor if needed
+        if not isinstance(image, tf.Tensor):
+            image = tf.convert_to_tensor(image, dtype=tf.float32)
+        
+        # Ensure single image has batch dimension
+        if len(tf.shape(image)) == 3:
+            image = tf.expand_dims(image, axis=0)
+        
         # If using features, we need to extract them using genetic masks
         if self.use_features:
-            features = self.extract_single_image_features(image)
+            features = self.extract_single_image_features(image[0])  # Remove batch dim for extraction
+            features = tf.expand_dims(features, axis=0)  # Add batch dim back
             inputs = {'image_input': image, 'feature_input': features}
         else:
             inputs = image
         
         # Get raw prediction
         prediction = self.model.predict(inputs)
-        if isinstance(prediction, np.ndarray):
-            if len(prediction.shape) > 1:
-                prediction = prediction[0][0]  # Extract single value for batch
-            else:
-                prediction = prediction[0]
+        
+        # Extract scalar value from prediction tensor
+        if isinstance(prediction, tf.Tensor):
+            prediction_value = tf.squeeze(prediction).numpy()
+        else:
+            prediction_value = prediction[0][0] if len(prediction.shape) > 1 else prediction[0]
+        
+        # Convert to Python float
+        prediction_value = float(prediction_value)
         
         # Determine result
-        is_ai = prediction > 0.5
-        confidence = prediction if is_ai else 1 - prediction
+        is_ai = prediction_value > 0.5
+        confidence = prediction_value if is_ai else 1 - prediction_value
         
         return {
             'is_ai': bool(is_ai),
             'label': "AI-generated" if is_ai else "Human-generated",
             'confidence': float(confidence),
-            'raw_prediction': float(prediction)
+            'raw_prediction': float(prediction_value)
         }
