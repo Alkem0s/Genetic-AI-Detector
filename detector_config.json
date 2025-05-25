@@ -3,7 +3,7 @@
     "output_dir": "output",
     "image_size": 224,
     "batch_size": 32,
-    "max_images": 10000,
+    "max_images": 1000,
     "epochs": 50,
     "test_size": 0.2,
     "patch_size": 16,
@@ -17,5 +17,5 @@
     "predict": false,
     "predict_path": "",
     "skip_training": false,
-    "use_feature_extraction": false
+    "use_feature_extraction": true
 }

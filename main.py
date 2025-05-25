@@ -104,11 +104,7 @@ def setup_environment(config):
     # Create feature cache directory
     os.makedirs(os.path.join(config.output_dir, config.feature_cache_dir), exist_ok=True)
 
-    # Set random seeds for reproducibility
-    np.random.seed(config.random_seed)
-    tf.random.set_seed(config.random_seed)
-
-    # Setup GPU memory growth to avoid OOM errors
+    # Setup GPU memory growth
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
         try:
@@ -120,6 +116,10 @@ def setup_environment(config):
     else:
         logger.info("No GPUs found, using CPU")
     
+    # Set random seeds for reproducibility
+    np.random.seed(config.random_seed)
+    tf.random.set_seed(config.random_seed)
+
     # Enable mixed precision if specified
     if config.mixed_precision:
         policy = tf.keras.mixed_precision.Policy('mixed_float16')
@@ -144,7 +144,10 @@ def train_ai_detector(detector_config, ga_config, model_path, rules_path):
     train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets(detector_config)
     logger.info(f"Created TensorFlow dataset pipeline for training and testing")
 
-    if detector_config.visualize:
+    best_rules = None
+    ga_stats = None
+
+    if detector_config.use_feature_extraction:
         logger.info("=== Step 2: Running genetic algorithm for feature optimization ===")
         
         # Initialize the genetic feature optimizer
@@ -163,22 +166,22 @@ def train_ai_detector(detector_config, ga_config, model_path, rules_path):
             pickle.dump(best_rules, f)
         logger.info(f"Saved {len(best_rules)} genetic rules to {rules_path}")
         
-        # Visualize genetic algorithm results
-        visualizer = Visualizer(output_dir=detector_config.output_dir)
-        visualizer.plot_genetic_algorithm_progress(ga_stats['history'])
-        
-        # Visualize optimized patches
-        sample_image = sample_images[0]
-        patch_mask = genetic_optimizer.rules_to_mask(best_rules)
-        visualizer.plot_patch_mask(
-            image=sample_image,
-            patch_mask=patch_mask,
-            patch_size=detector_config.patch_size
-        )
+        if detector_config.visualize: # Check visualize for GA-related plots
+            visualizer = Visualizer(output_dir=detector_config.output_dir)
+            visualizer.plot_genetic_algorithm_progress(ga_stats['history'])
+            
+            sample_image = sample_images[0]
+            if detector_config.patch_size: # Ensure patch_size exists before calling
+                patch_mask = genetic_optimizer.rules_to_mask(best_rules)
+                visualizer.plot_patch_mask(
+                    image=sample_image,
+                    patch_mask=patch_mask,
+                    patch_size=detector_config.patch_size
+                )
+            else:
+                logger.warning("patch_size not defined in detector_config. Cannot visualize patch mask.")
     else:
-        logger.info("=== Step 2: Skipping genetic algorithm ===")
-        best_rules = None
-        ga_stats = None
+        logger.info("=== Step 2: Skipping genetic algorithm (use_feature_extraction is False) ===")
     
     logger.info("=== Step 3: Building and training the model ===")
     
@@ -203,14 +206,14 @@ def train_ai_detector(detector_config, ga_config, model_path, rules_path):
     model = model_wrapper.get_model()
     
     # Evaluate on the test dataset
-    metrics, y_true, y_pred = evaluate_model(model, test_ds)  # Modified return
+    metrics, y_true, y_pred = evaluate_model(model, test_ds)
     
     # Print evaluation results
     logger.info(f"Test accuracy: {metrics['accuracy']:.4f}")
     logger.info(f"Test loss: {metrics['loss']:.4f}")
     
     # Visualize training results if requested
-    if detector_config.visualize:
+    if detector_config.visualize: # Check visualize for general plots
         visualizer = Visualizer(output_dir=detector_config.output_dir)
         visualizer.plot_training_history(history)
         
@@ -321,7 +324,7 @@ def load_model_and_rules(model_path, rules_path, config):
             best_rules = pickle.load(f)
         logger.info(f"Loaded genetic rules from {rules_path}")
     else:
-        logger.warning(f"Rules file {rules_path} not found. Model will use default features.")
+        logger.warning(f"Rules file {rules_path} not found. Model will use default features if use_feature_extraction is True and genetic rules are not critical for its architecture.")
     
     # Get the full path to feature cache directory
     feature_cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
