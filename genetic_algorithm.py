@@ -23,32 +23,39 @@ def _init_worker():
     global _global_feature_extractor
     
     # Configure TensorFlow for multiprocessing
-    tf.config.experimental.set_memory_growth(
-        tf.config.list_physical_devices('GPU')[0], True
-    ) if tf.config.list_physical_devices('GPU') else None
-    
-    # Disable GPU for worker processes to avoid CUDA context issues
-    tf.config.set_visible_devices([], 'GPU')
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            # Disable GPU for worker processes to avoid CUDA context issues.
+            # Memory growth setting is not relevant for disabled GPUs in workers.
+            tf.config.set_visible_devices([], 'GPU')
+            logger.debug(f"Worker {multiprocessing.current_process().pid}: GPU disabled.")
+        except RuntimeError as e:
+            logger.warning(f"Worker {multiprocessing.current_process().pid}: Could not disable GPU: {e}")
     
     # Initialize feature extractor for this worker
     _global_feature_extractor = FeatureExtractor()
-    logger.debug(f"Worker {multiprocessing.current_process().pid} initialized")
+    logger.debug(f"Worker {multiprocessing.current_process().pid} initialized with FeatureExtractor")
 
 def _worker_evaluate_individual(args):
-    """Worker function for multiprocessing evaluation"""
+    """
+    Worker function for multiprocessing evaluation.
+    Receives pre-sampled NumPy arrays to avoid OOM due to full data copying.
+    """
     global _global_feature_extractor
     
-    individual, images_data, labels_data, patch_size, img_height, img_width, \
-    n_patches_h, n_patches_w, feature_weights, eval_sample_size, batch_size, \
+    individual, images_data_sampled, labels_data_sampled, patch_size, img_height, img_width, \
+    n_patches_h, n_patches_w, feature_weights, eval_sample_size_actual, batch_size, \
     n_patches, max_possible_rules = args
     
-    # Convert numpy arrays back to tensors (they were serialized for multiprocessing)
-    images = tf.convert_to_tensor(images_data)
-    labels = tf.convert_to_tensor(labels_data)
+    # Convert sampled numpy arrays back to tensors for TensorFlow operations within the worker
+    images = tf.convert_to_tensor(images_data_sampled)
+    labels = tf.convert_to_tensor(labels_data_sampled)
     
+    # eval_sample_size is now the actual size of the images/labels passed to this worker
     return GeneticFeatureOptimizer._evaluate_individual_static(
         individual, images, labels, patch_size, img_height, img_width,
-        n_patches_h, n_patches_w, feature_weights, eval_sample_size,
+        n_patches_h, n_patches_w, feature_weights, eval_sample_size_actual, # Pass the actual size of the sampled data
         batch_size, n_patches, max_possible_rules, _global_feature_extractor
     )
 
@@ -74,12 +81,11 @@ class GeneticFeatureOptimizer:
         self.ga_config = ga_config
 
         # Convert inputs to TensorFlow tensors if they aren't already
+        # ELIMINATE REDUNDANT IMAGE DATA STORAGE: Only store TensorFlow tensors.
         self.images = tf.convert_to_tensor(images) if not isinstance(images, tf.Tensor) else images
         self.labels = tf.convert_to_tensor(labels) if not isinstance(labels, tf.Tensor) else labels
 
-        # Store numpy versions for multiprocessing (tensors can't be pickled)
-        self.images_np = self.images.numpy()
-        self.labels_np = self.labels.numpy()
+        # Removed: self.images_np and self.labels_np to prevent duplicate storage.
 
         # Load all necessary values from the config
         self.patch_size = self.detector_config.patch_size
@@ -90,7 +96,11 @@ class GeneticFeatureOptimizer:
         self.mutation_prob = self.ga_config.mutation_prob
         self.tournament_size = self.ga_config.tournament_size
         self.use_multiprocessing = self.ga_config.use_multiprocessing
+        
+        # Ensure eval_sample_size doesn't exceed available images
         self.eval_sample_size = min(self.ga_config.sample_size_for_ga, tf.shape(images)[0].numpy())
+        logger.info(f"Using evaluation sample size: {self.eval_sample_size}")
+
         self.rules_per_individual = self.ga_config.rules_per_individual
         self.max_possible_rules = self.ga_config.max_possible_rules
         self.random_seed = self.detector_config.random_seed
@@ -185,6 +195,8 @@ class GeneticFeatureOptimizer:
 
     def _evaluate_individual_wrapper(self, individual):
         """Wrapper for individual evaluation that works with both single and multiprocessing"""
+        # When using ThreadPoolExecutor or sequential, the original self.images and self.labels are accessible.
+        # _evaluate_individual_static will then sample from these if eval_sample_size is smaller.
         return self._evaluate_individual_static(
             individual, self.images, self.labels, self.patch_size,
             self.img_height, self.img_width, self.n_patches_h, self.n_patches_w,
@@ -200,18 +212,38 @@ class GeneticFeatureOptimizer:
         
         if self.use_threads:
             # Use ThreadPoolExecutor for GPU systems
+            # ThreadPoolExecutor shares memory, so self.images and self.labels are directly accessible.
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers) as executor:
                 futures = [executor.submit(self._evaluate_individual_wrapper, ind) for ind in population]
                 results = [future.result() for future in concurrent.futures.as_completed(futures)]
             return results
         else:
             # Use ProcessPoolExecutor for CPU systems
+            # OPTIMIZE DATA TRANSFER FOR MULTIPROCESSING:
+            # Sample data once in the main process and pass this smaller subset to workers.
+            
+            num_images = tf.shape(self.images)[0].numpy()
+            
+            # Ensure eval_sample_size does not exceed available images
+            current_eval_sample_size = min(self.eval_sample_size, num_images)
+            
+            # Get random indices for the sample
+            indices = random.sample(range(num_images), current_eval_sample_size)
+            indices_tensor = tf.convert_to_tensor(indices, dtype=tf.int32)
+
+            # Sample the images and labels once from the main TensorFlow tensors and convert to NumPy.
+            # This sampled data (a significantly smaller portion of the original images)
+            # will be passed to each worker. This avoids copying the *entire* dataset.
+            sampled_images_np = tf.gather(self.images, indices_tensor).numpy()
+            sampled_labels_np = tf.gather(self.labels, indices_tensor).numpy()
+
             eval_args = []
             for individual in population:
-                args = (individual, self.images_np, self.labels_np, self.patch_size,
+                args = (individual, sampled_images_np, sampled_labels_np, self.patch_size,
                        self.img_height, self.img_width, self.n_patches_h.numpy(), 
                        self.n_patches_w.numpy(), self.feature_weights.numpy(),
-                       self.eval_sample_size, self.batch_size, self.n_patches.numpy(),
+                       current_eval_sample_size, # This is the actual size of the sampled data being passed
+                       self.batch_size, self.n_patches.numpy(),
                        self.max_possible_rules)
                 eval_args.append(args)
             
@@ -327,14 +359,25 @@ class GeneticFeatureOptimizer:
                                    n_patches, max_possible_rules, feature_extractor):
         """
         Static method for evaluating individuals - can be called from worker processes.
+        It samples from the 'images' and 'labels' it receives IF `eval_sample_size` is
+        less than the `num_images_in_input`. Otherwise, it processes all received images.
         """
-        # Select a random subset of images for evaluation
-        num_images = tf.shape(images)[0].numpy()
-        indices = random.sample(range(num_images), min(eval_sample_size, num_images))
-        indices_tensor = tf.convert_to_tensor(indices, dtype=tf.int32)
-
-        sample_images = tf.gather(images, indices_tensor)
-        sample_labels = tf.gather(labels, indices_tensor)
+        num_images_in_input = tf.shape(images)[0].numpy()
+        
+        # Determine the actual sample size to use.
+        # If the input `images` is already a pre-sampled subset (e.g., from ProcessPoolExecutor),
+        # then `eval_sample_size` should be `num_images_in_input`, and we should not re-sample.
+        # If `images` is the full dataset (e.g., from sequential or ThreadPoolExecutor),
+        # then we sample `eval_sample_size` from it.
+        if eval_sample_size < num_images_in_input:
+            indices = random.sample(range(num_images_in_input), eval_sample_size)
+            indices_tensor = tf.convert_to_tensor(indices, dtype=tf.int32)
+            sample_images = tf.gather(images, indices_tensor)
+            sample_labels = tf.gather(labels, indices_tensor)
+        else:
+            # No need to sample, use all provided images
+            sample_images = images
+            sample_labels = labels
 
         # Track metrics across all evaluated images
         predictions = []
@@ -351,7 +394,7 @@ class GeneticFeatureOptimizer:
             batch_labels = sample_labels[i:batch_end]
 
             # Extract features for all images in batch at once
-            batch_patch_features = feature_extractor.extract_batch_patch_features(batch_images, patch_size)
+            batch_patch_features = feature_extractor.extract_batch_patch_features(batch_images)
 
             # Process each image in the batch
             for j in range(tf.shape(batch_images)[0].numpy()):
@@ -511,7 +554,7 @@ class GeneticFeatureOptimizer:
             batch_images = sample_images[i:batch_end]
 
             # Extract features for all images in batch at once
-            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images, self.patch_size)
+            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
 
             # Process each image in the batch
             for j in range(tf.shape(batch_images)[0].numpy()):
@@ -668,7 +711,7 @@ class GeneticFeatureOptimizer:
         for i in range(0, num_samples, self.batch_size):
             batch_end = min(i + self.batch_size, num_samples)
             batch_images = sample_images[i:batch_end]
-            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images, self.patch_size)
+            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
 
             for j in range(tf.shape(batch_images)[0].numpy()):
                 # Get pre-computed patch features
@@ -724,14 +767,9 @@ class GeneticFeatureOptimizer:
             for key, value in params.items():
                 setattr(self, key, value)
 
-            # Re-setup DEAP with new parameters
-            fixed_eval_args = (
-                self.images, self.labels, self.patch_size,
-                self.img_height, self.img_width, self.n_patches_h, self.n_patches_w,
-                self.feature_weights, self.eval_sample_size, self.batch_size,
-                self.n_patches, self.max_possible_rules
-            )
-            self.toolbox.register("evaluate", self._evaluate_individual, *fixed_eval_args)
+            # Re-setup DEAP with new parameters if necessary (e.g., if rules_per_individual changes)
+            # This ensures the toolbox uses the updated `self` attributes.
+            self._setup_deap() # This will re-register `evaluate` with the updated parameters
 
             # Run a quick optimization (fewer generations)
             quick_gens = min(5, self.n_generations)
@@ -759,7 +797,7 @@ class GeneticFeatureOptimizer:
         for key, value in best_params.items():
             setattr(self, key, value)
 
-        self._setup_deap() # This will re-register `evaluate` with the best parameters
+        self._setup_deap() # This will re-register `evaluate` with the best parameters for final use
         return best_params, best_score
 
     def _generate_combinations(self, param_grid):

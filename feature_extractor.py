@@ -13,6 +13,10 @@ class FeatureExtractor:
     The GeneticFeatureOptimizer expects this module to extract features
     from patches of images and return them in a consistent format.
     """
+    def __init__(self):
+        self.structural_extractor = StructuralFeatureExtractor()
+        self.texture_extractor = TextureFeatureExtractor()
+
     def extract_all_features(self, image: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, Dict[str, Any]]:
         """
         Extract all features from an image.
@@ -25,102 +29,148 @@ class FeatureExtractor:
             
         Returns:
             Tuple containing:
-                - visualization: Visualization image with highlighted features (can be None)
                 - feature_stack: 3D tensor where each channel is a different feature map
-                - metadata: Dictionary with additional metadata about extracted features
         """
-        # Ensure the image is a tensor with float32 data type
+        # Ensure the image is a tensor with float32 and 3 channels
         image = tf.cast(image, tf.float32)
-        
-        # Get image dimensions
-        height, width = tf.shape(image)[0], tf.shape(image)[1]
-        
-        # Create a list to hold all feature maps
-        feature_maps = []
+        if tf.shape(image)[-1] == 1: # Grayscale
+            image = tf.image.grayscale_to_rgb(image) # Convert to RGB if grayscale
 
-        structural_features_extractor = StructuralFeatureExtractor()
-        texture_features_extractor = TextureFeatureExtractor()
+        # Extract individual feature maps
+        gradient_feature = self.structural_extractor._extract_gradient_feature(image)
+        pattern_feature = self.structural_extractor._extract_pattern_feature(image)
+        edge_feature = self.structural_extractor._extract_edge_feature(image)
+        symmetry_feature = self.structural_extractor._extract_symmetry_feature(image)
 
-        # Add each feature to the list
-        feature_maps.append(structural_features_extractor._extract_gradient_feature(image))
-        feature_maps.append(structural_features_extractor._extract_pattern_feature(image))
-        feature_maps.append(texture_features_extractor._extract_noise_feature(image))
-        feature_maps.append(structural_features_extractor._extract_edge_feature(image))
-        feature_maps.append(structural_features_extractor._extract_symmetry_feature(image))
-        feature_maps.append(texture_features_extractor._extract_texture_feature(image))
-        feature_maps.append(texture_features_extractor._extract_color_feature(image))
-        feature_maps.append(texture_features_extractor._extract_hash_feature(image))
+        noise_feature = self.texture_extractor._extract_noise_feature(image)
+        texture_feature = self.texture_extractor._extract_texture_feature(image)
+        color_feature = self.texture_extractor._extract_color_feature(image)
+        hash_feature = self.texture_extractor._extract_hash_feature(image)
 
-        # Stack all feature maps along the channel dimension
-        feature_stack = tf.stack(feature_maps, axis=-1)
+        # Stack all feature maps. Each feature map is [H, W]. Stacking along a new axis to get [H, W, num_features]
+        feature_stack = tf.stack([
+            gradient_feature,
+            pattern_feature,
+            edge_feature,
+            symmetry_feature,
+            noise_feature,
+            texture_feature,
+            color_feature,
+            hash_feature
+        ], axis=-1) # Stack along the last dimension to get [H, W, num_features]
+
+        # Metadata can include information about the image or features
+        metadata = {
+            "image_shape": tf.shape(image).numpy().tolist(),
+            "num_features": feature_stack.shape[-1].numpy(),
+            "feature_names": list(global_config.feature_weights.keys())
+        }
         
         return feature_stack
-    
-    def extract_patch_features(self, image: tf.Tensor, patch_size: int = 16) -> tf.Tensor:
-        """
-        Extract average feature values for each patch in the image.
-        This function is particularly useful for the genetic algorithm's rule application.
+
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[global_config.image_size, global_config.image_size, 3], dtype=tf.float32)
+    ])
+    def extract_patch_features(self, image: tf.Tensor) -> tf.Tensor:
+        image_expanded = tf.expand_dims(image, 0)
+
+        static_patch_size = global_config.default_patch_size
+
+        patches = tf.image.extract_patches(
+            images=image_expanded,
+            sizes=[1, static_patch_size, static_patch_size, 1],
+            strides=[1, static_patch_size, static_patch_size, 1],
+            rates=[1, 1, 1, 1],
+            padding='VALID'
+        )
         
-        Args:
-            image: Input image as tensor
-            patch_size: Size of patches to analyze
-            
-        Returns:
-            3D tensor with shape (n_patches_h, n_patches_w, n_features) containing
-            average feature values for each patch
-        """
-        # Extract all features
-        feature_stack = self.extract_all_features(image)
+        patches_shape = tf.shape(patches)
+        n_patches_h = patches_shape[1]
+        n_patches_w = patches_shape[2]
+
+        patches = tf.reshape(patches, [-1, static_patch_size, static_patch_size, 3])
+
+        patch_features = tf.map_fn(
+            lambda single_patch: self._extract_single_patch_features(single_patch),
+            patches,
+            fn_output_signature=tf.TensorSpec(shape=[static_patch_size, static_patch_size, len(global_config.feature_weights)], dtype=tf.float32)
+        )
+
+        patch_features = tf.reduce_mean(patch_features, axis=[1, 2])
         
-        height, width = tf.shape(feature_stack)[0], tf.shape(feature_stack)[1]
-        n_patches_h = height // patch_size
-        n_patches_w = width // patch_size
-        n_features = tf.shape(feature_stack)[-1]
-        
-        # Truncate to integer patch multiples
-        truncated = feature_stack[:n_patches_h * patch_size, :n_patches_w * patch_size, :]
-        
-        # Reshape into patches and compute means using TensorFlow operations
-        reshaped = tf.reshape(truncated, [n_patches_h, patch_size, n_patches_w, patch_size, n_features])
-        patch_features = tf.reduce_mean(reshaped, axis=[1, 3])  # Average over spatial dimensions within each patch
+        num_features = len(global_config.feature_weights)
+        patch_features = tf.reshape(patch_features, [n_patches_h, n_patches_w, num_features])
         
         return patch_features
     
-    def extract_batch_patch_features(self, images: List[tf.Tensor], patch_size: int = 16) -> tf.Tensor:
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[None, global_config.image_size, global_config.image_size, 3], dtype=tf.float32) # Batch of images (batch_size, H, W, C)
+    ])
+    def extract_batch_patch_features(self, images: tf.Tensor) -> tf.Tensor:
         """
-        Batch processing version of extract_patch_features
-        Returns tensor shaped as (batch_size, n_patches_h, n_patches_w, n_features)
+        Batch processing version of extract_patch_features.
+        Returns tensor shaped as (batch_size, n_patches_h, n_patches_w, n_features).
+
+        Args:
+            images: Input batch of images as a single TensorFlow tensor (batch_size, height, width, channels).
+            patch_size: Size of patches to analyze.
+
+        Returns:
+            4D tensor with shape (batch_size, n_patches_h, n_patches_w, n_features) containing
+            average feature values for each patch across the batch.
         """
-        if isinstance(images, tf.Tensor):
-            if tf.size(images) == 0:
-                return tf.zeros([0])
-        elif not images:
-            return tf.zeros([0])
-        
-        # Validate consistent dimensions
-        ref_height, ref_width = tf.shape(images[0])[0], tf.shape(images[0])[1]
-        
-        # Process each image and collect results in a list
-        all_patch_features = []
-        for img in images:
-            # Validate dimensions
-            current_height, current_width = tf.shape(img)[0], tf.shape(img)[1]
-            tf.debugging.assert_equal(
-                current_height, 
-                ref_height, 
-                message="All images in batch must have identical height"
-            )
-            tf.debugging.assert_equal(
-                current_width, 
-                ref_width, 
-                message="All images in batch must have identical width"
-            )
+        if tf.size(images) == 0:
+            # Use static patch size for calculations
+            static_patch_size = global_config.default_patch_size
+            dummy_image_height = tf.constant(global_config.image_size, dtype=tf.float32)
+            dummy_image_width = tf.constant(global_config.image_size, dtype=tf.float32)
+            patch_size_float = tf.constant(static_patch_size, dtype=tf.float32)
+
+            # Number of patches in height/width direction using floor division (mimicking 'VALID' padding)
+            n_patches_h = tf.cast(tf.floor(dummy_image_height / patch_size_float), tf.int32)
+            n_patches_w = tf.cast(tf.floor(dummy_image_width / patch_size_float), tf.int32)
             
-            # Extract features for current image
-            patch_features = self.extract_patch_features(img, patch_size)
-            all_patch_features.append(patch_features)
-        
-        # Stack all patch features into a batch
-        batch_patches = tf.stack(all_patch_features, axis=0)
-        
+            return tf.zeros([0, n_patches_h, n_patches_w, len(global_config.feature_weights)], dtype=tf.float32)
+
+        # Apply extract_patch_features to each image in the batch
+        batch_patches = tf.map_fn(
+            lambda img: self.extract_patch_features(img),
+            images,
+            fn_output_signature=tf.TensorSpec(shape=[None, None, len(global_config.feature_weights)], dtype=tf.float32)
+        )
         return batch_patches
+
+
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
+    ])
+    def _extract_single_patch_features(self, patch: tf.Tensor) -> tf.Tensor:
+        """
+        Extracts all individual features from a single patch.
+        Returns a 3D tensor where each channel is a feature map for the patch.
+        Shape: [patch_size, patch_size, num_features]
+        """
+        gradient_feature = self.structural_extractor._extract_gradient_feature(patch)
+        pattern_feature = self.structural_extractor._extract_pattern_feature(patch)
+        edge_feature = self.structural_extractor._extract_edge_feature(patch)
+        symmetry_feature = self.structural_extractor._extract_symmetry_feature(patch)
+
+        noise_feature = self.texture_extractor._extract_noise_feature(patch)
+        texture_feature = self.texture_extractor._extract_texture_feature(patch)
+        color_feature = self.texture_extractor._extract_color_feature(patch)
+        hash_feature = self.texture_extractor._extract_hash_feature(patch)
+
+        # Stack all feature maps. Each feature map is [patch_size, patch_size].
+        # Stacking along a new axis to get [patch_size, patch_size, num_features]
+        feature_stack = tf.stack([
+            gradient_feature,
+            pattern_feature,
+            edge_feature,
+            symmetry_feature,
+            noise_feature,
+            texture_feature,
+            color_feature,
+            hash_feature
+        ], axis=-1)
+        
+        return feature_stack

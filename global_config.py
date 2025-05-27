@@ -17,6 +17,7 @@ default_patch_size = 16
 large_feature_patch_size = 32
 
 # Resolution scaling
+image_size = 224  # Default image size for processing
 min_resolution = 224
 max_resolution = 1920
 scale_factor = 1.0  # Will be dynamically adjusted

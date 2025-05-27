@@ -97,6 +97,7 @@ def setup_environment(config):
     """Setup environment variables and configurations"""
     # Set environment variables
     os.environ['TF_CUDNN_USE_AUTOTUNE'] = '1'
+    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
     
     # Create output directory if it doesn't exist
     os.makedirs(config.output_dir, exist_ok=True)

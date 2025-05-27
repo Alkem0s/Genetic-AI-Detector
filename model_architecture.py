@@ -379,9 +379,7 @@ class ModelWrapper:
         def extract_single_patch_features_tf(img):
             # Caching logic would typically be outside this @tf.function context
             # if using a Python dict. For now, features are always computed.
-            patch_features = self.feature_extractor.extract_patch_features(
-                img, patch_size=self.patch_size
-            )
+            patch_features = self.feature_extractor.extract_patch_features(img)
             return patch_features
         
         # Use tf.map_fn to process all images in the batch
