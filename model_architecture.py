@@ -397,39 +397,51 @@ class ModelWrapper:
         return batch_features
         
     @tf.function
-    def convert_patch_mask_to_pixel_mask(self, patch_mask):
+    def convert_patch_mask_to_pixel_mask(patch_mask):
         """
-        Convert a patch-level mask to a pixel-level mask using TensorFlow operations.
+        Convert a 2D patch mask to pixel-level mask using GPU-optimized TensorFlow operations.
+        Designed for fixed patch sizes and image shapes with minimal function tracing.
         
         Args:
-            patch_mask (tf.Tensor): Binary mask of shape (n_patches_h, n_patches_w)
-            
+            patch_mask (tf.Tensor): 2D binary mask of shape (n_patches_h, n_patches_w)
+            patch_size (int or tuple): Fixed patch size - int for square patches or (h, w) tuple
+            image_shape (tuple): Fixed image shape (height, width)
+        
         Returns:
-            tf.Tensor: Binary mask of shape (height, width)
+            tf.Tensor: Pixel-level binary mask of shape (height, width)
         """
-        logger.debug("Converting patch mask to pixel mask.")
-        # Ensure patch_mask is float32 for operations like tf.image.resize
-        patch_mask = tf.cast(patch_mask, tf.float32)
 
-        # Expand dimensions to (batch, height, width, channels) for tf.image.resize
-        # Since patch_mask is (n_patches_h, n_patches_w), we need to add batch and channel dims
-        expanded_patch_mask = tf.expand_dims(tf.expand_dims(patch_mask, axis=0), axis=-1)
+        patch_size = global_config.default_patch_size  # Use default patch size from config
+        image_shape = (global_config.image_size, global_config.image_size)  # Use default image size from config
 
-        # Resize to image dimensions using nearest neighbor interpolation to preserve binary nature
+        # Handle patch size input
+        if isinstance(patch_size, int):
+            patch_h = patch_w = patch_size
+        else:
+            patch_h, patch_w = patch_size
+        
+        # Convert to TensorFlow constants for graph optimization
+        patch_h = tf.constant(patch_h, dtype=tf.int32)
+        patch_w = tf.constant(patch_w, dtype=tf.int32)
+        img_h = tf.constant(image_shape[0], dtype=tf.int32)
+        img_w = tf.constant(image_shape[1], dtype=tf.int32)
+        
+        # Ensure patch_mask is float32 and add batch/channel dimensions for tf.image.resize
+        patch_mask_float = tf.cast(patch_mask, tf.float32)
+        expanded_mask = tf.expand_dims(tf.expand_dims(patch_mask_float, axis=0), axis=-1)
+        
+        # Use tf.image.resize with nearest neighbor - this is GPU-optimized
         pixel_mask = tf.image.resize(
-            expanded_patch_mask,
-            [self.input_shape[0], self.input_shape[1]],
+            expanded_mask,
+            [img_h, img_w],
             method=tf.image.ResizeMethod.NEAREST_NEIGHBOR
         )
-
-        # Remove batch and channel dimensions to get (height, width)
+        
+        # Remove batch and channel dimensions
         pixel_mask = tf.squeeze(pixel_mask, axis=[0, -1])
         
-        # Ensure it's still binary (0 or 1) after resizing due to potential floating point errors
-        pixel_mask = tf.cast(tf.round(pixel_mask), tf.float32)
-
-        pixel_mask.set_shape([self.input_shape[0], self.input_shape[1]])
-        logger.debug("Patch mask conversion to pixel mask complete.")
+        # Ensure binary output (handle any floating point precision issues)
+        pixel_mask = tf.cast(pixel_mask >= 0.5, tf.float32)
         
         return pixel_mask
         
@@ -477,7 +489,7 @@ class ModelWrapper:
             pixel_mask = self.convert_patch_mask_to_pixel_mask(patch_mask)
             
             # Extract full feature maps
-            feature_maps = self.feature_extractor.extract_all_features(img)
+            feature_maps = self.feature_extractor.extract_patch_features(img)
             
             # Apply mask to feature maps
             # Expand pixel mask to match feature maps dimensions

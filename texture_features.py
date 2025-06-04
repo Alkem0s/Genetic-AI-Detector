@@ -16,7 +16,7 @@ class TextureFeatureExtractor:
     EPSILON_NP = 1e-8
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.image_size, global_config.image_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
     ])
     def _extract_noise_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -92,7 +92,7 @@ class TextureFeatureExtractor:
             return feature_map
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.image_size, global_config.image_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
     ])
     def _extract_texture_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -134,7 +134,7 @@ class TextureFeatureExtractor:
                 return (lbp_image / max_lbp_val).astype(np.float32)
 
             texture_map = tf.py_function(py_lbp, [gray_uint8], tf.float32)
-            texture_map.set_shape(tf.TensorShape([global_config.image_size, global_config.image_size])) # Set shape info
+            texture_map.set_shape(tf.TensorShape([global_config.default_patch_size, global_config.default_patch_size])) # Set shape info
             
             # Rescale to original image size if LBP changed dims (it usually doesn't)
             # feature_map = tf.image.resize(tf.expand_dims(texture_map, -1), 
@@ -150,7 +150,7 @@ class TextureFeatureExtractor:
             return feature_map
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.image_size, global_config.image_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
     ])
     def _extract_color_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -203,7 +203,7 @@ class TextureFeatureExtractor:
             return feature_map
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.image_size, global_config.image_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
     ])
     def _extract_hash_feature(self, image: tf.Tensor) -> tf.Tensor:
         """

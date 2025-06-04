@@ -1,6 +1,8 @@
+import random
 import tensorflow as tf
 import functools
 from functools import lru_cache
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 # Assuming global_config is accessible and defines feature_weights
 import global_config 
@@ -141,19 +143,10 @@ def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_set):
 
         # Body for the inner while loop (width)
         def body_w(h, w, idx, mask_list):
-            # Ensure patch_features indexing is safe (min is already handled by h_limit/w_limit if they were used)
-            # Assuming patch_features shape is (H, W, Features)
             current_patch_features = patch_features[h, w, :]
             
             include_patch = tf.constant(False)
             
-            # Use tf.while_loop for iterating through rules if rule_set can be converted to a Tensor
-            # For simplicity with Python list `rule_set`, we'll keep the Python for loop here,
-            # but be aware this implies `rule_set` values are known at graph construction time.
-            # If `rule_set` can change dynamically, a tf.TensorArray for rules would be needed.
-            
-            # This part remains a Python for loop because rule_set is a Python list of dicts.
-            # This means the rules are fixed at graph trace time.
             for rule in rule_set:
                 feature_name = rule["feature"]
                 threshold = rule["threshold"]
@@ -178,27 +171,9 @@ def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_set):
                     condition_met = value < threshold
                 
                 # If the condition is met and action is 1, include the patch
-                # Use tf.cond for conditional assignment in graph mode
                 include_patch = tf.cond(tf.logical_and(condition_met, tf.equal(action, 1)), 
                                         lambda: tf.constant(True), 
                                         lambda: include_patch) # Keep current include_patch status if not True
-
-                # If include_patch becomes True, we can theoretically break.
-                # However, tf.while_loop does not support direct `break` like Python for loops.
-                # The `include_patch` will accumulate results across rules.
-                # If "one matching rule with action=1 is enough", we need to structure it differently
-                # For now, let's assume multiple rules can contribute to include_patch.
-                # If only one rule is sufficient, the `include_patch = tf.cond(...)` needs careful consideration.
-                # The original code's `break` won't translate directly.
-                # A more "TensorFlow way" would be to compute all conditions and then reduce.
-                
-                # To replicate the "break" behavior if one rule is enough:
-                # We can use tf.reduce_any on a list of booleans if we refactor how rules are applied.
-                # For now, let's adjust the logic slightly:
-                # If any rule sets `include_patch` to True, it stays True.
-            
-            # The current logic will set `include_patch` to True if ANY rule matches with action=1.
-            # If no rules match with action=1, it remains False.
             
             mask_val = tf.cond(include_patch, lambda: tf.constant(1, dtype=tf.int8), lambda: tf.constant(0, dtype=tf.int8))
             
@@ -225,6 +200,189 @@ def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_set):
     patch_mask = tf.reshape(mask_list.stack(), (n_patches_h, n_patches_w))
     
     return patch_mask
+
+def evaluate_ga_individual_optimized(individual, precomputed_features, labels, patch_size,
+                                   img_height, img_width, n_patches_h, n_patches_w,
+                                   feature_weights, n_patches, max_possible_rules):
+    """
+    Optimized version of evaluate_ga_individual that uses precomputed patch features.
+    This eliminates redundant feature extraction across all individuals.
+
+    Args:
+        individual: Rule set to evaluate
+        precomputed_features: Pre-extracted patch features tensor [num_images, h_patches, w_patches, num_features]
+        labels: Labels tensor [num_images]
+        patch_size: Size of patches
+        img_height, img_width: Image dimensions
+        n_patches_h, n_patches_w: Number of patches in each dimension
+        feature_weights: Weights for different features
+        n_patches: Total number of patches
+        max_possible_rules: Maximum number of rules allowed
+
+    Returns:
+        tuple: (fitness_score,)
+    """
+    try:
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        from utils import generate_dynamic_mask, calculate_connectivity
+
+        num_samples = tf.shape(precomputed_features)[0] # Keep as TensorFlow tensor
+        
+        # Track metrics across all evaluated images
+        predictions = []
+        # Initialize total_active_patches as a TensorFlow tensor to prevent overflow
+        total_active_patches = tf.constant(0, dtype=tf.int64)
+        connectivity_scores = []
+
+        # Process each image using pre-computed features
+        for img_idx in tf.range(num_samples): # Use tf.range for loop in TF graph
+            # Use pre-computed features directly
+            patch_features = precomputed_features[img_idx]
+
+            # Generate mask using patch features
+            patch_mask = generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, individual)
+
+            # Convert to TensorFlow tensor if it's not already
+            if not isinstance(patch_mask, tf.Tensor):
+                patch_mask = tf.convert_to_tensor(patch_mask, dtype=tf.float32)
+
+            # Track connectivity score
+            conn_score = calculate_connectivity(patch_mask)
+            connectivity_scores.append(conn_score)
+
+            # Track how many patches are active for efficiency calculation
+            # Ensure active_patches is also a TensorFlow tensor before adding
+            active_patches = tf.cast(tf.reduce_sum(patch_mask), dtype=tf.int64)
+            total_active_patches += active_patches
+
+            # Apply patch_mask directly to patch_features
+            patch_mask_expanded = tf.expand_dims(tf.cast(patch_mask, tf.float32), axis=-1)
+            masked_features = patch_features * patch_mask_expanded
+
+            # Calculate weighted feature importance using configurable weights
+            num_features = min(8, patch_features.shape[2])
+            weights = feature_weights[:num_features]
+
+            # Calculate per-feature scores
+            feature_scores = tf.reduce_sum(masked_features[:, :, :num_features], axis=[0, 1])
+
+            # Apply weights and sum
+            total_score = tf.reduce_sum(feature_scores * weights)
+
+            # Normalize by image size to make it scale-invariant
+            normalized_score = total_score / (tf.cast(img_height * img_width, tf.float32))
+
+            # Threshold for AI detection
+            prediction = tf.cond(normalized_score > 0.01, lambda: tf.constant(1), lambda: tf.constant(0))
+            predictions.append(prediction)
+
+        # Calculate classification metrics
+        predictions_tensor = tf.convert_to_tensor(predictions)
+        labels_np = labels.numpy() if isinstance(labels, tf.Tensor) else labels
+        predictions_np = predictions_tensor.numpy() if isinstance(predictions_tensor, tf.Tensor) else predictions_tensor
+
+        accuracy = accuracy_score(labels_np, predictions_np)
+
+        # Only calculate other metrics if we have both classes in predictions
+        unique_predictions = tf.unique(predictions_tensor)[0]
+        if tf.shape(unique_predictions)[0] > 1:
+            precision = precision_score(labels_np, predictions_np, zero_division=0)
+            recall = recall_score(labels_np, predictions_np, zero_division=0)
+            f1 = f1_score(labels_np, predictions_np, zero_division=0)
+        else:
+            precision = 0.5
+            recall = 0.5
+            f1 = 0.5
+
+        # Calculate average efficiency score
+        # Ensure division is performed with float types
+        avg_patch_selection_ratio = tf.cast(total_active_patches, tf.float32) / (tf.cast(num_samples * n_patches, tf.float32))
+
+        # Convert to TensorFlow calculations
+        avg_patch_ratio_tensor = tf.constant(avg_patch_selection_ratio, dtype=tf.float32)
+
+        # Progressive penalty
+        def efficiency_case_1(): return tf.constant(1.0, dtype=tf.float32)
+        def efficiency_case_2(): return 1.0 - (avg_patch_ratio_tensor - 0.3) * 2
+        def efficiency_case_3(): return 0.6 - (avg_patch_ratio_tensor - 0.5) * 1.2
+
+        efficiency_score = tf.case([
+            (avg_patch_ratio_tensor < 0.3, efficiency_case_1),
+            (avg_patch_ratio_tensor < 0.5, efficiency_case_2)
+        ], default=efficiency_case_3)
+
+        # Calculate simplicity score based on number of rules
+        simplicity_score = 1.0 - (len(individual) / max_possible_rules)
+
+        # Use precomputed connectivity scores
+        connectivity_score = tf.reduce_mean(tf.convert_to_tensor(connectivity_scores, dtype=tf.float32)).numpy() if connectivity_scores else 0.5
+
+        # Combined fitness score - weighted average of metrics
+        fitness = (
+            accuracy * 0.4 +
+            precision * 0.15 +
+            recall * 0.15 +
+            f1 * 0.1 +
+            efficiency_score.numpy() * 0.1 +
+            connectivity_score * 0.05 +
+            simplicity_score * 0.05
+        )
+
+        return (fitness,)
+
+    except Exception as e:
+        tf.print("Error in optimized individual evaluation:", e)
+        # Return a low fitness score instead of crashing
+        return (0.0,)
+
+def calculate_connectivity(patch_mask):
+    """
+    Calculate how connected the selected patches are in a vectorized manner.
+    More connected patches are better as they likely represent coherent features.
+
+    Args:
+        patch_mask: Binary mask of shape (n_patches_h, n_patches_w)
+
+    Returns:
+        float: Connectivity score between 0 and 1
+    """
+    import tensorflow as tf # Need tf in the worker context
+    # Ensure patch_mask is a TensorFlow tensor
+    if not isinstance(patch_mask, tf.Tensor):
+        patch_mask = tf.convert_to_tensor(patch_mask, dtype=tf.float32)
+
+    # If no patches selected, return 0
+    if tf.reduce_sum(patch_mask) == 0:
+        return 0.0
+
+    # Create shifted masks to check neighbors using TensorFlow operations
+    # Pad the mask to handle edges properly
+    padded_mask = tf.pad(patch_mask, [[1, 1], [1, 1]], constant_values=0)
+
+    # Extract shifted versions (up, down, left, right)
+    up = padded_mask[:-2, 1:-1]
+    down = padded_mask[2:, 1:-1]
+    left = padded_mask[1:-1, :-2]
+    right = padded_mask[1:-1, 2:]
+
+    # Count adjacent selected patches
+    adjacent_count = tf.reduce_sum(
+        tf.cast(patch_mask > 0, tf.float32) * tf.cast(up > 0, tf.float32) +
+        tf.cast(patch_mask > 0, tf.float32) * tf.cast(down > 0, tf.float32) +
+        tf.cast(patch_mask > 0, tf.float32) * tf.cast(left > 0, tf.float32) +
+        tf.cast(patch_mask > 0, tf.float32) * tf.cast(right > 0, tf.float32)
+    )
+
+    # Total selected patches
+    total_selected = tf.reduce_sum(patch_mask)
+
+    # Normalize by maximum possible adjacencies
+    max_possible_adj = tf.cast(total_selected * 4, tf.float32)
+    if max_possible_adj <= 0:
+        return 0.5 # Default for single or no patch selected
+
+    connectivity = adjacent_count / max_possible_adj
+    return connectivity.numpy()
 
 @tf.function
 def create_content_mask(image: tf.Tensor) -> tf.Tensor:
@@ -403,138 +561,3 @@ def is_natural_scene(image):
         'is_natural': tf.logical_or(tf.logical_or(is_sky_top, is_water_bottom), edge_ratio < 0.02),
         'is_architectural': tf.logical_and(has_straight_lines, edge_ratio > 0.05)
     }
-
-# utils.py - Corrected function
-@tf.function
-def convert_patch_mask_to_pixel_mask(patch_mask, 
-                                     image_shape=None, 
-                                     patch_size=None):
-    """
-    Convert a 2D patch mask to a pixel-level mask.
-    Handles both fixed-size patches and variable patches based on image dimensions.
-    
-    Args:
-        patch_mask (tf.Tensor): 2D array where 1 indicates selected patches
-        image_shape (tuple/tf.TensorShape): Optional (height, width) of original image for variable patches
-        patch_size (int or tuple): Optional fixed patch size (h, w) or single int for square
-    
-    Returns:
-        tf.Tensor: Pixel-level mask with 1s in selected patch areas
-    """
-    if len(patch_mask.shape) != 2:
-        raise ValueError("Patch mask must be a 2D array")
-
-    # Calculate patch dimensions
-    if patch_size is not None:
-        # Handle fixed patch size
-        if isinstance(patch_size, int):
-            patch_h = tf.constant(patch_size, dtype=tf.int32)
-            patch_w = tf.constant(patch_size, dtype=tf.int32)
-        else:
-            patch_h = tf.constant(patch_size[0], dtype=tf.int32)
-            patch_w = tf.constant(patch_size[1], dtype=tf.int32)
-    elif image_shape is not None:
-        # Calculate variable patch size from image dimensions
-        # Ensure image_shape is a tf.Tensor or can be converted
-        img_h, img_w = tf.cast(image_shape[0], tf.int32), tf.cast(image_shape[1], tf.int32)
-        patch_h = img_h // tf.cast(patch_mask.shape[0], tf.int32)
-        patch_w = img_w // tf.cast(patch_mask.shape[1], tf.int32)
-    else:
-        raise ValueError("Must provide either image_shape or patch_size")
-
-    # Initialize pixel mask - this part looks fine
-    if image_shape is not None:
-        pixel_mask_shape = tf.cast(image_shape[:2], tf.int32)
-        pixel_mask = tf.zeros(pixel_mask_shape, dtype=tf.float32)
-    else:
-        # Calculate total size from patch dimensions
-        total_h = tf.cast(patch_mask.shape[0], tf.int32) * patch_h
-        total_w = tf.cast(patch_mask.shape[1], tf.int32) * patch_w
-        pixel_mask = tf.zeros((total_h, total_w), dtype=tf.float32)
-
-    # Populate pixel mask using tf.where and tf.tensor_scatter_nd_update for efficiency
-    # Create a grid of patch indices
-    # *** FIX HERE: Cast indices to tf.int32 ***
-    selected_indices = tf.where(patch_mask == 1)
-    patch_indices_h = tf.cast(selected_indices[:, 0], tf.int32)
-    patch_indices_w = tf.cast(selected_indices[:, 1], tf.int32)
-
-    # Calculate start and end pixel coordinates for each selected patch
-    h_starts = patch_indices_h * patch_h
-    w_starts = patch_indices_w * patch_w
-    h_ends = (patch_indices_h + 1) * patch_h
-    w_ends = (patch_indices_w + 1) * patch_w
-
-    if image_shape is not None:
-        img_h, img_w = tf.cast(image_shape[0], tf.int32), tf.cast(image_shape[1], tf.int32)
-        h_ends = tf.minimum(h_ends, img_h)
-        w_ends = tf.minimum(w_ends, img_w)
-
-    # Create an empty pixel mask to build upon
-    if image_shape is not None:
-        final_pixel_mask = tf.zeros(tf.cast(image_shape[:2], tf.int32), dtype=tf.float32)
-    else:
-        total_h = tf.cast(patch_mask.shape[0], tf.int32) * patch_h
-        total_w = tf.cast(patch_mask.shape[1], tf.int32) * patch_w
-        final_pixel_mask = tf.zeros((total_h, total_w), dtype=tf.float32)
-
-    num_selected_patches = tf.shape(patch_indices_h)[0]
-
-    # Use tf.TensorArray for efficient accumulation of patches in graph mode
-    # This is a more performant way than repeated tf.add on large tensors in a loop
-    # We will build a list of sparse updates.
-    
-    # Define a TensorArray to store the patches to be scattered
-    updates_ta = tf.TensorArray(tf.float32, size=num_selected_patches, dynamic_size=False, clear_after_read=False)
-    indices_ta = tf.TensorArray(tf.int32, size=num_selected_patches, dynamic_size=False, clear_after_read=False)
-
-    i = tf.constant(0)
-    
-    # Use tf.while_loop for the iteration
-    def cond(i, updates_ta, indices_ta):
-        return i < num_selected_patches
-
-    def body(i, updates_ta, indices_ta):
-        h_start = h_starts[i]
-        h_end = h_ends[i]
-        w_start = w_starts[i]
-        w_end = w_ends[i]
-
-        # Create a slice of ones for the current patch area
-        patch_area = tf.ones([h_end - h_start, w_end - w_start], dtype=tf.float32)
-
-        # For `tf.tensor_scatter_nd_update`, we need the indices and values for the update.
-        # This approach is generally more efficient than padding and adding
-        # which can create large intermediate tensors and multiple copies.
-        
-        # Get all pixel coordinates within this patch
-        # This creates a meshgrid of pixel coordinates for the current patch
-        h_coords = tf.range(h_start, h_end, dtype=tf.int32)
-        w_coords = tf.range(w_start, w_end, dtype=tf.int32)
-        grid_h, grid_w = tf.meshgrid(h_coords, w_coords)
-        
-        # Stack coordinates to get [[h1, w1], [h2, w2], ...]
-        patch_pixel_indices = tf.stack([tf.reshape(grid_h, [-1]), tf.reshape(grid_w, [-1])], axis=-1)
-        
-        # The values to scatter are all 1.0 for these pixels
-        patch_pixel_values = tf.ones(tf.shape(patch_pixel_indices)[0], dtype=tf.float32)
-        
-        updates_ta = updates_ta.write(i, patch_pixel_values)
-        indices_ta = indices_ta.write(i, patch_pixel_indices)
-
-        return i + 1, updates_ta, indices_ta
-
-    _, final_updates_ta, final_indices_ta = tf.while_loop(cond, body, [i, updates_ta, indices_ta])
-
-    # Stack the collected updates and indices
-    all_pixel_values = final_updates_ta.concat()
-    all_pixel_indices = final_indices_ta.concat()
-
-    # Use tf.tensor_scatter_nd_add to accumulate values at the specified indices.
-    # Since values are 1.0, this will effectively mark the pixels as active.
-    final_pixel_mask = tf.tensor_scatter_nd_add(final_pixel_mask, all_pixel_indices, all_pixel_values)
-    
-    # Ensure the final mask is binary (1s where patches are, 0s otherwise)
-    final_pixel_mask = tf.cast(final_pixel_mask > 0, dtype=tf.float32)
-
-    return final_pixel_mask

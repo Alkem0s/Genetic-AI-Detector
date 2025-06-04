@@ -17,57 +17,6 @@ class FeatureExtractor:
         self.structural_extractor = StructuralFeatureExtractor()
         self.texture_extractor = TextureFeatureExtractor()
 
-    def extract_all_features(self, image: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, Dict[str, Any]]:
-        """
-        Extract all features from an image.
-        
-        This is the main method that the genetic algorithm will call.
-        It should extract all features and return them in a standardized format.
-        
-        Args:
-            image: Input image as tensorflow tensor (height, width, channels)
-            
-        Returns:
-            Tuple containing:
-                - feature_stack: 3D tensor where each channel is a different feature map
-        """
-        # Ensure the image is a tensor with float32 and 3 channels
-        image = tf.cast(image, tf.float32)
-        if tf.shape(image)[-1] == 1: # Grayscale
-            image = tf.image.grayscale_to_rgb(image) # Convert to RGB if grayscale
-
-        # Extract individual feature maps
-        gradient_feature = self.structural_extractor._extract_gradient_feature(image)
-        pattern_feature = self.structural_extractor._extract_pattern_feature(image)
-        edge_feature = self.structural_extractor._extract_edge_feature(image)
-        symmetry_feature = self.structural_extractor._extract_symmetry_feature(image)
-
-        noise_feature = self.texture_extractor._extract_noise_feature(image)
-        texture_feature = self.texture_extractor._extract_texture_feature(image)
-        color_feature = self.texture_extractor._extract_color_feature(image)
-        hash_feature = self.texture_extractor._extract_hash_feature(image)
-
-        # Stack all feature maps. Each feature map is [H, W]. Stacking along a new axis to get [H, W, num_features]
-        feature_stack = tf.stack([
-            gradient_feature,
-            pattern_feature,
-            edge_feature,
-            symmetry_feature,
-            noise_feature,
-            texture_feature,
-            color_feature,
-            hash_feature
-        ], axis=-1) # Stack along the last dimension to get [H, W, num_features]
-
-        # Metadata can include information about the image or features
-        metadata = {
-            "image_shape": tf.shape(image).numpy().tolist(),
-            "num_features": feature_stack.shape[-1].numpy(),
-            "feature_names": list(global_config.feature_weights.keys())
-        }
-        
-        return feature_stack
-
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[global_config.image_size, global_config.image_size, 3], dtype=tf.float32)
     ])
