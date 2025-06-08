@@ -49,15 +49,118 @@ class DataLoader:
             
             # Remove missing files from dataframe
             df = df[df['file_name'].apply(os.path.exists)]
+        
+        # Print original label distribution
+        print("Original label distribution:")
+        label_counts = df['label'].value_counts().sort_index()
+        for label, count in label_counts.items():
+            percentage = (count / len(df)) * 100
+            print(f"  Label {label}: {count} images ({percentage:.1f}%)")
             
         if self.max_images is not None and self.max_images > 0:
             max_samples = min(self.max_images, len(df))
-            df = df.sample(n=max_samples, random_state=self.random_seed)
-            print(f"Subsampled to {max_samples} images based on config.max_images")
+            
+            # Use stratified sampling to maintain label balance
+            try:
+                df = self._stratified_subsample(df, max_samples)
+                print(f"Subsampled to {max_samples} images using stratified sampling")
+                
+                # Print subsampled label distribution
+                print("Subsampled label distribution:")
+                label_counts = df['label'].value_counts().sort_index()
+                for label, count in label_counts.items():
+                    percentage = (count / len(df)) * 100
+                    print(f"  Label {label}: {count} images ({percentage:.1f}%)")
+                    
+            except Exception as e:
+                print(f"Warning: Stratified sampling failed ({e}), using random sampling")
+                df = df.sample(n=max_samples, random_state=self.random_seed)
+                print(f"Subsampled to {max_samples} images using random sampling")
 
         print(f"Loaded CSV with {len(df)} valid image entries")
         return df
 
+    def _stratified_subsample(self, df, max_samples):
+        """
+        Perform stratified subsampling to maintain label proportions.
+        
+        Args:
+            df: Original DataFrame
+            max_samples: Maximum number of samples to keep
+            
+        Returns:
+            Subsampled DataFrame with balanced labels
+        """
+        # Get unique labels and their counts
+        label_counts = df['label'].value_counts()
+        unique_labels = label_counts.index.tolist()
+        
+        # Calculate minimum samples per label to ensure representation
+        min_samples_per_label = max(1, max_samples // (len(unique_labels) * 4))  # At least 1, but allow some imbalance
+        
+        subsampled_dfs = []
+        remaining_samples = max_samples
+        
+        # First pass: ensure minimum representation for each label
+        for label in unique_labels:
+            label_df = df[df['label'] == label]
+            available_samples = len(label_df)
+            
+            if available_samples == 0:
+                continue
+                
+            # Take minimum samples or all available if less than minimum
+            samples_to_take = min(min_samples_per_label, available_samples, remaining_samples)
+            
+            if samples_to_take > 0:
+                sampled_df = label_df.sample(n=samples_to_take, random_state=self.random_seed)
+                subsampled_dfs.append(sampled_df)
+                remaining_samples -= samples_to_take
+        
+        # Second pass: distribute remaining samples proportionally
+        if remaining_samples > 0:
+            # Calculate proportions based on original distribution
+            total_original = len(df)
+            
+            for label in unique_labels:
+                if remaining_samples <= 0:
+                    break
+                    
+                label_df = df[df['label'] == label]
+                already_sampled = sum(len(sub_df[sub_df['label'] == label]) 
+                                    for sub_df in subsampled_dfs)
+                available_samples = len(label_df) - already_sampled
+                
+                if available_samples <= 0:
+                    continue
+                
+                # Calculate proportional additional samples
+                original_proportion = len(label_df) / total_original
+                additional_samples = int(remaining_samples * original_proportion)
+                additional_samples = min(additional_samples, available_samples, remaining_samples)
+                
+                if additional_samples > 0:
+                    # Get samples not already selected
+                    already_selected_indices = set()
+                    for sub_df in subsampled_dfs:
+                        if label in sub_df['label'].values:
+                            already_selected_indices.update(sub_df[sub_df['label'] == label].index)
+                    
+                    available_df = label_df[~label_df.index.isin(already_selected_indices)]
+                    
+                    if len(available_df) >= additional_samples:
+                        additional_sampled = available_df.sample(n=additional_samples, 
+                                                               random_state=self.random_seed + label)
+                        subsampled_dfs.append(additional_sampled)
+                        remaining_samples -= additional_samples
+        
+        # Combine all subsampled dataframes
+        result_df = pd.concat(subsampled_dfs, ignore_index=True)
+        
+        # Shuffle the final result
+        result_df = result_df.sample(frac=1, random_state=self.random_seed).reset_index(drop=True)
+        
+        return result_df
 
     def _process_path(self, file_path, label, use_center_crop=True):
         """
@@ -131,7 +234,6 @@ class DataLoader:
         """
         return self._process_path(file_path, label, use_center_crop)
 
-
     def _configure_for_performance(self, dataset, is_training=False):
         """
         Configure dataset for optimal performance.
@@ -187,7 +289,7 @@ class DataLoader:
         
         return image
     
-    def create_datasets(self, config):
+    def create_datasets(self, config, ga_config):
         """
         Create train and test datasets from CSV file.
         
@@ -235,10 +337,21 @@ class DataLoader:
         
         # Create a small sample dataset for feature extractor/genetic algorithm
         # to avoid loading all images for those steps
-        sample_size = min(1000, len(train_df))
+        sample_size = ga_config.sample_size
         print(f"Creating sample dataset of {sample_size} images for feature extraction")
         
-        sample_df = train_df.sample(sample_size, random_state=self.random_seed)
+        # Use stratified sampling for the sample dataset too
+        try:
+            sample_df = self._stratified_subsample(train_df, sample_size)
+            print("Sample dataset label distribution:")
+            sample_label_counts = sample_df['label'].value_counts().sort_index()
+            for label, count in sample_label_counts.items():
+                percentage = (count / len(sample_df)) * 100
+                print(f"  Label {label}: {count} images ({percentage:.1f}%)")
+        except:
+            print("Using random sampling for sample dataset")
+            sample_df = train_df.sample(sample_size, random_state=self.random_seed)
+        
         sample_images = []
         sample_labels = []
         

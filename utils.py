@@ -1,17 +1,530 @@
-import random
+# utils.py
 import tensorflow as tf
-import functools
-from functools import lru_cache
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import global_config
 
-# Assuming global_config is accessible and defines feature_weights
-import global_config 
-
-
-@functools.lru_cache(maxsize=16)
-def get_edge_detection(image, method='canny', **kwargs):
-    """Cached edge detection to avoid redundant computation.
+@tf.function
+def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor):
+    """
+    Vectorized dynamic mask generation using TensorFlow operations.
     
+    Args:
+        patch_features: [n_patches_h, n_patches_w, n_features]
+        n_patches_h: Height in patches
+        n_patches_w: Width in patches  
+        rule_tensor: [max_rules, 4] tensor where each row is [feature_idx, threshold, operator, action]
+                    operator: 0 for '>', 1 for '<'
+                    action: 0 for exclude, 1 for include
+    
+    Returns:
+        Binary mask tensor of shape [n_patches_h, n_patches_w]
+    """
+    # Initialize mask with all zeros
+    patch_mask = tf.zeros((n_patches_h, n_patches_w), dtype=tf.bool)
+    
+    # Get the number of actual rules (non-zero feature indices)
+    valid_rules = tf.reduce_sum(tf.cast(rule_tensor[:, 0] >= 0, tf.int32))
+    
+    # Process each rule using tf.while_loop for dynamic number of rules
+    def process_rule(i, current_mask):
+        # Get rule parameters
+        feature_idx = tf.cast(rule_tensor[i, 0], tf.int32)
+        threshold = rule_tensor[i, 1]
+        operator = tf.cast(rule_tensor[i, 2], tf.int32)
+        action = tf.cast(rule_tensor[i, 3], tf.int32)
+        
+        # Skip if action is not 1 (include patch) or feature_idx is invalid
+        def apply_rule():
+            # Extract feature values for all patches
+            feature_values = patch_features[:, :, feature_idx]
+            
+            # Apply condition based on operator
+            condition = tf.cond(
+                tf.equal(operator, 0),  # '>' operator
+                lambda: feature_values > threshold,
+                lambda: feature_values < threshold  # '<' operator
+            )
+            
+            # Update mask (OR operation - if any rule matches, include patch)
+            return tf.logical_or(current_mask, condition)
+        
+        # Only apply rule if action is 1 and feature_idx is valid
+        should_apply = tf.logical_and(
+            tf.equal(action, 1),
+            tf.logical_and(
+                feature_idx >= 0,
+                feature_idx < tf.shape(patch_features)[2]
+            )
+        )
+        
+        return tf.cond(should_apply, apply_rule, lambda: current_mask)
+    
+    # Apply all valid rules
+    def rule_loop_condition(i, mask):
+        return i < valid_rules
+    
+    def rule_loop_body(i, mask):
+        new_mask = process_rule(i, mask)
+        return i + 1, new_mask
+    
+    _, final_mask = tf.while_loop(
+        rule_loop_condition,
+        rule_loop_body,
+        [tf.constant(0), patch_mask],
+        parallel_iterations=1
+    )
+    
+    return tf.cast(final_mask, tf.int8)
+
+@tf.function
+def calculate_accuracy_tf(y_true, y_pred):
+    """Calculate accuracy using TensorFlow operations."""
+    y_true = tf.cast(y_true, tf.int64)
+    y_pred = tf.cast(y_pred, tf.int64)
+    correct_predictions = tf.cast(tf.equal(y_true, y_pred), tf.float32)
+    return tf.reduce_mean(correct_predictions)
+
+
+@tf.function
+def calculate_precision_recall_f1_tf(y_true, y_pred):
+    """
+    Calculate precision, recall, and F1 score using TensorFlow operations.
+    Handles edge cases where no positive predictions or no positive labels exist.
+    """
+    # Ensure both tensors have the same dtype
+    y_true = tf.cast(y_true, tf.int64)
+    y_pred = tf.cast(y_pred, tf.int64)
+    
+    # Convert to float32 for calculations
+    y_true_f = tf.cast(y_true, tf.float32)
+    y_pred_f = tf.cast(y_pred, tf.float32)
+    
+    # Calculate confusion matrix components
+    tp = tf.reduce_sum(y_true_f * y_pred_f)  # True positives
+    fp = tf.reduce_sum((1 - y_true_f) * y_pred_f)  # False positives
+    fn = tf.reduce_sum(y_true_f * (1 - y_pred_f))  # False negatives
+    tn = tf.reduce_sum((1 - y_true_f) * (1 - y_pred_f))  # True negatives
+    
+    # Calculate precision with better handling of edge cases
+    precision = tf.cond(
+        tf.equal(tp + fp, 0),
+        # If no positive predictions, check if there are positive labels
+        lambda: tf.cond(
+            tf.equal(tf.reduce_sum(y_true_f), 0),
+            lambda: tf.constant(1.0, dtype=tf.float32),  # Perfect precision if no positives to find
+            lambda: tf.constant(0.0, dtype=tf.float32)   # Zero precision if missed all positives
+        ),
+        lambda: tp / (tp + fp)
+    )
+    
+    # Calculate recall with better handling of edge cases
+    recall = tf.cond(
+        tf.equal(tp + fn, 0),
+        # If no positive labels, perfect recall
+        lambda: tf.constant(1.0, dtype=tf.float32),
+        lambda: tp / (tp + fn)
+    )
+    
+    # Calculate F1 score with improved handling
+    f1 = tf.cond(
+        tf.equal(precision + recall, 0),
+        lambda: tf.constant(0.0, dtype=tf.float32),  # F1 is 0 if both precision and recall are 0
+        lambda: 2 * (precision * recall) / (precision + recall)
+    )
+    
+    if global_config.verbose:
+        # Add debugging information
+        tf.print("TP:", tp, "FP:", fp, "FN:", fn, "TN:", tn)
+        tf.print("Precision:", precision, "Recall:", recall, "F1:", f1)
+    
+    return precision, recall, f1
+
+
+@tf.function
+def calculate_balanced_accuracy_tf(y_true, y_pred):
+    """
+    Calculate balanced accuracy (average of sensitivity and specificity).
+    This is more robust for imbalanced datasets.
+    """
+    y_true = tf.cast(y_true, tf.int64)
+    y_pred = tf.cast(y_pred, tf.int64)
+    
+    y_true_f = tf.cast(y_true, tf.float32)
+    y_pred_f = tf.cast(y_pred, tf.float32)
+    
+    # Calculate confusion matrix components
+    tp = tf.reduce_sum(y_true_f * y_pred_f)
+    fp = tf.reduce_sum((1 - y_true_f) * y_pred_f)
+    fn = tf.reduce_sum(y_true_f * (1 - y_pred_f))
+    tn = tf.reduce_sum((1 - y_true_f) * (1 - y_pred_f))
+    
+    # Sensitivity (recall) = TP / (TP + FN)
+    sensitivity = tf.cond(
+        tf.equal(tp + fn, 0),
+        lambda: tf.constant(1.0, dtype=tf.float32),
+        lambda: tp / (tp + fn)
+    )
+    
+    # Specificity = TN / (TN + FP)
+    specificity = tf.cond(
+        tf.equal(tn + fp, 0),
+        lambda: tf.constant(1.0, dtype=tf.float32),
+        lambda: tn / (tn + fp)
+    )
+    
+    # Balanced accuracy = (Sensitivity + Specificity) / 2
+    balanced_acc = (sensitivity + specificity) / 2.0
+    
+    return balanced_acc
+
+
+@tf.function
+def calculate_matthews_correlation_coefficient(y_true, y_pred):
+    """
+    Calculate Matthews Correlation Coefficient (MCC).
+    MCC is a more balanced measure for imbalanced datasets.
+    Returns a value between -1 and 1, where 1 is perfect prediction.
+    """
+    y_true = tf.cast(y_true, tf.int64)
+    y_pred = tf.cast(y_pred, tf.int64)
+    
+    y_true_f = tf.cast(y_true, tf.float32)
+    y_pred_f = tf.cast(y_pred, tf.float32)
+    
+    # Calculate confusion matrix components
+    tp = tf.reduce_sum(y_true_f * y_pred_f)
+    fp = tf.reduce_sum((1 - y_true_f) * y_pred_f)
+    fn = tf.reduce_sum(y_true_f * (1 - y_pred_f))
+    tn = tf.reduce_sum((1 - y_true_f) * (1 - y_pred_f))
+    
+    # MCC formula: (TP*TN - FP*FN) / sqrt((TP+FP)(TP+FN)(TN+FP)(TN+FN))
+    numerator = tp * tn - fp * fn
+    denominator = tf.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    
+    mcc = tf.cond(
+        tf.equal(denominator, 0),
+        lambda: tf.constant(0.0, dtype=tf.float32),  # Return 0 if denominator is 0
+        lambda: numerator / denominator
+    )
+    
+    return mcc
+
+
+@tf.function(reduce_retracing=True)
+def _compute_fitness_core(precomputed_features, labels, img_height, img_width, 
+                         n_patches_h, n_patches_w, feature_weights, n_patches, 
+                         individual_len, max_possible_rules, individual_tensor):
+    """
+    Updated core TensorFlow computation function with improved metrics.
+    """
+    
+    def process_single_image(args):
+        """Process a single image's features and return prediction and metrics."""
+        img_features, img_idx = args
+        
+        # Generate mask using patch features and individual tensor
+        patch_mask = generate_dynamic_mask(img_features, n_patches_h, n_patches_w, individual_tensor)
+        
+        # Convert to TensorFlow tensor if it's not already
+        if not isinstance(patch_mask, tf.Tensor):
+            patch_mask = tf.convert_to_tensor(patch_mask, dtype=tf.float32)
+        
+        # Calculate connectivity score
+        conn_score = calculate_connectivity(patch_mask)
+        
+        # Count active patches
+        active_patches = tf.cast(tf.reduce_sum(patch_mask), dtype=tf.int64)
+        
+        # Apply patch_mask to features
+        patch_mask_expanded = tf.expand_dims(tf.cast(patch_mask, tf.float32), axis=-1)
+        masked_features = img_features * patch_mask_expanded
+        
+        # Calculate weighted feature importance
+        num_features = tf.minimum(8, tf.shape(img_features)[2])
+        weights = feature_weights[:num_features]
+        
+        # Calculate per-feature scores
+        feature_scores = tf.reduce_sum(masked_features[:, :, :num_features], axis=[0, 1])
+        
+        # Apply weights and sum
+        total_score = tf.reduce_sum(feature_scores * weights)
+        
+        # Normalize by image size
+        normalized_score = total_score / tf.cast(img_height * img_width, tf.float32)
+        
+        # Store the normalized score for threshold calculation later
+        prediction = tf.constant(0, dtype=tf.int64)  # Placeholder, will be calculated globally
+        
+        return prediction, active_patches, conn_score, normalized_score
+    
+    num_samples = tf.shape(precomputed_features)[0]
+    
+    # Create image indices for map_fn
+    image_indices = tf.range(num_samples, dtype=tf.int32)
+    
+    # Use tf.map_fn to vectorize processing across all images
+    predictions, active_patches_per_image, connectivity_scores, scores = tf.map_fn(
+        process_single_image,
+        (precomputed_features, image_indices),
+        fn_output_signature=(
+            tf.TensorSpec(shape=(), dtype=tf.int64),  # prediction (placeholder)
+            tf.TensorSpec(shape=(), dtype=tf.int64),  # active_patches
+            tf.TensorSpec(shape=(), dtype=tf.float32), # connectivity_score
+            tf.TensorSpec(shape=(), dtype=tf.float32)  # normalized_score
+        ),
+        parallel_iterations=10
+    )
+    
+    # Calculate adaptive threshold based on actual score distribution
+    score_mean = tf.reduce_mean(scores)
+    score_std = tf.math.reduce_std(scores)
+    
+    # Calculate class distribution
+    num_positive_labels = tf.reduce_sum(tf.cast(labels, tf.float32))
+    positive_ratio = num_positive_labels / tf.cast(num_samples, tf.float32)
+    
+    # Method 1: Percentile-based threshold
+    # Sort scores and pick threshold based on expected positive ratio
+    sorted_scores = tf.sort(scores, direction='DESCENDING')
+    threshold_idx = tf.cast(positive_ratio * tf.cast(num_samples, tf.float32), tf.int32)
+    threshold_idx = tf.maximum(1, tf.minimum(threshold_idx, num_samples - 1))
+    percentile_threshold = sorted_scores[threshold_idx]
+    
+    # Method 2: Statistical threshold
+    statistical_threshold = score_mean + 0.5 * score_std
+    
+    # Method 3: Otsu-like threshold (simplified)
+    # Find threshold that maximizes between-class variance
+    min_score = tf.reduce_min(scores)
+    max_score = tf.reduce_max(scores)
+    score_range = max_score - min_score
+    
+    # Use the more conservative of percentile and statistical methods
+    adaptive_threshold = tf.minimum(percentile_threshold, statistical_threshold)
+    
+    # Ensure threshold is within reasonable bounds
+    adaptive_threshold = tf.maximum(adaptive_threshold, score_mean * 0.1)  # At least 10% of mean
+    adaptive_threshold = tf.minimum(adaptive_threshold, score_mean + 2 * score_std)  # Not more than 2 std above mean
+    
+    # Apply threshold to get final predictions
+    predictions = tf.cast(scores > adaptive_threshold, tf.int64)
+    
+    # Fallback: If we get no predictions or all predictions, use a more aggressive approach
+    num_predictions = tf.reduce_sum(tf.cast(predictions, tf.float32))
+    
+    def fallback_predictions():
+        # If no predictions, lower threshold to get at least some predictions
+        fallback_threshold = tf.cond(
+            tf.equal(num_predictions, 0),
+            lambda: score_mean * 0.5,  # Much lower threshold
+            lambda: tf.cond(
+                tf.equal(num_predictions, tf.cast(num_samples, tf.float32)),
+                lambda: score_mean + score_std,  # Higher threshold if all predicted positive
+                lambda: adaptive_threshold  # Keep original if reasonable
+            )
+        )
+        return tf.cast(scores > fallback_threshold, tf.int64)
+    
+    # Use fallback if predictions are too extreme (all 0s or all 1s)
+    predictions = tf.cond(
+        tf.logical_or(
+            tf.equal(num_predictions, 0),
+            tf.equal(num_predictions, tf.cast(num_samples, tf.float32))
+        ),
+        fallback_predictions,
+        lambda: predictions
+    )
+    
+    # Calculate total active patches
+    total_active_patches = tf.reduce_sum(active_patches_per_image)
+    
+    if global_config.verbose:
+        # Print debugging information
+        tf.print("=== Threshold Selection ===")
+        tf.print("Score mean:", score_mean, "Score std:", score_std)
+        tf.print("Positive ratio:", positive_ratio)
+        tf.print("Percentile threshold:", percentile_threshold)
+        tf.print("Statistical threshold:", statistical_threshold)
+        tf.print("Selected threshold:", adaptive_threshold)
+        tf.print("Scores > threshold:", tf.reduce_sum(tf.cast(scores > adaptive_threshold, tf.float32)))
+        tf.print("===========================")
+        
+        tf.print("Prediction distribution:", tf.reduce_sum(tf.cast(predictions, tf.float32)), "/", num_samples)
+        tf.print("Label distribution:", tf.reduce_sum(tf.cast(labels, tf.float32)), "/", num_samples)
+    
+    # Calculate classification metrics using improved TensorFlow operations
+    accuracy = calculate_accuracy_tf(labels, predictions)
+    precision, recall, f1 = calculate_precision_recall_f1_tf(labels, predictions)
+    balanced_accuracy = calculate_balanced_accuracy_tf(labels, predictions)
+    mcc = calculate_matthews_correlation_coefficient(labels, predictions)
+    
+    # Calculate average efficiency score
+    avg_patch_selection_ratio = tf.cast(total_active_patches, tf.float32) / tf.cast(num_samples * n_patches, tf.float32)
+    
+    # Progressive penalty for efficiency
+    efficiency_score = tf.case([
+        (avg_patch_selection_ratio < 0.3, lambda: tf.constant(1.0, dtype=tf.float32)),
+        (avg_patch_selection_ratio < 0.5, lambda: 1.0 - (avg_patch_selection_ratio - 0.3) * 2)
+    ], default=lambda: 0.6 - (avg_patch_selection_ratio - 0.5) * 1.2)
+    
+    # Calculate simplicity score
+    simplicity_score = 1.0 - (tf.cast(individual_len, tf.float32) / tf.cast(max_possible_rules, tf.float32))
+    
+    # Calculate average connectivity score
+    connectivity_score = tf.reduce_mean(connectivity_scores)
+    
+    # Updated fitness calculation with better weights and inclusion of new metrics
+    fitness_dict = {
+        'accuracy': accuracy,
+        'balanced_accuracy': balanced_accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'mcc': mcc,
+        'efficiency_score': efficiency_score,
+        'connectivity_score': connectivity_score,
+        'simplicity_score': simplicity_score,
+        'avg_score': tf.reduce_mean(scores),
+        'score_std': tf.math.reduce_std(scores)
+    }
+    
+    # Enhanced fitness calculation - prioritize balanced metrics
+    fitness = (
+        balanced_accuracy * 0.25 +
+        f1 * 0.2 +
+        mcc * 0.1 +
+        precision * 0.1 +
+        recall * 0.1 +
+        efficiency_score * 0.1 +
+        connectivity_score * 0.05 +
+        simplicity_score * 0.05
+    )
+    
+    fitness_dict['fitness'] = fitness
+
+    if global_config.verbose:
+        # Print detailed fitness metrics
+        tf.print("=== Fitness Metrics ===")
+        for key, value in fitness_dict.items():
+            tf.print(f"{key}:", value)
+        tf.print("=====================")
+    else:
+        # Print only the final fitness value
+        tf.print("Final fitness:", fitness)
+    
+    return fitness
+
+
+def evaluate_ga_individual(individual, precomputed_features, labels,
+                                   img_height, img_width, n_patches_h, n_patches_w,
+                                   feature_weights, n_patches, max_possible_rules):
+    """
+    Optimized and vectorized version of evaluate_ga_individual that uses precomputed patch features
+    with TensorFlow graph compilation and vectorized operations.
+
+    Args:
+        individual: Rule set to evaluate (Python list/object)
+        precomputed_features: Pre-extracted patch features tensor [num_images, h_patches, w_patches, num_features]
+        labels: Labels tensor [num_images]
+        img_height, img_width: Image dimensions
+        n_patches_h, n_patches_w: Number of patches in each dimension
+        feature_weights: Weights for different features
+        n_patches: Total number of patches
+        max_possible_rules: Maximum number of rules allowed
+
+    Returns:
+        tuple: (fitness_score,)
+    """
+    
+    try:
+        # Convert individual to tensor-compatible format
+        individual_len = len(individual) if hasattr(individual, '__len__') else 1
+        
+        # Convert individual to tensor representation for TensorFlow operations
+        # This assumes you have a function to convert individual rules to tensor format
+        individual_tensor = convert_individual_to_tensor(individual, max_possible_rules)
+        
+        # Call the compiled TensorFlow function
+        fitness = _compute_fitness_core(
+            precomputed_features, labels, img_height, img_width,
+            n_patches_h, n_patches_w, feature_weights, n_patches,
+            individual_len, max_possible_rules, individual_tensor
+        )
+        
+        return (fitness,)
+        
+    except Exception as e:
+        tf.print("Error in individual evaluation:", e)
+        return (0.0,)
+
+
+def convert_individual_to_tensor(individual, max_possible_rules):
+    """
+    Convert individual rules to tensor format for TensorFlow operations.
+    
+    Args:
+        individual: List of rule dictionaries with keys: 'feature', 'threshold', 'operator', 'action'
+        max_possible_rules: Maximum number of rules to pad to
+        
+    Returns:
+        tf.Tensor: Tensor of shape [max_possible_rules, 4] where each row contains:
+                  [feature_idx, threshold, operator_code, action]
+                  - feature_idx: Index of feature in feature_weights keys
+                  - threshold: Threshold value
+                  - operator_code: 0 for '>', 1 for '<'
+                  - action: 0 for exclude, 1 for include
+    """
+    # Feature name to index mapping
+    feature_names = list(global_config.feature_weights.keys())
+    feature_name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
+    
+    # Initialize tensor with invalid values (-1 for feature_idx indicates unused rule)
+    rule_tensor = tf.constant(-1.0, shape=(max_possible_rules, 4), dtype=tf.float32)
+    
+    if not individual or len(individual) == 0:
+        return rule_tensor
+    
+    # Convert individual rules to tensor format
+    rule_data = []
+    for i, rule in enumerate(individual):
+        if i >= max_possible_rules:
+            break
+            
+        # Get feature index
+        feature_name = rule.get('feature', '')
+        feature_idx = feature_name_to_idx.get(feature_name, -1)
+        
+        # Get threshold
+        threshold = float(rule.get('threshold', 0.0))
+        
+        # Convert operator to code
+        operator = rule.get('operator', '>')
+        operator_code = 0.0 if operator == '>' else 1.0
+        
+        # Get action
+        action = float(rule.get('action', 1))
+        
+        rule_data.append([float(feature_idx), threshold, operator_code, action])
+    
+    # Convert to tensor and update the initialized tensor
+    if rule_data:
+        rule_data_tensor = tf.constant(rule_data, dtype=tf.float32)
+        num_rules = len(rule_data)
+        
+        # Create indices for scatter_nd_update
+        indices = tf.reshape(tf.range(num_rules), (-1, 1))
+        
+        # Use tensor scatter update to fill in the rules
+        rule_tensor = tf.tensor_scatter_nd_update(
+            rule_tensor, 
+            indices, 
+            rule_data_tensor
+        )
+    
+    return rule_tensor
+
+
+def get_edge_detection(image, method='canny', **kwargs):
+    """Perform edge detection on an image using TensorFlow.    
     Args:
         image: Input image (tf.Tensor)
         method: 'canny', 'sobel', or 'scharr'
@@ -101,288 +614,54 @@ def get_edge_detection(image, method='canny', **kwargs):
     else:
         raise ValueError(f"Unknown edge detection method: {method}")
 
-
-def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_set):
-    """
-    Generate a dynamic mask using genetic algorithm rules.
-
-    Args:
-        patch_features (tf.Tensor): Features for each patch in the image
-        n_patches_h (int): Number of patches in height
-        n_patches_w (int): Number of patches in width
-        rule_set (list): List of rules to apply, each rule is a dict with keys:
-                         - 'feature': feature name
-                         - 'threshold': threshold value
-                         - 'operator': comparison operator ('>' or '<')
-                         - 'action': 1 to include patch, 0 to exclude patch
-    Returns:
-        tf.Tensor: Binary patch mask of shape (n_patches_h, n_patches_w)
-    """
-
-    # Feature names used in genetic rules - convert to a list for indexing
-    feature_names = list(global_config.feature_weights.keys())
-    
-    # Use tf.TensorArray for dynamic writes in a loop, then convert to tf.Tensor
-    total_patches = n_patches_h * n_patches_w
-    mask_list = tf.TensorArray(tf.int8, size=total_patches, dynamic_size=False, clear_after_read=False)
-
-    # Initial loop variables for tf.while_loop
-    h = tf.constant(0)
-    w = tf.constant(0)
-    idx = tf.constant(0)
-
-    # Condition for the outer while loop (height)
-    def cond_h(h, w, idx, mask_list):
-        return h < n_patches_h
-
-    # Body for the outer while loop (height)
-    def body_h(h, w, idx, mask_list):
-        # Condition for the inner while loop (width)
-        def cond_w(h, w, idx, mask_list):
-            return w < n_patches_w
-
-        # Body for the inner while loop (width)
-        def body_w(h, w, idx, mask_list):
-            current_patch_features = patch_features[h, w, :]
-            
-            include_patch = tf.constant(False)
-            
-            for rule in rule_set:
-                feature_name = rule["feature"]
-                threshold = rule["threshold"]
-                operator = rule["operator"]
-                action = rule["action"]
-                
-                try:
-                    feature_idx = feature_names.index(feature_name)
-                except ValueError:
-                    continue # Skip rule for unavailable feature
-
-                # Check if feature_idx is within bounds of current_patch_features
-                if feature_idx >= tf.shape(current_patch_features)[0]:
-                    continue
-
-                value = current_patch_features[feature_idx]
-                
-                condition_met = tf.constant(False)
-                if operator == ">":
-                    condition_met = value > threshold
-                else:  # operator == "<"
-                    condition_met = value < threshold
-                
-                # If the condition is met and action is 1, include the patch
-                include_patch = tf.cond(tf.logical_and(condition_met, tf.equal(action, 1)), 
-                                        lambda: tf.constant(True), 
-                                        lambda: include_patch) # Keep current include_patch status if not True
-            
-            mask_val = tf.cond(include_patch, lambda: tf.constant(1, dtype=tf.int8), lambda: tf.constant(0, dtype=tf.int8))
-            
-            # Write to TensorArray
-            mask_list = mask_list.write(idx, mask_val)
-            
-            # Increment width and global index
-            return h, w + 1, idx + 1, mask_list
-
-        # Execute inner while loop for current row (h)
-        _, final_w, final_idx, mask_list = tf.while_loop(
-            cond_w, body_w, loop_vars=[h, tf.constant(0), idx, mask_list]
-        )
-        
-        # Reset w for the next iteration of the outer loop, update idx
-        return h + 1, tf.constant(0), final_idx, mask_list
-
-    # Execute outer while loop
-    _, _, final_idx, mask_list = tf.while_loop(
-        cond_h, body_h, loop_vars=[h, w, idx, mask_list]
-    )
-
-    # Convert TensorArray back to Tensor and reshape
-    patch_mask = tf.reshape(mask_list.stack(), (n_patches_h, n_patches_w))
-    
-    return patch_mask
-
-def evaluate_ga_individual_optimized(individual, precomputed_features, labels, patch_size,
-                                   img_height, img_width, n_patches_h, n_patches_w,
-                                   feature_weights, n_patches, max_possible_rules):
-    """
-    Optimized version of evaluate_ga_individual that uses precomputed patch features.
-    This eliminates redundant feature extraction across all individuals.
-
-    Args:
-        individual: Rule set to evaluate
-        precomputed_features: Pre-extracted patch features tensor [num_images, h_patches, w_patches, num_features]
-        labels: Labels tensor [num_images]
-        patch_size: Size of patches
-        img_height, img_width: Image dimensions
-        n_patches_h, n_patches_w: Number of patches in each dimension
-        feature_weights: Weights for different features
-        n_patches: Total number of patches
-        max_possible_rules: Maximum number of rules allowed
-
-    Returns:
-        tuple: (fitness_score,)
-    """
-    try:
-        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-        from utils import generate_dynamic_mask, calculate_connectivity
-
-        num_samples = tf.shape(precomputed_features)[0] # Keep as TensorFlow tensor
-        
-        # Track metrics across all evaluated images
-        predictions = []
-        # Initialize total_active_patches as a TensorFlow tensor to prevent overflow
-        total_active_patches = tf.constant(0, dtype=tf.int64)
-        connectivity_scores = []
-
-        # Process each image using pre-computed features
-        for img_idx in tf.range(num_samples): # Use tf.range for loop in TF graph
-            # Use pre-computed features directly
-            patch_features = precomputed_features[img_idx]
-
-            # Generate mask using patch features
-            patch_mask = generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, individual)
-
-            # Convert to TensorFlow tensor if it's not already
-            if not isinstance(patch_mask, tf.Tensor):
-                patch_mask = tf.convert_to_tensor(patch_mask, dtype=tf.float32)
-
-            # Track connectivity score
-            conn_score = calculate_connectivity(patch_mask)
-            connectivity_scores.append(conn_score)
-
-            # Track how many patches are active for efficiency calculation
-            # Ensure active_patches is also a TensorFlow tensor before adding
-            active_patches = tf.cast(tf.reduce_sum(patch_mask), dtype=tf.int64)
-            total_active_patches += active_patches
-
-            # Apply patch_mask directly to patch_features
-            patch_mask_expanded = tf.expand_dims(tf.cast(patch_mask, tf.float32), axis=-1)
-            masked_features = patch_features * patch_mask_expanded
-
-            # Calculate weighted feature importance using configurable weights
-            num_features = min(8, patch_features.shape[2])
-            weights = feature_weights[:num_features]
-
-            # Calculate per-feature scores
-            feature_scores = tf.reduce_sum(masked_features[:, :, :num_features], axis=[0, 1])
-
-            # Apply weights and sum
-            total_score = tf.reduce_sum(feature_scores * weights)
-
-            # Normalize by image size to make it scale-invariant
-            normalized_score = total_score / (tf.cast(img_height * img_width, tf.float32))
-
-            # Threshold for AI detection
-            prediction = tf.cond(normalized_score > 0.01, lambda: tf.constant(1), lambda: tf.constant(0))
-            predictions.append(prediction)
-
-        # Calculate classification metrics
-        predictions_tensor = tf.convert_to_tensor(predictions)
-        labels_np = labels.numpy() if isinstance(labels, tf.Tensor) else labels
-        predictions_np = predictions_tensor.numpy() if isinstance(predictions_tensor, tf.Tensor) else predictions_tensor
-
-        accuracy = accuracy_score(labels_np, predictions_np)
-
-        # Only calculate other metrics if we have both classes in predictions
-        unique_predictions = tf.unique(predictions_tensor)[0]
-        if tf.shape(unique_predictions)[0] > 1:
-            precision = precision_score(labels_np, predictions_np, zero_division=0)
-            recall = recall_score(labels_np, predictions_np, zero_division=0)
-            f1 = f1_score(labels_np, predictions_np, zero_division=0)
-        else:
-            precision = 0.5
-            recall = 0.5
-            f1 = 0.5
-
-        # Calculate average efficiency score
-        # Ensure division is performed with float types
-        avg_patch_selection_ratio = tf.cast(total_active_patches, tf.float32) / (tf.cast(num_samples * n_patches, tf.float32))
-
-        # Convert to TensorFlow calculations
-        avg_patch_ratio_tensor = tf.constant(avg_patch_selection_ratio, dtype=tf.float32)
-
-        # Progressive penalty
-        def efficiency_case_1(): return tf.constant(1.0, dtype=tf.float32)
-        def efficiency_case_2(): return 1.0 - (avg_patch_ratio_tensor - 0.3) * 2
-        def efficiency_case_3(): return 0.6 - (avg_patch_ratio_tensor - 0.5) * 1.2
-
-        efficiency_score = tf.case([
-            (avg_patch_ratio_tensor < 0.3, efficiency_case_1),
-            (avg_patch_ratio_tensor < 0.5, efficiency_case_2)
-        ], default=efficiency_case_3)
-
-        # Calculate simplicity score based on number of rules
-        simplicity_score = 1.0 - (len(individual) / max_possible_rules)
-
-        # Use precomputed connectivity scores
-        connectivity_score = tf.reduce_mean(tf.convert_to_tensor(connectivity_scores, dtype=tf.float32)).numpy() if connectivity_scores else 0.5
-
-        # Combined fitness score - weighted average of metrics
-        fitness = (
-            accuracy * 0.4 +
-            precision * 0.15 +
-            recall * 0.15 +
-            f1 * 0.1 +
-            efficiency_score.numpy() * 0.1 +
-            connectivity_score * 0.05 +
-            simplicity_score * 0.05
-        )
-
-        return (fitness,)
-
-    except Exception as e:
-        tf.print("Error in optimized individual evaluation:", e)
-        # Return a low fitness score instead of crashing
-        return (0.0,)
-
+@tf.function
 def calculate_connectivity(patch_mask):
     """
-    Calculate how connected the selected patches are in a vectorized manner.
-    More connected patches are better as they likely represent coherent features.
-
+    TensorFlow-native connectivity calculation that stays in the graph.
+    
     Args:
         patch_mask: Binary mask of shape (n_patches_h, n_patches_w)
 
     Returns:
-        float: Connectivity score between 0 and 1
+        tf.Tensor: Connectivity score between 0 and 1
     """
-    import tensorflow as tf # Need tf in the worker context
-    # Ensure patch_mask is a TensorFlow tensor
-    if not isinstance(patch_mask, tf.Tensor):
-        patch_mask = tf.convert_to_tensor(patch_mask, dtype=tf.float32)
+    # Ensure patch_mask is float32
+    patch_mask = tf.cast(patch_mask, tf.float32)
 
     # If no patches selected, return 0
-    if tf.reduce_sum(patch_mask) == 0:
-        return 0.0
-
-    # Create shifted masks to check neighbors using TensorFlow operations
-    # Pad the mask to handle edges properly
-    padded_mask = tf.pad(patch_mask, [[1, 1], [1, 1]], constant_values=0)
-
-    # Extract shifted versions (up, down, left, right)
-    up = padded_mask[:-2, 1:-1]
-    down = padded_mask[2:, 1:-1]
-    left = padded_mask[1:-1, :-2]
-    right = padded_mask[1:-1, 2:]
-
-    # Count adjacent selected patches
-    adjacent_count = tf.reduce_sum(
-        tf.cast(patch_mask > 0, tf.float32) * tf.cast(up > 0, tf.float32) +
-        tf.cast(patch_mask > 0, tf.float32) * tf.cast(down > 0, tf.float32) +
-        tf.cast(patch_mask > 0, tf.float32) * tf.cast(left > 0, tf.float32) +
-        tf.cast(patch_mask > 0, tf.float32) * tf.cast(right > 0, tf.float32)
-    )
-
-    # Total selected patches
     total_selected = tf.reduce_sum(patch_mask)
+    if_no_patches = tf.equal(total_selected, 0.0)
 
-    # Normalize by maximum possible adjacencies
-    max_possible_adj = tf.cast(total_selected * 4, tf.float32)
-    if max_possible_adj <= 0:
-        return 0.5 # Default for single or no patch selected
-
-    connectivity = adjacent_count / max_possible_adj
-    return connectivity.numpy()
+    def calculate_connectivity_core():
+        # Pad the mask to handle edges
+        padded_mask = tf.pad(patch_mask, [[1, 1], [1, 1]], constant_values=0.0)
+        
+        # Extract shifted versions (up, down, left, right)
+        up = padded_mask[:-2, 1:-1]
+        down = padded_mask[2:, 1:-1]
+        left = padded_mask[1:-1, :-2]
+        right = padded_mask[1:-1, 2:]
+        
+        # Count adjacent selected patches
+        mask_binary = tf.cast(patch_mask > 0, tf.float32)
+        adjacent_count = tf.reduce_sum(
+            mask_binary * tf.cast(up > 0, tf.float32) +
+            mask_binary * tf.cast(down > 0, tf.float32) +
+            mask_binary * tf.cast(left > 0, tf.float32) +
+            mask_binary * tf.cast(right > 0, tf.float32)
+        )
+        
+        # Normalize by maximum possible adjacencies
+        max_possible_adj = total_selected * 4.0
+        connectivity = tf.cond(
+            max_possible_adj > 0,
+            lambda: adjacent_count / max_possible_adj,
+            lambda: 0.5
+        )
+        
+        return connectivity
+    
+    return tf.cond(if_no_patches, lambda: 0.0, calculate_connectivity_core)
 
 @tf.function
 def create_content_mask(image: tf.Tensor) -> tf.Tensor:
@@ -459,33 +738,6 @@ def remove_black_bars(img, threshold=10):
                              [y1 - y0, x1 - x0, img.shape[-1]] if len(img.shape) == 3 else [y1 - y0, x1 - x0])
     
     return tf.cast(cropped, original_dtype)
-
-
-@functools.lru_cache(maxsize=32)
-def cached_fft2(image_hash):
-    """Cache for FFT computations"""
-    # Convert hash back to image (implementation depends on your hashing method)
-    # This part remains conceptually the same, as image_hash_to_array is a helper.
-    image = image_hash_to_array(image_hash) 
-    
-    # tf.signal.fft2d expects complex input, or float that it converts to complex
-    # Ensure image is float32 for FFT
-    image = tf.cast(image, tf.float32)
-    return tf.signal.fft2d(tf.cast(image, tf.complex64))
-
-@functools.lru_cache(maxsize=32)
-def cached_glcm(image_hash, distances, angles, levels=256, symmetric=True, normed=True):
-    """Cache for GLCM computations"""
-    # TensorFlow does not have a direct `skimage.feature.graycomatrix` equivalent.
-    # GLCM computation is complex and would require a custom TensorFlow implementation
-    # involving binning pixels, calculating co-occurrence matrices for each distance/angle, etc.
-    # For a direct conversion, this function would either need to be removed,
-    # or a dedicated TensorFlow-based GLCM library/custom op would be required.
-    
-    # Placeholder for GLCM:
-    # If `graycomatrix` is critical and must be pure TF, you'd need a custom implementation.
-    # For now, raising an error to indicate it's not directly convertible.
-    raise NotImplementedError("GLCM computation (skimage.feature.graycomatrix) has no direct TensorFlow equivalent and requires a custom implementation.")
 
 def image_hash_to_array(image_hash):
     """Helper to convert image hash back to tensorflow array"""

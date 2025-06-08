@@ -22,7 +22,7 @@ min_resolution = 224
 max_resolution = 1920
 scale_factor = 1.0  # Will be dynamically adjusted
 
-debug_timing = True  # Enable detailed timing for feature extraction 
+verbose = True  # Enable detailed debugging output
 
 # Feature weights (should sum to 1.0)
 feature_weights = {

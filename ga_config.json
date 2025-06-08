@@ -1,11 +1,12 @@
 {
     "population_size": 50,
-    "n_generations": 20,
-    "sample_size_for_ga": 1000,
+    "n_generations": 100,
+    "sample_size": 250,
     "crossover_prob": 0.8,
-    "mutation_prob": 0.2,
-    "tournament_size": 3,
+    "mutation_prob": 0.4,
+    "tournament_size": 6,
+    "num_elites": 5,
     "use_multiprocessing": true,
-    "rules_per_individual": 5,
+    "rules_per_individual": 10,
     "max_possible_rules": 100
 }

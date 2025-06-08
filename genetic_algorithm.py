@@ -5,7 +5,7 @@ import time
 from deap import base, creator, tools
 from feature_extractor import FeatureExtractor
 import global_config
-from utils import evaluate_ga_individual_optimized, generate_dynamic_mask
+from utils import evaluate_ga_individual, generate_dynamic_mask
 import logging
 import tensorflow as tf
 
@@ -46,8 +46,9 @@ class GeneticFeatureOptimizer:
         self.crossover_prob = self.ga_config.crossover_prob
         self.mutation_prob = self.ga_config.mutation_prob
         self.tournament_size = self.ga_config.tournament_size
+        self.num_elites = self.ga_config.num_elites  # Add num_elites from ga_config
 
-        self.eval_sample_size = min(self.ga_config.sample_size_for_ga, tf.shape(images)[0].numpy())
+        self.eval_sample_size = min(self.ga_config.sample_size, tf.shape(images)[0].numpy())
         logger.info(f"Using evaluation sample size: {self.eval_sample_size}")
 
         self.rules_per_individual = self.ga_config.rules_per_individual
@@ -173,8 +174,8 @@ class GeneticFeatureOptimizer:
             logger.warning("Features not precomputed, computing on-the-fly (less efficient)")
             self._precompute_features()
         
-        fitness = evaluate_ga_individual_optimized(
-            individual, self.precomputed_features, self.eval_labels, self.patch_size,
+        fitness = evaluate_ga_individual(
+            individual, self.precomputed_features, self.eval_labels,
             self.img_height, self.img_width, self.n_patches_h, self.n_patches_w,
             self.feature_weights, self.n_patches, self.max_possible_rules
         )
@@ -341,8 +342,8 @@ class GeneticFeatureOptimizer:
         stats.register("std", np.std)
         logger.debug("Statistics registered for DEAP.")
 
-        hof = tools.HallOfFame(1)
-        logger.debug("Hall of Fame initialized.")
+        hof = tools.HallOfFame(self.num_elites) # Initialize Hall of Fame with num_elites
+        logger.debug(f"Hall of Fame initialized with capacity {self.num_elites}.")
 
         self.history = [] # Reset history for each run call
 
@@ -362,7 +363,7 @@ class GeneticFeatureOptimizer:
             for ind, fit in zip(pop, fitnesses):
                 ind.fitness.values = fit
             
-            hof.update(pop)
+            hof.update(pop) # Update Hall of Fame with current population
             record = stats.compile(pop)
             
             logger.info(f"Gen {gen + 1}: Max={record['max']:.4f}, Avg={record['avg']:.4f}, Std={record['std']:.4f}")
@@ -376,7 +377,14 @@ class GeneticFeatureOptimizer:
             })
             
             if gen < self.n_generations - 1:
-                offspring = self.toolbox.select(pop, len(pop))
+                # Select the next generation individuals
+                # Elitism: Copy the best individuals directly
+                elites = [self.toolbox.clone(ind) for ind in hof]
+                
+                # Select the rest of the population for crossover and mutation
+                # Ensure the number of selected offspring for genetic operations accounts for elites
+                offspring_size = self.population_size - len(elites)
+                offspring = self.toolbox.select(pop, offspring_size)
                 offspring = list(map(self.toolbox.clone, offspring))
                 
                 crossover_start_time = time.time()
@@ -396,7 +404,8 @@ class GeneticFeatureOptimizer:
                 mutation_end_time = time.time()
                 logger.debug(f"Mutation phase took {mutation_end_time - mutation_start_time:.4f} seconds.")
                 
-                pop[:] = offspring
+                # Combine elites and modified offspring for the next generation
+                pop[:] = elites + offspring
 
         logger.info("Genetic algorithm evolution complete.")
 
@@ -419,12 +428,14 @@ class GeneticFeatureOptimizer:
             mask = generate_dynamic_mask(patch_features, self.n_patches_h, self.n_patches_w, best_ind)
             if not isinstance(mask, tf.Tensor):
                 mask = tf.convert_to_tensor(mask, dtype=tf.float32)
+            else:
+                mask = tf.cast(mask, dtype=tf.float32)
             total_active += tf.reduce_sum(mask)
         mask_gen_end_time = time.time()
         logger.info(f"Mask generation for final statistics took {mask_gen_end_time - mask_gen_start_time:.4f} seconds.")
 
         avg_active = total_active / tf.cast(sample_size, tf.float32)
-        avg_percentage = avg_active / (self.n_patches_h * self.n_patches_w) * 100
+        avg_percentage = avg_active / (tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)) * 100
 
         logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
         logger.info(f"Rules: {len(best_ind)}")

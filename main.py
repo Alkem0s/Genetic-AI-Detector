@@ -74,10 +74,11 @@ def load_ga_config(config_path):
     defaults = {
         "population_size": 50,
         "n_generations": 20,
-        "sample_size_for_ga": 1000,
+        "sample_size": 250,
         "crossover_prob": 0.8,
         "mutation_prob": 0.2,
         "tournament_size": 3,
+        "num_elites": 5,
         "use_multiprocessing": True,
         "rules_per_individual": 5,
         "max_possible_rules": 100
@@ -142,7 +143,7 @@ def train_ai_detector(detector_config, ga_config, model_path, rules_path):
     data_loader = DataLoader(detector_config)
 
     # Create the datasets
-    train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets(detector_config)
+    train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets(detector_config, ga_config)
     logger.info(f"Created TensorFlow dataset pipeline for training and testing")
 
     best_rules = None
