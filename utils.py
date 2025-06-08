@@ -2,6 +2,11 @@
 import tensorflow as tf
 import global_config
 
+# Helper function to get feature name to index map (for external use or debugging)
+def get_feature_name_to_idx_map():
+    return {name: idx for idx, name in enumerate(list(global_config.feature_weights.keys()))}
+
+
 @tf.function
 def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor):
     """
@@ -22,17 +27,28 @@ def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor)
     patch_mask = tf.zeros((n_patches_h, n_patches_w), dtype=tf.bool)
     
     # Get the number of actual rules (non-zero feature indices)
-    valid_rules = tf.reduce_sum(tf.cast(rule_tensor[:, 0] >= 0, tf.int32))
+    # Rules with feature_idx = -1 indicate padding and should be skipped
+    valid_rules_mask = tf.cast(rule_tensor[:, 0] >= 0, tf.int32)
+    valid_rules = tf.reduce_sum(valid_rules_mask)
     
     # Process each rule using tf.while_loop for dynamic number of rules
     def process_rule(i, current_mask):
         # Get rule parameters
+        # Ensure we read from the actual rule_tensor passed
         feature_idx = tf.cast(rule_tensor[i, 0], tf.int32)
         threshold = rule_tensor[i, 1]
         operator = tf.cast(rule_tensor[i, 2], tf.int32)
         action = tf.cast(rule_tensor[i, 3], tf.int32)
         
-        # Skip if action is not 1 (include patch) or feature_idx is invalid
+        # Only apply rule if action is 1 (include patch) and feature_idx is valid
+        should_apply = tf.logical_and(
+            tf.equal(action, 1),
+            tf.logical_and(
+                feature_idx >= 0,
+                feature_idx < tf.shape(patch_features)[2]
+            )
+        )
+        
         def apply_rule():
             # Extract feature values for all patches
             feature_values = patch_features[:, :, feature_idx]
@@ -46,15 +62,6 @@ def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor)
             
             # Update mask (OR operation - if any rule matches, include patch)
             return tf.logical_or(current_mask, condition)
-        
-        # Only apply rule if action is 1 and feature_idx is valid
-        should_apply = tf.logical_and(
-            tf.equal(action, 1),
-            tf.logical_and(
-                feature_idx >= 0,
-                feature_idx < tf.shape(patch_features)[2]
-            )
-        )
         
         return tf.cond(should_apply, apply_rule, lambda: current_mask)
     
@@ -70,7 +77,7 @@ def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor)
         rule_loop_condition,
         rule_loop_body,
         [tf.constant(0), patch_mask],
-        parallel_iterations=1
+        parallel_iterations=1 # Keep parallel_iterations=1 for sequential rule application (OR logic)
     )
     
     return tf.cast(final_mask, tf.int8)
@@ -212,9 +219,10 @@ def calculate_matthews_correlation_coefficient(y_true, y_pred):
 @tf.function(reduce_retracing=True)
 def _compute_fitness_core(precomputed_features, labels, img_height, img_width, 
                          n_patches_h, n_patches_w, feature_weights, n_patches, 
-                         individual_len, max_possible_rules, individual_tensor):
+                         individual_len, max_possible_rules, individual_rule_tensor):
     """
     Updated core TensorFlow computation function with improved metrics.
+    Now directly accepts individual_rule_tensor.
     """
     
     def process_single_image(args):
@@ -222,7 +230,7 @@ def _compute_fitness_core(precomputed_features, labels, img_height, img_width,
         img_features, img_idx = args
         
         # Generate mask using patch features and individual tensor
-        patch_mask = generate_dynamic_mask(img_features, n_patches_h, n_patches_w, individual_tensor)
+        patch_mask = generate_dynamic_mask(img_features, n_patches_h, n_patches_w, individual_rule_tensor)
         
         # Convert to TensorFlow tensor if it's not already
         if not isinstance(patch_mask, tf.Tensor):
@@ -239,7 +247,7 @@ def _compute_fitness_core(precomputed_features, labels, img_height, img_width,
         masked_features = img_features * patch_mask_expanded
         
         # Calculate weighted feature importance
-        num_features = tf.minimum(8, tf.shape(img_features)[2])
+        num_features = tf.minimum(tf.shape(feature_weights)[0], tf.shape(img_features)[2]) # Use actual num_features
         weights = feature_weights[:num_features]
         
         # Calculate per-feature scores
@@ -285,18 +293,13 @@ def _compute_fitness_core(precomputed_features, labels, img_height, img_width,
     # Method 1: Percentile-based threshold
     # Sort scores and pick threshold based on expected positive ratio
     sorted_scores = tf.sort(scores, direction='DESCENDING')
+    # Clamp threshold_idx to valid range [0, num_samples - 1]
     threshold_idx = tf.cast(positive_ratio * tf.cast(num_samples, tf.float32), tf.int32)
-    threshold_idx = tf.maximum(1, tf.minimum(threshold_idx, num_samples - 1))
+    threshold_idx = tf.maximum(0, tf.minimum(threshold_idx, num_samples - 1)) # changed from 1 to 0 and num_samples-1
     percentile_threshold = sorted_scores[threshold_idx]
     
     # Method 2: Statistical threshold
     statistical_threshold = score_mean + 0.5 * score_std
-    
-    # Method 3: Otsu-like threshold (simplified)
-    # Find threshold that maximizes between-class variance
-    min_score = tf.reduce_min(scores)
-    max_score = tf.reduce_max(scores)
-    score_range = max_score - min_score
     
     # Use the more conservative of percentile and statistical methods
     adaptive_threshold = tf.minimum(percentile_threshold, statistical_threshold)
@@ -391,10 +394,10 @@ def _compute_fitness_core(precomputed_features, labels, img_height, img_width,
     fitness = (
         balanced_accuracy * 0.25 +
         f1 * 0.2 +
-        mcc * 0.1 +
+        mcc * 0.15 +
         precision * 0.1 +
         recall * 0.1 +
-        efficiency_score * 0.1 +
+        efficiency_score * 0.05 +
         connectivity_score * 0.05 +
         simplicity_score * 0.05
     )
@@ -420,9 +423,10 @@ def evaluate_ga_individual(individual, precomputed_features, labels,
     """
     Optimized and vectorized version of evaluate_ga_individual that uses precomputed patch features
     with TensorFlow graph compilation and vectorized operations.
+    Directly accepts a pre-formatted rule tensor.
 
     Args:
-        individual: Rule set to evaluate (Python list/object)
+        individual: Individual including rule tensor of shape [max_possible_rules, 4]
         precomputed_features: Pre-extracted patch features tensor [num_images, h_patches, w_patches, num_features]
         labels: Labels tensor [num_images]
         img_height, img_width: Image dimensions
@@ -431,23 +435,17 @@ def evaluate_ga_individual(individual, precomputed_features, labels,
         n_patches: Total number of patches
         max_possible_rules: Maximum number of rules allowed
 
+
     Returns:
         tuple: (fitness_score,)
     """
     
     try:
-        # Convert individual to tensor-compatible format
-        individual_len = len(individual) if hasattr(individual, '__len__') else 1
-        
-        # Convert individual to tensor representation for TensorFlow operations
-        # This assumes you have a function to convert individual rules to tensor format
-        individual_tensor = convert_individual_to_tensor(individual, max_possible_rules)
-        
         # Call the compiled TensorFlow function
         fitness = _compute_fitness_core(
             precomputed_features, labels, img_height, img_width,
             n_patches_h, n_patches_w, feature_weights, n_patches,
-            individual_len, max_possible_rules, individual_tensor
+            individual.num_active_rules, max_possible_rules, individual.rules_tensor
         )
         
         return (fitness,)
@@ -455,72 +453,6 @@ def evaluate_ga_individual(individual, precomputed_features, labels,
     except Exception as e:
         tf.print("Error in individual evaluation:", e)
         return (0.0,)
-
-
-def convert_individual_to_tensor(individual, max_possible_rules):
-    """
-    Convert individual rules to tensor format for TensorFlow operations.
-    
-    Args:
-        individual: List of rule dictionaries with keys: 'feature', 'threshold', 'operator', 'action'
-        max_possible_rules: Maximum number of rules to pad to
-        
-    Returns:
-        tf.Tensor: Tensor of shape [max_possible_rules, 4] where each row contains:
-                  [feature_idx, threshold, operator_code, action]
-                  - feature_idx: Index of feature in feature_weights keys
-                  - threshold: Threshold value
-                  - operator_code: 0 for '>', 1 for '<'
-                  - action: 0 for exclude, 1 for include
-    """
-    # Feature name to index mapping
-    feature_names = list(global_config.feature_weights.keys())
-    feature_name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
-    
-    # Initialize tensor with invalid values (-1 for feature_idx indicates unused rule)
-    rule_tensor = tf.constant(-1.0, shape=(max_possible_rules, 4), dtype=tf.float32)
-    
-    if not individual or len(individual) == 0:
-        return rule_tensor
-    
-    # Convert individual rules to tensor format
-    rule_data = []
-    for i, rule in enumerate(individual):
-        if i >= max_possible_rules:
-            break
-            
-        # Get feature index
-        feature_name = rule.get('feature', '')
-        feature_idx = feature_name_to_idx.get(feature_name, -1)
-        
-        # Get threshold
-        threshold = float(rule.get('threshold', 0.0))
-        
-        # Convert operator to code
-        operator = rule.get('operator', '>')
-        operator_code = 0.0 if operator == '>' else 1.0
-        
-        # Get action
-        action = float(rule.get('action', 1))
-        
-        rule_data.append([float(feature_idx), threshold, operator_code, action])
-    
-    # Convert to tensor and update the initialized tensor
-    if rule_data:
-        rule_data_tensor = tf.constant(rule_data, dtype=tf.float32)
-        num_rules = len(rule_data)
-        
-        # Create indices for scatter_nd_update
-        indices = tf.reshape(tf.range(num_rules), (-1, 1))
-        
-        # Use tensor scatter update to fill in the rules
-        rule_tensor = tf.tensor_scatter_nd_update(
-            rule_tensor, 
-            indices, 
-            rule_data_tensor
-        )
-    
-    return rule_tensor
 
 
 def get_edge_detection(image, method='canny', **kwargs):

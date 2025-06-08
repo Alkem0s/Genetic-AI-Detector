@@ -20,6 +20,7 @@ class GeneticFeatureOptimizer:
     Class for optimizing feature selection in AI image detection using genetic algorithms.
     Uses DEAP library to evolve optimal feature-based conditional rules that generate
     dynamic masks per image based on extracted features.
+    Rules are stored as tensors from the start to avoid conversion overhead.
     """
 
     def __init__(self, images, labels, detector_config=None, ga_config=None):
@@ -46,7 +47,7 @@ class GeneticFeatureOptimizer:
         self.crossover_prob = self.ga_config.crossover_prob
         self.mutation_prob = self.ga_config.mutation_prob
         self.tournament_size = self.ga_config.tournament_size
-        self.num_elites = self.ga_config.num_elites  # Add num_elites from ga_config
+        self.num_elites = self.ga_config.num_elites
 
         self.eval_sample_size = min(self.ga_config.sample_size, tf.shape(images)[0].numpy())
         logger.info(f"Using evaluation sample size: {self.eval_sample_size}")
@@ -64,6 +65,10 @@ class GeneticFeatureOptimizer:
         self.feature_weights = tf.convert_to_tensor(list(global_config.feature_weights.values()),
                                                  dtype=tf.float32)
         self.feature_names = list(global_config.feature_weights.keys())
+        
+        # Create feature name to index mapping for tensor operations
+        self.feature_name_to_idx = {name: idx for idx, name in enumerate(self.feature_names)}
+        self.num_features = len(self.feature_names)
 
         if len(self.images.shape) >= 3:
             img_shape = tf.shape(images[0])
@@ -131,6 +136,47 @@ class GeneticFeatureOptimizer:
         logger.info(f"Feature precomputation complete in {end_time - start_time:.2f} seconds")
         logger.info(f"Precomputed features shape: {self.precomputed_features.shape}")
 
+    def _tensor_rules_similar(self, ind1, ind2):
+        """
+        Custom similarity function for comparing tensor-based individuals.
+        Returns True if individuals are considered similar (same rules).
+        """
+        try:
+            # Compare the rules tensors
+            rules1 = ind1.rules_tensor
+            rules2 = ind2.rules_tensor
+            
+            # Check if tensors have the same shape
+            if not tf.reduce_all(tf.equal(tf.shape(rules1), tf.shape(rules2))):
+                return False
+                
+            # Check if active rule counts are the same
+            if ind1.num_active_rules != ind2.num_active_rules:
+                return False
+            
+            # Compare only the active rules (non -1 entries)
+            # Get active rules from both individuals
+            active_mask1 = rules1[:, 0] >= 0
+            active_mask2 = rules2[:, 0] >= 0
+            
+            # If different number of active rules, they're different
+            if not tf.reduce_all(tf.equal(active_mask1, active_mask2)):
+                return False
+            
+            active_rules1 = tf.boolean_mask(rules1, active_mask1)
+            active_rules2 = tf.boolean_mask(rules2, active_mask2)
+            
+            # Compare active rules with small tolerance for floating point comparison
+            tolerance = 1e-6
+            rules_close = tf.reduce_all(tf.abs(active_rules1 - active_rules2) < tolerance)
+            
+            return bool(rules_close.numpy())
+            
+        except Exception as e:
+            logger.warning(f"Error in similarity comparison: {e}")
+            # Fallback to False if comparison fails
+            return False
+
     def _setup_deap(self):
         """Set up the DEAP genetic algorithm framework"""
         logger.info("Setting up DEAP components...")
@@ -144,15 +190,14 @@ class GeneticFeatureOptimizer:
 
         self.toolbox = base.Toolbox()
 
-        self.toolbox.register("attr_rule", self._random_rule)
-        self.toolbox.register("individual", tools.initRepeat, creator.Individual,
-                             self.toolbox.attr_rule, n=self.rules_per_individual)
+        self.toolbox.register("attr_rule", self._random_rule_tensor)
+        self.toolbox.register("individual", self._create_individual)
         self.toolbox.register("population", tools.initRepeat, list, self.toolbox.individual)
         logger.debug("DEAP toolbox registered for rule, individual, and population creation.")
 
         self.toolbox.register("evaluate", self._evaluate_individual_wrapper)
-        self.toolbox.register("mate", tools.cxTwoPoint)
-        self.toolbox.register("mutate", self._mutate_rule_set)
+        self.toolbox.register("mate", self._crossover_tensor_rules)
+        self.toolbox.register("mutate", self._mutate_tensor_rules)
         self.toolbox.register("select", tools.selTournament, tournsize=self.tournament_size)
         logger.debug("DEAP toolbox registered for evaluation, mating, mutation, and selection.")
 
@@ -165,6 +210,51 @@ class GeneticFeatureOptimizer:
         self.n_workers = 1
         logger.info("Configured for sequential evaluation on the main process to leverage GPU.")
 
+    def _create_individual(self):
+        """Create an individual with tensor-based rules"""
+        # Create a tensor to hold all rules for this individual
+        # Rule tensor shape: [max_rules, 4] where 4 = [feature_idx, threshold, operator, action]
+        # We'll use -1 to indicate unused rule slots
+        rules_tensor = tf.fill([self.max_possible_rules, 4], -1.0)
+        
+        # Fill with actual rules up to rules_per_individual
+        rule_data = []
+        for _ in range(self.rules_per_individual):
+            feature_idx = tf.random.uniform([], 0, self.num_features, dtype=tf.int32)
+            threshold = tf.random.uniform([], 0.0, 1.0, dtype=tf.float32)
+            operator = tf.random.uniform([], 0, 2, dtype=tf.int32)  # 0 for '>', 1 for '<'
+            action = tf.random.uniform([], 0, 2, dtype=tf.int32)    # 0 or 1
+            
+            rule_data.append([tf.cast(feature_idx, tf.float32), threshold, 
+                            tf.cast(operator, tf.float32), tf.cast(action, tf.float32)])
+        
+        if rule_data:
+            rules_tensor = tf.tensor_scatter_nd_update(
+                rules_tensor,
+                tf.expand_dims(tf.range(len(rule_data)), 1),
+                tf.stack(rule_data)
+            )
+        
+        # Store the number of active rules
+        num_active_rules = len(rule_data)
+        
+        # Create Individual instance that holds the tensor and metadata
+        individual = creator.Individual([rules_tensor])
+        individual.num_active_rules = num_active_rules
+        individual.rules_tensor = rules_tensor
+        
+        return individual
+
+    def _random_rule_tensor(self):
+        """Generate a single random rule as tensor data"""
+        feature_idx = tf.random.uniform([], 0, self.num_features, dtype=tf.int32)
+        threshold = tf.random.uniform([], 0.0, 1.0, dtype=tf.float32)
+        operator = tf.random.uniform([], 0, 2, dtype=tf.int32)  # 0 for '>', 1 for '<'
+        action = tf.random.uniform([], 0, 2, dtype=tf.int32)    # 0 or 1
+        
+        return [tf.cast(feature_idx, tf.float32), threshold, 
+                tf.cast(operator, tf.float32), tf.cast(action, tf.float32)]
+
     def _evaluate_individual_wrapper(self, individual):
         """Wrapper for individual evaluation that uses precomputed features"""
         start_time = time.time()
@@ -174,10 +264,11 @@ class GeneticFeatureOptimizer:
             logger.warning("Features not precomputed, computing on-the-fly (less efficient)")
             self._precompute_features()
         
+        # Pass the tensor directly to the evaluation function
         fitness = evaluate_ga_individual(
             individual, self.precomputed_features, self.eval_labels,
             self.img_height, self.img_width, self.n_patches_h, self.n_patches_w,
-            self.feature_weights, self.n_patches, self.max_possible_rules
+            self.feature_weights, self.n_patches, self.max_possible_rules,
         )
         
         end_time = time.time()
@@ -195,67 +286,131 @@ class GeneticFeatureOptimizer:
             logger.debug(f"Individual {i+1} fitness: {result[0]:.4f}")
         return results
 
-    def _random_rule(self):
-        """Generate a random rule for feature-based conditional mask generation."""
-        rule = {
-            "feature": random.choice(self.feature_names),
-            "threshold": tf.random.uniform([], 0.0, 1.0).numpy(),
-            "operator": random.choice([">", "<"]),
-            "action": tf.random.uniform([], 0, 2, dtype=tf.int32).numpy()
-        }
-        return rule
+    def _crossover_tensor_rules(self, ind1, ind2):
+        """Crossover operation for tensor-based rules"""
+        # Get the rules tensors
+        rules1 = ind1.rules_tensor
+        rules2 = ind2.rules_tensor
+        
+        # Simple point crossover - swap some rules between individuals
+        crossover_point = tf.random.uniform([], 1, self.max_possible_rules, dtype=tf.int32)
+        
+        # Create masks for swapping
+        mask = tf.cast(tf.range(self.max_possible_rules) < crossover_point, tf.float32)
+        mask = tf.expand_dims(mask, 1)
+        
+        # Perform crossover
+        new_rules1 = rules1 * mask + rules2 * (1 - mask)
+        new_rules2 = rules2 * mask + rules1 * (1 - mask)
+        
+        # Update individuals
+        ind1.rules_tensor = new_rules1
+        ind1[0] = new_rules1
+        
+        ind2.rules_tensor = new_rules2
+        ind2[0] = new_rules2
+        
+        # Update active rule counts (approximate)
+        ind1.num_active_rules = self._count_active_rules(new_rules1)
+        ind2.num_active_rules = self._count_active_rules(new_rules2)
+        
+        return ind1, ind2
 
-    def _mutate_rule_set(self, individual):
-        """
-        Mutate a rule set by modifying thresholds, operators, features, or actions.
-        May also add or remove rules if appropriate.
-        """
-        logger.debug(f"Mutating individual with {len(individual)} rules.")
-        for i, rule in enumerate(individual):
-            if random.random() < 0.2:
-                delta = tf.random.uniform([], -0.1, 0.1).numpy()
-                rule["threshold"] += delta
-                rule["threshold"] = tf.clip_by_value(tf.constant(rule["threshold"]), 0.0, 1.0).numpy()
-                logger.debug(f"Rule {i}: Mutated threshold to {rule['threshold']:.2f}")
-
-            if random.random() < 0.1:
-                rule["operator"] = ">" if rule["operator"] == "<" else "<"
-                logger.debug(f"Rule {i}: Mutated operator to {rule['operator']}")
-
-            if random.random() < 0.1:
-                rule["feature"] = random.choice(self.feature_names)
-                logger.debug(f"Rule {i}: Mutated feature to {rule['feature']}")
-
-            if random.random() < 0.05:
-                rule["action"] = 1 - rule["action"]
-                logger.debug(f"Rule {i}: Mutated action to {rule['action']}")
-
-        if random.random() < 0.05 and len(individual) < self.max_possible_rules:
-            individual.append(self._random_rule())
-            logger.debug(f"Added a new rule. Total rules: {len(individual)}")
-
-        if random.random() < 0.05 and len(individual) > 1:
-            removed_rule = individual.pop(random.randrange(len(individual)))
-            logger.debug(f"Removed a rule. Total rules: {len(individual)}. Removed: {removed_rule['feature']}")
-
+    def _mutate_tensor_rules(self, individual):
+        """Mutate tensor-based rules"""
+        rules = individual.rules_tensor
+        
+        # Create mutation mask
+        mutation_rate = 0.1
+        mutation_mask = tf.random.uniform([self.max_possible_rules]) < mutation_rate
+        
+        # Mutate thresholds
+        threshold_noise = tf.random.uniform([self.max_possible_rules], -0.1, 0.1)
+        new_thresholds = tf.clip_by_value(rules[:, 1] + threshold_noise, 0.0, 1.0)
+        
+        # Mutate operators (flip some)
+        operator_flip_mask = tf.random.uniform([self.max_possible_rules]) < 0.05
+        new_operators = tf.where(operator_flip_mask, 1.0 - rules[:, 2], rules[:, 2])
+        
+        # Mutate actions (flip some)
+        action_flip_mask = tf.random.uniform([self.max_possible_rules]) < 0.05
+        new_actions = tf.where(action_flip_mask, 1.0 - rules[:, 3], rules[:, 3])
+        
+        # Mutate features
+        feature_change_mask = tf.random.uniform([self.max_possible_rules]) < 0.05
+        new_features = tf.where(
+            feature_change_mask,
+            tf.cast(tf.random.uniform([self.max_possible_rules], 0, self.num_features, dtype=tf.int32), tf.float32),
+            rules[:, 0]
+        )
+        
+        # Apply mutations only where mutation_mask is True
+        mutation_mask_expanded = tf.expand_dims(tf.cast(mutation_mask, tf.float32), 1)
+        
+        new_rules = tf.stack([
+            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_features, rules[:, 0]),
+            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_thresholds, rules[:, 1]),
+            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_operators, rules[:, 2]),
+            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_actions, rules[:, 3])
+        ], axis=1)
+        
+        # Possibly add or remove rules
+        if tf.random.uniform([]) < 0.05 and individual.num_active_rules < self.max_possible_rules:
+            # Add a new rule
+            next_idx = individual.num_active_rules
+            if next_idx < self.max_possible_rules:
+                new_rule_data = self._random_rule_tensor()
+                new_rules = tf.tensor_scatter_nd_update(
+                    new_rules, 
+                    [[next_idx]], 
+                    [new_rule_data]
+                )
+                individual.num_active_rules += 1
+        
+        if tf.random.uniform([]) < 0.05 and individual.num_active_rules > 1:
+            # Remove a rule by setting it to -1
+            remove_idx = tf.random.uniform([], 0, individual.num_active_rules, dtype=tf.int32)
+            new_rules = tf.tensor_scatter_nd_update(
+                new_rules,
+                [[remove_idx]],
+                [[-1.0, -1.0, -1.0, -1.0]]
+            )
+            individual.num_active_rules -= 1
+        
+        # Update individual
+        individual.rules_tensor = new_rules
+        individual[0] = new_rules
+        
         return individual,
+
+    def _count_active_rules(self, rules_tensor):
+        """Count the number of active rules in a tensor (non -1 entries)"""
+        return tf.reduce_sum(tf.cast(rules_tensor[:, 0] >= 0, tf.int32)).numpy()
     
-    def get_feature_importance(self, rule_set):
+    def get_feature_importance(self, individual):
         """
-        Analyze which features contribute most based on the rule set.
+        Analyze which features contribute most based on the tensor rule set.
         Uses precomputed features for efficiency.
         """
         logger.info("Calculating feature importance...")
         feature_scores = {feature: 0 for feature in self.feature_names}
-
-        for rule in rule_set:
-            feature = rule['feature']
-            feature_scores[feature] += 1
+        
+        # Extract active rules from tensor
+        rules_tensor = individual.rules_tensor
+        active_mask = rules_tensor[:, 0] >= 0
+        active_rules = tf.boolean_mask(rules_tensor, active_mask)
+        
+        # Count rule frequency per feature
+        if tf.shape(active_rules)[0] > 0:
+            feature_indices = tf.cast(active_rules[:, 0], tf.int32)
+            for idx in feature_indices:
+                feature_name = self.feature_names[idx.numpy()]
+                feature_scores[feature_name] += 1
+        
         logger.debug(f"Initial rule-based feature scores: {feature_scores}")
 
-        # Use precomputed features if available, otherwise sample from images
+        # Use precomputed features if available
         if self.precomputed_features is not None:
-            # Use a subset of precomputed features for analysis
             num_samples = min(50, tf.shape(self.precomputed_features)[0].numpy())
             sample_features = self.precomputed_features[:num_samples]
             logger.debug(f"Analyzing feature triggers on {num_samples} precomputed feature sets.")
@@ -267,7 +422,6 @@ class GeneticFeatureOptimizer:
             sample_images = tf.gather(self.images, indices_tensor)
             logger.debug(f"Analyzing feature triggers on {len(indices)} sample images.")
             
-            # Extract features for this subset
             sample_features_list = []
             num_samples = tf.shape(sample_images)[0].numpy()
             for i in range(0, num_samples, self.batch_size):
@@ -280,38 +434,43 @@ class GeneticFeatureOptimizer:
         feature_triggers = {feature: 0 for feature in self.feature_names}
         total_patches_evaluated = 0
 
-        num_samples = tf.shape(sample_features)[0].numpy()
-
-        for j in range(num_samples):
-            patch_features = sample_features[j]
-
-            def process_patch(h, w):
-                patch_feature_dict = {}
-                for idx, feature_name in enumerate(self.feature_names):
-                    if idx < patch_features.shape[2]:
-                        patch_feature_dict[feature_name] = patch_features[h, w, idx].numpy()
-
-                for rule in rule_set:
-                    feature = rule["feature"]
-                    if feature not in patch_feature_dict:
-                        continue
-
-                    value = patch_feature_dict[feature]
-                    threshold = rule["threshold"]
-                    operator = rule["operator"]
-
-                    if (operator == ">" and value > threshold) or (operator == "<" and value < threshold):
-                        feature_triggers[feature] += 1
-
-            for h in range(self.n_patches_h):
-                for w in range(self.n_patches_w):
-                    process_patch(h, w)
-                    total_patches_evaluated += 1
+        # Analyze trigger frequency using tensor operations
+        if tf.shape(active_rules)[0] > 0:
+            for j in range(tf.shape(sample_features)[0]):
+                patch_features = sample_features[j]
+                
+                for h in range(self.n_patches_h):
+                    for w in range(self.n_patches_w):
+                        patch_feature_values = patch_features[h, w, :]
+                        
+                        # Check each active rule
+                        for rule_idx in range(tf.shape(active_rules)[0]):
+                            rule = active_rules[rule_idx]
+                            feature_idx = tf.cast(rule[0], tf.int32)
+                            threshold = rule[1] 
+                            operator = tf.cast(rule[2], tf.int32)
+                            
+                            if feature_idx < tf.shape(patch_feature_values)[0]:
+                                value = patch_feature_values[feature_idx]
+                                
+                                # Check condition
+                                condition_met = tf.cond(
+                                    tf.equal(operator, 0),
+                                    lambda: value > threshold,
+                                    lambda: value < threshold
+                                )
+                                
+                                if condition_met:
+                                    feature_name = self.feature_names[feature_idx.numpy()]
+                                    feature_triggers[feature_name] += 1
+                        
+                        total_patches_evaluated += 1
 
         logger.debug(f"Feature triggers: {feature_triggers}. Total patches evaluated: {total_patches_evaluated}")
 
+        # Combine rule frequency and trigger frequency
         for feature in feature_scores:
-            rule_freq = feature_scores[feature] / max(len(rule_set), 1) if rule_set else 0
+            rule_freq = feature_scores[feature] / max(individual.num_active_rules, 1)
             trigger_freq = feature_triggers[feature] / max(total_patches_evaluated, 1) if total_patches_evaluated > 0 else 0
             feature_scores[feature] = 0.7 * rule_freq + 0.3 * trigger_freq
 
@@ -342,10 +501,11 @@ class GeneticFeatureOptimizer:
         stats.register("std", np.std)
         logger.debug("Statistics registered for DEAP.")
 
-        hof = tools.HallOfFame(self.num_elites) # Initialize Hall of Fame with num_elites
-        logger.debug(f"Hall of Fame initialized with capacity {self.num_elites}.")
+        # Create HallOfFame with custom similarity function
+        hof = tools.HallOfFame(self.num_elites, similar=self._tensor_rules_similar)
+        logger.debug(f"Hall of Fame initialized with capacity {self.num_elites} and custom similarity function.")
 
-        self.history = [] # Reset history for each run call
+        self.history = []
 
         for gen in range(self.n_generations):
             logger.info(f"Generation {gen + 1}/{self.n_generations}")
@@ -363,7 +523,7 @@ class GeneticFeatureOptimizer:
             for ind, fit in zip(pop, fitnesses):
                 ind.fitness.values = fit
             
-            hof.update(pop) # Update Hall of Fame with current population
+            hof.update(pop)
             record = stats.compile(pop)
             
             logger.info(f"Gen {gen + 1}: Max={record['max']:.4f}, Avg={record['avg']:.4f}, Std={record['std']:.4f}")
@@ -378,11 +538,8 @@ class GeneticFeatureOptimizer:
             
             if gen < self.n_generations - 1:
                 # Select the next generation individuals
-                # Elitism: Copy the best individuals directly
                 elites = [self.toolbox.clone(ind) for ind in hof]
                 
-                # Select the rest of the population for crossover and mutation
-                # Ensure the number of selected offspring for genetic operations accounts for elites
                 offspring_size = self.population_size - len(elites)
                 offspring = self.toolbox.select(pop, offspring_size)
                 offspring = list(map(self.toolbox.clone, offspring))
@@ -404,7 +561,6 @@ class GeneticFeatureOptimizer:
                 mutation_end_time = time.time()
                 logger.debug(f"Mutation phase took {mutation_end_time - mutation_start_time:.4f} seconds.")
                 
-                # Combine elites and modified offspring for the next generation
                 pop[:] = elites + offspring
 
         logger.info("Genetic algorithm evolution complete.")
@@ -412,8 +568,15 @@ class GeneticFeatureOptimizer:
         best_ind = hof[0]
 
         logger.info("Best rule set found:")
-        for i, rule in enumerate(best_ind):
-            logger.info(f"Rule {i+1}: if {rule['feature']} {rule['operator']} {rule['threshold']:.2f} → {'include' if rule['action'] == 1 else 'exclude'} patch")
+        active_rules = tf.boolean_mask(best_ind.rules_tensor, best_ind.rules_tensor[:, 0] >= 0)
+        for i in range(tf.shape(active_rules)[0]):
+            rule = active_rules[i]
+            feature_idx = tf.cast(rule[0], tf.int32)
+            threshold = rule[1]
+            operator = ">" if tf.cast(rule[2], tf.int32) == 0 else "<"
+            action = "include" if tf.cast(rule[3], tf.int32) == 1 else "exclude"
+            feature_name = self.feature_names[feature_idx.numpy()]
+            logger.info(f"Rule {i+1}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
 
         # Calculate final statistics using precomputed features
         sample_size = min(20, tf.shape(self.precomputed_features)[0].numpy())
@@ -425,11 +588,11 @@ class GeneticFeatureOptimizer:
         mask_gen_start_time = time.time()
         for j in range(sample_size):
             patch_features = sample_features[j]
-            mask = generate_dynamic_mask(patch_features, self.n_patches_h, self.n_patches_w, best_ind)
+            mask = generate_dynamic_mask(patch_features, self.n_patches_h, self.n_patches_w, best_ind.rules_tensor)
             if not isinstance(mask, tf.Tensor):
                 mask = tf.convert_to_tensor(mask, dtype=tf.float32)
             else:
-                mask = tf.cast(mask, dtype=tf.float32)
+                mask = tf.cast(mask, tf.float32)
             total_active += tf.reduce_sum(mask)
         mask_gen_end_time = time.time()
         logger.info(f"Mask generation for final statistics took {mask_gen_end_time - mask_gen_start_time:.4f} seconds.")
@@ -438,12 +601,12 @@ class GeneticFeatureOptimizer:
         avg_percentage = avg_active / (tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)) * 100
 
         logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
-        logger.info(f"Rules: {len(best_ind)}")
+        logger.info(f"Rules: {best_ind.num_active_rules}")
         logger.info(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
 
         return best_ind, {
             'best_fitness': best_ind.fitness.values[0],
-            'rule_count': len(best_ind),
+            'rule_count': best_ind.num_active_rules,
             'avg_active_patches': avg_active.numpy(),
             'avg_active_percentage': avg_percentage.numpy(),
             'history': self.history
@@ -454,77 +617,3 @@ class GeneticFeatureOptimizer:
         Returns the history of fitness statistics and timing recorded during the last GA run.
         """
         return self.history
-
-    def optimize_hyperparameters(self, param_grid, metric='fitness'):
-        """
-        Find optimal hyperparameters for the genetic algorithm.
-
-        Args:
-            param_grid: Dictionary with parameter names as keys and lists of values to try
-            metric: Metric to optimize ('fitness', 'accuracy', etc.)
-
-        Returns:
-            dict: Best hyperparameters
-            float: Best score
-        """
-        logger.info("Starting hyperparameter optimization")
-
-        best_score = -float('inf')
-        best_params = {}
-
-        param_combinations = self._generate_combinations(param_grid)
-        logger.info(f"Generated {len(param_combinations)} hyperparameter combinations.")
-
-        for i, params in enumerate(param_combinations):
-            logger.info(f"[{i+1}/{len(param_combinations)}] Trying parameters: {params}")
-
-            for key, value in params.items():
-                setattr(self, key, value)
-
-            self._setup_deap() # Re-setup DEAP with new parameters
-
-            quick_gens = min(5, self.n_generations)
-            old_gens = self.n_generations
-            self.n_generations = quick_gens
-            logger.debug(f"Running quick optimization for {quick_gens} generations.")
-
-            try:
-                _, stats = self.run()
-                score = stats['best_fitness']
-
-                logger.info(f"Parameters {params} yielded fitness: {score:.4f}")
-                if score > best_score:
-                    best_score = score
-                    best_params = params.copy()
-                    logger.info(f"New best: {best_score:.4f} with {best_params}")
-            except Exception as e:
-                logger.error(f"Error with parameters {params}: {e}")
-
-            self.n_generations = old_gens # Restore original generations for next combination
-
-        logger.info(f"Hyperparameter optimization complete. Best hyperparameters: {best_params}, Best score: {best_score:.4f}")
-        for key, value in best_params.items():
-            setattr(self, key, value)
-
-        self._setup_deap()
-        return best_params, best_score
-
-    def _generate_combinations(self, param_grid):
-        """Generate all combinations of parameters in param_grid"""
-        logger.debug("Generating parameter combinations...")
-        keys = list(param_grid.keys())
-        values = list(param_grid.values())
-        combinations = []
-
-        def _recursive_combine(idx, current_combo):
-            if idx == len(keys):
-                combinations.append(current_combo.copy())
-                return
-
-            for val in values[idx]:
-                current_combo[keys[idx]] = val
-                _recursive_combine(idx + 1, current_combo)
-
-        _recursive_combine(0, {})
-        logger.debug(f"Generated {len(combinations)} combinations.")
-        return combinations

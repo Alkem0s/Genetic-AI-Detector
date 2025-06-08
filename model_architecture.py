@@ -1,4 +1,5 @@
 # model_architecture.py
+import json
 import tensorflow as tf
 from tensorflow.keras import layers, models, Model, callbacks # type: ignore
 import numpy as np
@@ -7,7 +8,7 @@ import pickle
 import os
 
 import global_config
-import utils # Assuming utils contains generate_dynamic_mask and other helpers
+import utils
 
 import logging
 logger = logging.getLogger(__name__)
@@ -240,14 +241,14 @@ class ModelWrapper:
     Wrapper class that integrates genetic algorithm dynamic masks with the CNN model.
     Handles feature extraction using the evolved genetic rules and manages model training.
     """
-    def __init__(self, config, feature_channels=8, genetic_rules=None):
+    def __init__(self, config, feature_channels=8, genetic_rules: tf.Tensor = None):
         """
         Initialize the model wrapper with genetic algorithm integration.
         
         Args:
             config (object): Configuration object with model parameters
             feature_channels (int): Number of feature channels from feature extraction
-            genetic_rules (list, optional): List of evolved rules from genetic algorithm
+            genetic_rules (tf.Tensor, optional): Evolved rules from genetic algorithm as a TensorFlow tensor.
             patch_size (int): Size of patches for feature extraction
             feature_cache_dir (str, optional): Directory to cache extracted features
         """
@@ -256,6 +257,7 @@ class ModelWrapper:
         self.use_features = config.use_feature_extraction
         self.feature_channels = feature_channels
         self.patch_size = config.patch_size
+        # genetic_rules should now be a tf.Tensor
         self.genetic_rules = genetic_rules
         
         # Calculate patch grid dimensions using TensorFlow operations
@@ -281,54 +283,19 @@ class ModelWrapper:
         self.patch_features_cache = {}
         logger.info("ModelWrapper initialized.")
         
-    def set_genetic_rules(self, genetic_rules):
+    def set_genetic_rules(self, genetic_rules: tf.Tensor):
         """
         Set or update the genetic algorithm rules for dynamic mask generation.
         
         Args:
-            genetic_rules (list): List of evolved rules from genetic algorithm
+            genetic_rules (tf.Tensor): Evolved rules from genetic algorithm as a TensorFlow tensor.
         """
         self.genetic_rules = genetic_rules
-        logger.info(f"Updated genetic rules: {len(genetic_rules)} rules set")
+        logger.info(f"Updated genetic rules. Shape: {tf.shape(genetic_rules) if genetic_rules is not None else 'None'}")
         
         # Clear cache when rules change
         self.patch_features_cache = {}
         logger.debug("Patch features cache cleared due to rule change.")
-        
-    def load_genetic_rules(self, rules_path):
-        """
-        Load genetic algorithm rules from a file.
-        
-        Args:
-            rules_path (str): Path to the saved genetic rules file
-        """
-        logger.info(f"Attempting to load genetic rules from {rules_path}...")
-        try:
-            with open(rules_path, 'rb') as f:
-                self.genetic_rules = pickle.load(f)
-            logger.info(f"Loaded {len(self.genetic_rules)} genetic rules from {rules_path}")
-        except Exception as e:
-            logger.error(f"Failed to load genetic rules from {rules_path}: {e}")
-            raise
-            
-    def save_genetic_rules(self, rules_path):
-        """
-        Save the current genetic rules to a file.
-        
-        Args:
-            rules_path (str): Path to save the genetic rules
-        """
-        if self.genetic_rules:
-            logger.info(f"Attempting to save genetic rules to {rules_path}...")
-            try:
-                with open(rules_path, 'wb') as f:
-                    pickle.dump(self.genetic_rules, f)
-                logger.info(f"Saved {len(self.genetic_rules)} genetic rules to {rules_path}")
-            except Exception as e:
-                logger.error(f"Failed to save genetic rules to {rules_path}: {e}")
-                raise
-        else:
-            logger.warning("No genetic rules to save. Skipping save operation.")
             
     def _ensure_feature_extractor(self):
         """Initialize the feature extractor if not already done"""
@@ -478,8 +445,9 @@ class ModelWrapper:
         def process_single_image_tf(args): # Renamed function
             img, patch_features = args
             
-            # Generate dynamic mask using genetic rules (direct call, assuming utils.generate_dynamic_mask is pure TF)
-            # Ensure self.genetic_rules is accessible and properly formatted for TF ops inside utils.
+            # Generate dynamic mask using genetic rules
+            # Assuming utils.generate_dynamic_mask is capable of handling self.genetic_rules as a tf.Tensor
+            # and is optimized for TensorFlow graph execution.
             patch_mask = utils.generate_dynamic_mask(patch_features, self.n_patches_h, self.n_patches_w, self.genetic_rules)
             
             patch_mask.set_shape([self.n_patches_h, self.n_patches_w])
@@ -498,7 +466,6 @@ class ModelWrapper:
             
             # Apply the mask
             masked_features = feature_maps * pixel_mask_tiled
-            logger.debug("Pixel mask applied to feature maps.")
                 
             return masked_features
         
@@ -549,6 +516,243 @@ class ModelWrapper:
         logger.info("Extracting features for a single image using genetic dynamic mask.")
         return self._extract_features_with_genetic_mask(image, batch=False)
         
+    def save_genetic_rules(self, rules_path: str, method='numpy'):
+        """
+        Save the current genetic rules to a file using TensorFlow-native methods.
+        
+        Args:
+            rules_path (str): Path to save the genetic rules (without extension)
+            method (str): Saving method - 'numpy', 'tf_saved_model', 'checkpoint', or 'json'
+        """
+        if self.genetic_rules is None:
+            logger.warning("No genetic rules to save. Skipping save operation.")
+            return
+            
+        logger.info(f"Saving genetic rules using method: {method}")
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(rules_path) if os.path.dirname(rules_path) else '.', exist_ok=True)
+        
+        if method == 'numpy':
+            # Convert tensor to numpy and save as .npy file
+            rules_array = self.genetic_rules.numpy()
+            save_path = f"{rules_path}.npy"
+            np.save(save_path, rules_array)
+            logger.info(f"Genetic rules saved as numpy array to: {save_path}")
+            
+        elif method == 'tf_saved_model':
+            # Save as TensorFlow SavedModel
+            save_path = f"{rules_path}_savedmodel"
+            
+            # Create a simple model that just returns the genetic rules
+            class GeneticRulesModel(tf.Module):
+                def __init__(self, rules):
+                    super().__init__()
+                    self.rules = tf.Variable(rules, trainable=False, name='genetic_rules')
+                
+                @tf.function
+                def get_rules(self):
+                    return self.rules
+            
+            rules_model = GeneticRulesModel(self.genetic_rules)
+            tf.saved_model.save(rules_model, save_path)
+            logger.info(f"Genetic rules saved as SavedModel to: {save_path}")
+            
+        elif method == 'checkpoint':
+            # Save using TensorFlow checkpoint
+            save_path = f"{rules_path}.ckpt"
+            
+            # Create a checkpoint with the genetic rules
+            checkpoint = tf.train.Checkpoint(genetic_rules=tf.Variable(self.genetic_rules))
+            checkpoint.save(save_path)
+            logger.info(f"Genetic rules saved as checkpoint to: {save_path}")
+            
+        elif method == 'json':
+            # Save as JSON (for human-readable format, loses tensor structure)
+            save_path = f"{rules_path}.json"
+            
+            # Convert tensor to nested Python lists
+            rules_list = self.genetic_rules.numpy().tolist()
+            
+            # Save with metadata
+            save_data = {
+                'genetic_rules': rules_list,
+                'shape': self.genetic_rules.shape.as_list(),
+                'dtype': self.genetic_rules.dtype.name,
+                'metadata': {
+                    'feature_channels': self.feature_channels,
+                    'patch_size': self.patch_size,
+                    'saved_with_method': 'json'
+                }
+            }
+            
+            with open(save_path, 'w') as f:
+                json.dump(save_data, f, indent=2)
+            logger.info(f"Genetic rules saved as JSON to: {save_path}")
+            
+        else:
+            raise ValueError(f"Unknown saving method: {method}. Use 'numpy', 'tf_saved_model', 'checkpoint', or 'json'")
+
+    def load_genetic_rules(self, rules_path: str, method='auto'):
+        """
+        Load genetic algorithm rules from a file using TensorFlow-native methods.
+        
+        Args:
+            rules_path (str): Path to the saved genetic rules file
+            method (str): Loading method - 'auto', 'numpy', 'tf_saved_model', 'checkpoint', or 'json'
+        """
+        logger.info(f"Loading genetic rules from: {rules_path}")
+        
+        # Auto-detect method based on file extension or path
+        if method == 'auto':
+            if rules_path.endswith('.npy'):
+                method = 'numpy'
+            elif rules_path.endswith('.json'):
+                method = 'json'
+            elif rules_path.endswith('.ckpt') or '.ckpt' in rules_path:
+                method = 'checkpoint'
+            elif os.path.isdir(rules_path) or rules_path.endswith('_savedmodel'):
+                method = 'tf_saved_model'
+            else:
+                # Try to detect by checking what files exist
+                if os.path.exists(f"{rules_path}.npy"):
+                    method = 'numpy'
+                    rules_path = f"{rules_path}.npy"
+                elif os.path.exists(f"{rules_path}.json"):
+                    method = 'json'
+                    rules_path = f"{rules_path}.json"
+                elif os.path.exists(f"{rules_path}_savedmodel"):
+                    method = 'tf_saved_model'
+                    rules_path = f"{rules_path}_savedmodel"
+                else:
+                    # Check for checkpoint files
+                    ckpt_path = f"{rules_path}.ckpt"
+                    if any(f.startswith(os.path.basename(ckpt_path)) for f in os.listdir(os.path.dirname(ckpt_path) or '.')):
+                        method = 'checkpoint'
+                        rules_path = ckpt_path
+                    else:
+                        raise FileNotFoundError(f"Could not find genetic rules file at: {rules_path}")
+            
+            logger.info(f"Auto-detected loading method: {method}")
+        
+        if method == 'numpy':
+            # Load from numpy array
+            if not rules_path.endswith('.npy'):
+                rules_path = f"{rules_path}.npy"
+            
+            rules_array = np.load(rules_path)
+            self.genetic_rules = tf.convert_to_tensor(rules_array, dtype=tf.float32)
+            logger.info(f"Genetic rules loaded from numpy array. Shape: {self.genetic_rules.shape}")
+            
+        elif method == 'tf_saved_model':
+            # Load from SavedModel
+            if not (os.path.isdir(rules_path) or rules_path.endswith('_savedmodel')):
+                rules_path = f"{rules_path}_savedmodel"
+            
+            loaded_model = tf.saved_model.load(rules_path)
+            self.genetic_rules = loaded_model.get_rules()
+            logger.info(f"Genetic rules loaded from SavedModel. Shape: {self.genetic_rules.shape}")
+            
+        elif method == 'checkpoint':
+            # Load from checkpoint
+            if not rules_path.endswith('.ckpt'):
+                rules_path = f"{rules_path}.ckpt"
+            
+            # Create a temporary variable to load into
+            temp_rules = tf.Variable(tf.zeros([1]), name='genetic_rules')  # Placeholder shape
+            checkpoint = tf.train.Checkpoint(genetic_rules=temp_rules)
+            
+            # Restore the checkpoint
+            status = checkpoint.restore(rules_path)
+            status.expect_partial()  # We only care about genetic_rules
+            
+            self.genetic_rules = temp_rules.value()
+            logger.info(f"Genetic rules loaded from checkpoint. Shape: {self.genetic_rules.shape}")
+            
+        elif method == 'json':
+            # Load from JSON
+            if not rules_path.endswith('.json'):
+                rules_path = f"{rules_path}.json"
+            
+            with open(rules_path, 'r') as f:
+                save_data = json.load(f)
+            
+            # Reconstruct tensor from saved data
+            rules_array = np.array(save_data['genetic_rules'])
+            self.genetic_rules = tf.convert_to_tensor(rules_array, dtype=tf.float32)
+            
+            # Log metadata if available
+            if 'metadata' in save_data:
+                logger.info(f"Loaded genetic rules with metadata: {save_data['metadata']}")
+            
+            logger.info(f"Genetic rules loaded from JSON. Shape: {self.genetic_rules.shape}")
+            
+        else:
+            raise ValueError(f"Unknown loading method: {method}. Use 'auto', 'numpy', 'tf_saved_model', 'checkpoint', or 'json'")
+        
+        # Clear cache when rules change
+        self.patch_features_cache = {}
+        logger.info("Genetic rules loaded successfully. Patch features cache cleared.")
+
+    def save_complete_model_state(self, base_path: str):
+        """
+        Save both the neural network model and genetic rules together.
+        
+        Args:
+            base_path (str): Base path for saving (without extensions)
+        """
+        logger.info(f"Saving complete model state to: {base_path}")
+        
+        # Save the neural network model
+        model_path = f"{base_path}_model.h5"
+        self.save_model(model_path)
+        
+        # Save genetic rules
+        rules_path = f"{base_path}_genetic_rules"
+        self.save_genetic_rules(rules_path, method='numpy')  # Use numpy for efficiency
+        
+        # Save configuration metadata
+        config_path = f"{base_path}_config.json"
+        config_data = {
+            'use_features': self.use_features,
+            'feature_channels': self.feature_channels,
+            'patch_size': self.patch_size,
+            'input_shape': self.input_shape,
+            'model_path': model_path,
+            'genetic_rules_path': f"{rules_path}.npy"
+        }
+        
+        with open(config_path, 'w') as f:
+            json.dump(config_data, f, indent=2)
+        
+        logger.info("Complete model state saved successfully.")
+
+    def load_complete_model_state(self, base_path: str):
+        """
+        Load both the neural network model and genetic rules together.
+        
+        Args:
+            base_path (str): Base path for loading (without extensions)
+        """
+        logger.info(f"Loading complete model state from: {base_path}")
+        
+        # Load configuration
+        config_path = f"{base_path}_config.json"
+        with open(config_path, 'r') as f:
+            config_data = json.load(f)
+        
+        # Load the neural network model
+        self.load_model(config_data['model_path'])
+        
+        # Load genetic rules
+        self.load_genetic_rules(config_data['genetic_rules_path'])
+        
+        # Update configuration
+        self.use_features = config_data['use_features']
+        self.feature_channels = config_data['feature_channels']
+        self.patch_size = config_data['patch_size']
+        self.input_shape = config_data['input_shape']
+
     def load_model(self, model_path):
         """
         Load a saved model from disk.

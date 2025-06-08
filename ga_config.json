@@ -1,6 +1,6 @@
 {
     "population_size": 50,
-    "n_generations": 100,
+    "n_generations": 20,
     "sample_size": 250,
     "crossover_prob": 0.8,
     "mutation_prob": 0.4,
