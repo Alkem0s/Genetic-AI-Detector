@@ -4,7 +4,7 @@ import random
 import time
 from deap import base, creator, tools
 from feature_extractor import FeatureExtractor
-import global_config
+import global_config as config
 from utils import evaluate_ga_individual, generate_dynamic_mask
 import logging
 import tensorflow as tf
@@ -23,38 +23,34 @@ class GeneticFeatureOptimizer:
     Rules are stored as tensors from the start to avoid conversion overhead.
     """
 
-    def __init__(self, images, labels, detector_config=None, ga_config=None):
+    def __init__(self, images, labels):
         """
         Initialize the genetic algorithm optimizer.
 
         Args:
             images: Numpy array of preprocessed images
             labels: Numpy array of labels (0 for human, 1 for AI)
-            detector_config: AIDetectionConfig instance
-            ga_config: GAConfig instance
         """
         logger.info("Initializing GeneticFeatureOptimizer...")
-        self.detector_config = detector_config
-        self.ga_config = ga_config
-
+        
         self.images = tf.convert_to_tensor(images) if not isinstance(images, tf.Tensor) else images
         self.labels = tf.convert_to_tensor(labels) if not isinstance(labels, tf.Tensor) else labels
 
-        self.patch_size = self.detector_config.patch_size
-        self.batch_size = self.detector_config.batch_size
-        self.population_size = self.ga_config.population_size
-        self.n_generations = self.ga_config.n_generations
-        self.crossover_prob = self.ga_config.crossover_prob
-        self.mutation_prob = self.ga_config.mutation_prob
-        self.tournament_size = self.ga_config.tournament_size
-        self.num_elites = self.ga_config.num_elites
+        self.patch_size = config.patch_size
+        self.batch_size = config.batch_size
+        self.population_size = config.population_size
+        self.n_generations = config.n_generations
+        self.crossover_prob = config.crossover_prob
+        self.mutation_prob = config.mutation_prob
+        self.tournament_size = config.tournament_size
+        self.num_elites = config.num_elites
 
-        self.eval_sample_size = min(self.ga_config.sample_size, tf.shape(images)[0].numpy())
+        self.eval_sample_size = min(config.sample_size, tf.shape(images)[0].numpy())
         logger.info(f"Using evaluation sample size: {self.eval_sample_size}")
 
-        self.rules_per_individual = self.ga_config.rules_per_individual
-        self.max_possible_rules = self.ga_config.max_possible_rules
-        self.random_seed = self.detector_config.random_seed
+        self.rules_per_individual = config.rules_per_individual
+        self.max_possible_rules = config.max_possible_rules
+        self.random_seed = config.random_seed
 
         if self.random_seed is not None:
             random.seed(self.random_seed)
@@ -62,24 +58,15 @@ class GeneticFeatureOptimizer:
             tf.random.set_seed(self.random_seed)
             logger.info(f"Random seed set to {self.random_seed}")
 
-        self.feature_weights = tf.convert_to_tensor(list(global_config.feature_weights.values()),
-                                                 dtype=tf.float32)
-        self.feature_names = list(global_config.feature_weights.keys())
-        
+        self.feature_weights = tf.convert_to_tensor(list(config.feature_weights.values()), dtype=tf.float32)
+        self.feature_names = list(config.feature_weights.keys())
+
         # Create feature name to index mapping for tensor operations
         self.feature_name_to_idx = {name: idx for idx, name in enumerate(self.feature_names)}
         self.num_features = len(self.feature_names)
 
-        if len(self.images.shape) >= 3:
-            img_shape = tf.shape(images[0])
-            self.img_height, self.img_width = img_shape[0].numpy(), img_shape[1].numpy()
-            logger.info(f"Image dimensions: {self.img_height}x{self.img_width}")
-        else:
-            logger.error("Images must have at least 3 dimensions [batch, height, width, ...]")
-            raise ValueError("Images must have at least 3 dimensions [batch, height, width, ...]")
-
-        self.n_patches_h = tf.constant(self.img_height // self.patch_size, dtype=tf.int32)
-        self.n_patches_w = tf.constant(self.img_width // self.patch_size, dtype=tf.int32)
+        self.n_patches_h = tf.constant(config.image_size // self.patch_size, dtype=tf.int32)
+        self.n_patches_w = tf.constant(config.image_size // self.patch_size, dtype=tf.int32)
         self.n_patches = self.n_patches_h * self.n_patches_w
 
         logger.info(f"Initialized with {self.n_patches} patches ({self.n_patches_h}×{self.n_patches_w})")
@@ -257,7 +244,8 @@ class GeneticFeatureOptimizer:
 
     def _evaluate_individual_wrapper(self, individual):
         """Wrapper for individual evaluation that uses precomputed features"""
-        start_time = time.time()
+        if config.verbose:
+            start_time = time.time()
         
         # Ensure features are precomputed
         if self.precomputed_features is None:
@@ -266,13 +254,14 @@ class GeneticFeatureOptimizer:
         
         # Pass the tensor directly to the evaluation function
         fitness = evaluate_ga_individual(
-            individual, self.precomputed_features, self.eval_labels,
-            self.img_height, self.img_width, self.n_patches_h, self.n_patches_w,
+            individual, self.precomputed_features, self.eval_labels, 
+            self.n_patches_h, self.n_patches_w,
             self.feature_weights, self.n_patches, self.max_possible_rules,
         )
         
-        end_time = time.time()
-        logger.debug(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
+        if config.verbose:
+            end_time = time.time()
+            logger.debug(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
         return fitness
 
     def _sequential_evaluate_population(self, population):

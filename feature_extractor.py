@@ -1,7 +1,7 @@
 import tensorflow as tf
 from typing import Tuple, Dict, List, Any
 
-import global_config
+import global_config as config
 from structural_features import StructuralFeatureExtractor
 from texture_features import TextureFeatureExtractor
 
@@ -18,12 +18,12 @@ class FeatureExtractor:
         self.texture_extractor = TextureFeatureExtractor()
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.image_size, global_config.image_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[config.image_size, config.image_size, 3], dtype=tf.float32)
     ])
     def extract_patch_features(self, image: tf.Tensor) -> tf.Tensor:
         image_expanded = tf.expand_dims(image, 0)
 
-        static_patch_size = global_config.default_patch_size
+        static_patch_size = config.patch_size
 
         patches = tf.image.extract_patches(
             images=image_expanded,
@@ -42,18 +42,18 @@ class FeatureExtractor:
         patch_features = tf.map_fn(
             lambda single_patch: self._extract_single_patch_features(single_patch),
             patches,
-            fn_output_signature=tf.TensorSpec(shape=[static_patch_size, static_patch_size, len(global_config.feature_weights)], dtype=tf.float32)
+            fn_output_signature=tf.TensorSpec(shape=[static_patch_size, static_patch_size, len(config.feature_weights)], dtype=tf.float32)
         )
 
         patch_features = tf.reduce_mean(patch_features, axis=[1, 2])
         
-        num_features = len(global_config.feature_weights)
+        num_features = len(config.feature_weights)
         patch_features = tf.reshape(patch_features, [n_patches_h, n_patches_w, num_features])
         
         return patch_features
     
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[None, global_config.image_size, global_config.image_size, 3], dtype=tf.float32) # Batch of images (batch_size, H, W, C)
+        tf.TensorSpec(shape=[None, config.image_size, config.image_size, 3], dtype=tf.float32) # Batch of images (batch_size, H, W, C)
     ])
     def extract_batch_patch_features(self, images: tf.Tensor) -> tf.Tensor:
         """
@@ -70,28 +70,28 @@ class FeatureExtractor:
         """
         if tf.size(images) == 0:
             # Use static patch size for calculations
-            static_patch_size = global_config.default_patch_size
-            dummy_image_height = tf.constant(global_config.image_size, dtype=tf.float32)
-            dummy_image_width = tf.constant(global_config.image_size, dtype=tf.float32)
+            static_patch_size = config.patch_size
+            dummy_image_height = tf.constant(config.image_size, dtype=tf.float32)
+            dummy_image_width = tf.constant(config.image_size, dtype=tf.float32)
             patch_size_float = tf.constant(static_patch_size, dtype=tf.float32)
 
             # Number of patches in height/width direction using floor division (mimicking 'VALID' padding)
             n_patches_h = tf.cast(tf.floor(dummy_image_height / patch_size_float), tf.int32)
             n_patches_w = tf.cast(tf.floor(dummy_image_width / patch_size_float), tf.int32)
             
-            return tf.zeros([0, n_patches_h, n_patches_w, len(global_config.feature_weights)], dtype=tf.float32)
+            return tf.zeros([0, n_patches_h, n_patches_w, len(config.feature_weights)], dtype=tf.float32)
 
         # Apply extract_patch_features to each image in the batch
         batch_patches = tf.map_fn(
             lambda img: self.extract_patch_features(img),
             images,
-            fn_output_signature=tf.TensorSpec(shape=[None, None, len(global_config.feature_weights)], dtype=tf.float32)
+            fn_output_signature=tf.TensorSpec(shape=[None, None, len(config.feature_weights)], dtype=tf.float32)
         )
         return batch_patches
 
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_single_patch_features(self, patch: tf.Tensor) -> tf.Tensor:
         """

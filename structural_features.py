@@ -5,7 +5,7 @@ from skimage.transform import radon
 from skimage.feature import graycoprops, graycomatrix
 import cv2
 
-import global_config
+import global_config as config
 import utils # For Canny edge detection and image resizing in NumPy parts
 
 class StructuralFeatureExtractor:
@@ -15,7 +15,7 @@ class StructuralFeatureExtractor:
     EPSILON_NP = 1e-8
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_gradient_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -99,7 +99,7 @@ class StructuralFeatureExtractor:
         return gradient_2d * score
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_pattern_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -149,7 +149,7 @@ class StructuralFeatureExtractor:
             return feature_map
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_edge_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -187,33 +187,33 @@ class StructuralFeatureExtractor:
                     image_np = image_np.astype(np.uint8)
 
                     # Ensure we have the expected shape
-                    if image_np.shape != (global_config.default_patch_size, global_config.default_patch_size):
+                    if image_np.shape != (config.patch_size, config.patch_size):
                         # Resize if shape doesn't match
-                        image_np = cv2.resize(image_np, (global_config.default_patch_size, global_config.default_patch_size))
+                        image_np = cv2.resize(image_np, (config.patch_size, config.patch_size))
 
                     # Apply Canny, thresholds can be tuned or made dynamic
                     edges = cv2.Canny(image_np, threshold1=100, threshold2=200)
                     
                     # Ensure output shape is correct
-                    if edges.shape != (global_config.default_patch_size, global_config.default_patch_size):
-                        edges = cv2.resize(edges, (global_config.default_patch_size, global_config.default_patch_size))
+                    if edges.shape != (config.patch_size, config.patch_size):
+                        edges = cv2.resize(edges, (config.patch_size, config.patch_size))
                     
                     # Normalize to 0-1
                     result = edges.astype(np.float32) / 255.0
                     
                     # Final shape guarantee
-                    if result.shape != (global_config.default_patch_size, global_config.default_patch_size):
-                        result = np.full((global_config.default_patch_size, global_config.default_patch_size), 0.0, dtype=np.float32)
+                    if result.shape != (config.patch_size, config.patch_size):
+                        result = np.full((config.patch_size, config.patch_size), 0.0, dtype=np.float32)
                     
                     return result
                     
                 except Exception as e:
                     # Return a default array if any error occurs
                     print(f"Warning: py_canny failed with error {e}, returning default array")
-                    return np.full((global_config.default_patch_size, global_config.default_patch_size), 0.0, dtype=np.float32)
+                    return np.full((config.patch_size, config.patch_size), 0.0, dtype=np.float32)
 
             edge_map = tf.py_function(py_canny, [image_tf], tf.float32)
-            edge_map.set_shape(tf.TensorShape([global_config.default_patch_size, global_config.default_patch_size])) # Set shape info for graph compilation
+            edge_map.set_shape(tf.TensorShape([config.patch_size, config.patch_size])) # Set shape info for graph compilation
             
             # Expand dims back if needed for stacking
             feature_map = edge_map
@@ -224,7 +224,7 @@ class StructuralFeatureExtractor:
             return feature_map
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[global_config.default_patch_size, global_config.default_patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_symmetry_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -252,7 +252,7 @@ class StructuralFeatureExtractor:
                     gray_np = gray_tf_input.numpy() # Convert to NumPy array
                     
                     # Ensure input shape is correct
-                    expected_shape = (global_config.default_patch_size, global_config.default_patch_size)
+                    expected_shape = (config.patch_size, config.patch_size)
                     if gray_np.shape != expected_shape:
                         # Resize if shape doesn't match
                         gray_np = cv2.resize(gray_np, expected_shape)
@@ -320,13 +320,13 @@ class StructuralFeatureExtractor:
                 except Exception as e:
                     # Return a default array if any error occurs
                     print(f"Warning: py_radon_symmetry failed with error {e}, returning default array")
-                    expected_shape = (global_config.default_patch_size, global_config.default_patch_size)
+                    expected_shape = (config.patch_size, config.patch_size)
                     return np.full(expected_shape, 0.0, dtype=np.float32)
 
             feature_map = tf.py_function(py_radon_symmetry, [gray], tf.float32)
             
             # Get original H, W from input image to set exact shape
-            feature_map.set_shape(tf.TensorShape([global_config.default_patch_size, global_config.default_patch_size])) # Set exact shape info
+            feature_map.set_shape(tf.TensorShape([config.patch_size, config.patch_size])) # Set exact shape info
 
             content_mask = utils.create_content_mask(image) # Use the original input image for mask creation
             feature_map = feature_map * content_mask # Zero out features in black border regions

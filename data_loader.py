@@ -3,6 +3,7 @@ import tensorflow as tf
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
+import global_config as config
 
 class DataLoader:
     """
@@ -10,12 +11,9 @@ class DataLoader:
     to load and process images on-the-fly instead of loading everything into memory.
     """
     
-    def __init__(self, config):
+    def __init__(self):
         """
         Initialize the data loader with configuration settings.
-        
-        Args:
-            config: Configuration object with image_size, batch_size, etc.
         """
         self.image_size = config.image_size
         self.batch_size = config.batch_size
@@ -245,23 +243,22 @@ class DataLoader:
         Returns:
             Optimized dataset
         """
-        # Cache the dataset in memory for small datasets or to disk for larger ones
-        # dataset = dataset.cache()
         
         if is_training:
             # Shuffle only training data
             dataset = dataset.shuffle(buffer_size=min(10000, self.batch_size * 100), 
                                      seed=self.random_seed)
             
-            # Add data augmentation for training
-            dataset = dataset.map(
-                lambda x, y: (self._augment_image(x), y),
-                num_parallel_calls=tf.data.AUTOTUNE
-            )
-        
+            if config.use_augmentation:
+                # Use data augmentation for training
+                dataset = dataset.map(
+                    lambda x, y: (self._augment_image(x), y),
+                    num_parallel_calls=tf.data.AUTOTUNE
+                )
+
         # Batch the data
         dataset = dataset.batch(self.batch_size)
-        
+
         # Prefetch for performance
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
         
@@ -289,13 +286,10 @@ class DataLoader:
         
         return image
     
-    def create_datasets(self, config, ga_config):
+    def create_datasets(self):
         """
         Create train and test datasets from CSV file.
         
-        Args:
-            csv_path: Path to CSV with image paths and labels
-            
         Returns:
             Tuple of (train_ds, val_ds)
         """
@@ -337,7 +331,7 @@ class DataLoader:
         
         # Create a small sample dataset for feature extractor/genetic algorithm
         # to avoid loading all images for those steps
-        sample_size = ga_config.sample_size
+        sample_size = config.sample_size
         print(f"Creating sample dataset of {sample_size} images for feature extraction")
         
         # Use stratified sampling for the sample dataset too
