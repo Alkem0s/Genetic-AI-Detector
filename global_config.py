@@ -21,7 +21,7 @@ skip_training = False
 use_feature_extraction = True
 use_augmentation = True
 
-verbose = False  # Enable detailed debugging output
+verbose = True  # Enable detailed debugging output
 
 # --- Unified Patch and Image Sizes ---
 image_size = 224
@@ -43,11 +43,11 @@ max_possible_rules = 100
 # --- Fitness Weights for Model Evaluation Metrics ---
 # These weights determine the importance of each metric in the overall fitness score
 fitness_weights = {
-    'balanced_accuracy': 0.25,
-    'f1': 0.2,
+    'balanced_accuracy': 0.3,
+    'f1': 0.25,
     'mcc': 0.2,
-    'precision': 0.1,
-    'recall': 0.1,
+    'precision': 0.05,
+    'recall': 0.05,
     'efficiency_score': 0.05,
     'connectivity_score': 0.05,
     'simplicity_score': 0.05
@@ -64,17 +64,3 @@ feature_weights = {
     'color': 0.10, # Detects color distribution anomalies
     'hash': 0.16 # Perceptual hash similarity to known AI patterns
 }
-
-# --- Structural features thresholds ---
-gradient_threshold = 0.8
-pattern_threshold = 0.7
-edge_threshold = 0.65
-symmetry_threshold = 0.8
-
-# --- Texture features thresholds ---
-noise_threshold = 0.7
-texture_threshold = 0.65
-color_threshold = 0.7
-
-# --- Other features thresholds ---
-hash_threshold = 0.85

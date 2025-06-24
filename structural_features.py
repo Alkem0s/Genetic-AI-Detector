@@ -1,151 +1,233 @@
 import tensorflow as tf
-import numpy as np # Keep for utility, but reduce direct usage where possible
-from skimage.metrics import structural_similarity as ssim
-from skimage.transform import radon
-from skimage.feature import graycoprops, graycomatrix
-import cv2
-
+import numpy as np
+from typing import Tuple
 import global_config as config
-import utils # For Canny edge detection and image resizing in NumPy parts
+import utils
 
 class StructuralFeatureExtractor:
-    # Define EPSILON as a class-level tf.constant for TensorFlow operations
+    # Define constants as class-level tf.constants
     EPSILON_TF = tf.constant(1e-8, dtype=tf.float32)
-    # Define a separate NumPy version for use within tf.py_function calls (if any remain)
-    EPSILON_NP = 1e-8
+    
+    # Pre-computed constants for better performance
+    BGR_TO_GRAY_WEIGHTS = tf.constant([0.114, 0.587, 0.299], dtype=tf.float32)
+    SOBEL_X_KERNEL = tf.constant([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], 
+                                dtype=tf.float32, shape=[3, 3, 1, 1])
+    SOBEL_Y_KERNEL = tf.constant([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], 
+                                dtype=tf.float32, shape=[3, 3, 1, 1])
+    
+    # Normalization constants
+    GRADIENT_MAX_VAL = tf.constant(4.0 * 255.0, dtype=tf.float32)
+    FEATURE_MAX_VAL = tf.constant(100.0, dtype=tf.float32)
+    
+    # Canny edge detection kernels (TensorFlow-native implementation)
+    GAUSSIAN_KERNEL = tf.constant([
+        [1., 4., 7., 4., 1.],
+        [4., 16., 26., 16., 4.],
+        [7., 26., 41., 26., 7.],
+        [4., 16., 26., 16., 4.],
+        [1., 4., 7., 4., 1.]
+    ], dtype=tf.float32) / 273.0
+    GAUSSIAN_KERNEL = tf.reshape(GAUSSIAN_KERNEL, [5, 5, 1, 1])
+
+    @staticmethod
+    @tf.function
+    def _rgb_to_grayscale(image: tf.Tensor) -> tf.Tensor:
+        """Convert RGB/BGR image to grayscale using TensorFlow operations."""
+        return tf.reduce_sum(image * StructuralFeatureExtractor.BGR_TO_GRAY_WEIGHTS, axis=-1)
+
+    @staticmethod
+    @tf.function
+    def _apply_sobel_filters(gray: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+        """Apply Sobel filters for gradient computation."""
+        # Expand dims for conv2d (add batch and channel dimensions)
+        gray_expanded = tf.expand_dims(tf.expand_dims(gray, 0), -1)
+        
+        grad_x = tf.nn.conv2d(gray_expanded, StructuralFeatureExtractor.SOBEL_X_KERNEL, 
+                             strides=[1, 1, 1, 1], padding='SAME')
+        grad_y = tf.nn.conv2d(gray_expanded, StructuralFeatureExtractor.SOBEL_Y_KERNEL, 
+                             strides=[1, 1, 1, 1], padding='SAME')
+        
+        # Remove batch and channel dimensions
+        grad_x = tf.squeeze(grad_x, [0, 3])
+        grad_y = tf.squeeze(grad_y, [0, 3])
+        
+        return grad_x, grad_y
+
+    @staticmethod
+    @tf.function
+    def _tf_native_canny(gray: tf.Tensor, low_threshold: float = 50.0, high_threshold: float = 150.0) -> tf.Tensor:
+        """
+        TensorFlow-native Canny edge detection implementation.
+        Simplified but graph-compliant version.
+        """
+        # Step 1: Gaussian blur
+        gray_expanded = tf.expand_dims(tf.expand_dims(gray, 0), -1)
+        blurred = tf.nn.conv2d(gray_expanded, StructuralFeatureExtractor.GAUSSIAN_KERNEL,
+                              strides=[1, 1, 1, 1], padding='SAME')
+        blurred = tf.squeeze(blurred, [0, 3])
+        
+        # Step 2: Gradient computation
+        grad_x, grad_y = StructuralFeatureExtractor._apply_sobel_filters(blurred)
+        
+        # Step 3: Magnitude and direction
+        magnitude = tf.sqrt(grad_x**2 + grad_y**2 + StructuralFeatureExtractor.EPSILON_TF)
+        
+        # Step 4: Non-maximum suppression (simplified)
+        # For graph compliance, we use a simplified version
+        magnitude_padded = tf.pad(magnitude, [[1, 1], [1, 1]], mode='REFLECT')
+        
+        # Check if current pixel is local maximum in 3x3 neighborhood
+        max_pooled = tf.nn.max_pool2d(
+            tf.expand_dims(tf.expand_dims(magnitude_padded, 0), -1),
+            ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='VALID'
+        )
+        max_pooled = tf.squeeze(max_pooled, [0, 3])
+        
+        # Non-maximum suppression
+        suppressed = tf.where(tf.equal(magnitude, max_pooled), magnitude, 0.0)
+        
+        # Step 5: Double thresholding
+        strong_edges = tf.cast(suppressed > high_threshold, tf.float32)
+        weak_edges = tf.cast(tf.logical_and(suppressed > low_threshold, 
+                                          suppressed <= high_threshold), tf.float32) * 0.5
+        
+        edges = strong_edges + weak_edges
+        
+        return tf.clip_by_value(edges, 0.0, 1.0)
+
+    @staticmethod
+    @tf.function
+    def _create_radial_gradient_map(h: tf.Tensor, w: tf.Tensor, score: tf.Tensor) -> tf.Tensor:
+        """Create a radial gradient map for feature visualization."""
+        center_y = tf.cast(h, tf.float32) / 2.0
+        center_x = tf.cast(w, tf.float32) / 2.0
+        
+        y_coords = tf.range(tf.cast(h, tf.int32), dtype=tf.float32)
+        x_coords = tf.range(tf.cast(w, tf.int32), dtype=tf.float32)
+        
+        yy, xx = tf.meshgrid(y_coords, x_coords, indexing='ij')
+        
+        distance = tf.sqrt((yy - center_y)**2 + (xx - center_x)**2)
+        max_distance = tf.sqrt(center_y**2 + center_x**2) + StructuralFeatureExtractor.EPSILON_TF
+        
+        gradient = 1.0 - tf.minimum(distance / max_distance, 1.0)
+        return gradient * score
 
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_gradient_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
-        Extract gradient perfection feature which identifies unnaturally perfect gradients.
-
-        Args:
-            image: Input image (tf.Tensor, assumed to be in BGR format if color)
-
-        Returns:
-            2D feature map same size as input image with values between 0 and 1 (tf.Tensor)
+        Extract gradient perfection feature using pure TensorFlow operations.
         """
         with tf.name_scope('gradient_feature'):
-            image_tensor = image # Already a tf.Tensor due to input_signature
-
-            # Always convert to grayscale as the input signature specifies 3 channels
-            gray_weights = tf.constant([0.114, 0.587, 0.299], dtype=tf.float32) # BGR to grayscale weights
-            gray = tf.reduce_sum(image_tensor * gray_weights, axis=-1)
-
-            # Ensure grayscale image is 2D
+            # Convert to grayscale
+            gray = self._rgb_to_grayscale(image)
             gray = tf.cast(gray, tf.float32)
             
-            # Compute gradients using Sobel filters
-            sobel_x = tf.constant([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], dtype=tf.float32)
-            sobel_y = tf.constant([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], dtype=tf.float32)
+            # Compute gradients
+            grad_x, grad_y = self._apply_sobel_filters(gray)
             
-            # Reshape kernels for conv2d
-            sobel_x = tf.reshape(sobel_x, [3, 3, 1, 1])
-            sobel_y = tf.reshape(sobel_y, [3, 3, 1, 1])
+            # Compute gradient magnitude
+            magnitude = tf.sqrt(grad_x**2 + grad_y**2 + self.EPSILON_TF)
             
-            # Expand dims for batch and channel for conv2d
-            gray_expanded = tf.expand_dims(tf.expand_dims(gray, 0), -1)
-
-            grad_x = tf.nn.conv2d(gray_expanded, sobel_x, strides=[1, 1, 1, 1], padding='SAME')
-            grad_y = tf.nn.conv2d(gray_expanded, sobel_y, strides=[1, 1, 1, 1], padding='SAME')
+            # Normalize magnitude
+            magnitude_normalized = tf.clip_by_value(
+                magnitude / (self.GRADIENT_MAX_VAL + self.EPSILON_TF), 0.0, 1.0
+            )
             
-            # Compute gradient magnitude and direction
-            magnitude = tf.sqrt(grad_x**2 + grad_y**2 + StructuralFeatureExtractor.EPSILON_TF)
-            # Normalize magnitude to 0-1 range based on typical max gradient value (e.g., 4 * 255 for 8-bit image range)
-            magnitude_normalized = magnitude / (4.0 * 255.0 + StructuralFeatureExtractor.EPSILON_TF) # Max value for 8-bit image
-            magnitude_normalized = tf.clip_by_value(magnitude_normalized, 0, 1)
-
-            # Using variance of magnitude (lower variance means more uniform gradient, i.e., "perfect")
-            magnitude_flat = tf.reshape(magnitude, [-1])
-            variance_magnitude = tf.math.reduce_variance(magnitude_flat)
-
-            # Invert variance to get a perfection score (higher score for lower variance)
-            # Add epsilon to prevent division by zero for perfectly uniform (zero variance) areas
-            perfection_score = 1.0 / (variance_magnitude + StructuralFeatureExtractor.EPSILON_TF)
+            # Compute variance-based perfection score
+            mean_magnitude = tf.reduce_mean(magnitude_normalized)
+            variance_magnitude = tf.reduce_mean(tf.square(magnitude_normalized - mean_magnitude))
             
-            # Get original H, W from input image
-            height, width = tf.shape(image)[0], tf.shape(image)[1]
+            # Invert variance for perfection score
+            perfection_score = 1.0 / (variance_magnitude + self.EPSILON_TF)
             
-            # Broadcast the scalar perfection_score to the image dimensions
-            feature_map = tf.fill([height, width], perfection_score) # <<< Change: Direct broadcast
+            # Create feature map using radial gradient
+            height = tf.shape(image)[0]
+            width = tf.shape(image)[1]
             
-            # Normalize to 0-1 (example - adjust max_val based on empirical data)
-            max_val = tf.constant(100.0, dtype=tf.float32) # Heuristic, adjust as needed based on empirical 'perfection_score' values
-            feature_map = tf.clip_by_value(feature_map / max_val, 0.0, 1.0)
+            feature_map = self._create_radial_gradient_map(
+                tf.cast(height, tf.float32), 
+                tf.cast(width, tf.float32), 
+                perfection_score
+            )
             
-            content_mask = utils.create_content_mask(image) # Use the original input image for mask creation
-            feature_map = feature_map * content_mask # Zero out features in black border regions
-
+            # Normalize and clip
+            feature_map = tf.clip_by_value(feature_map / self.FEATURE_MAX_VAL, 0.0, 1.0)
+            
+            # Apply content mask
+            content_mask = utils.create_content_mask(image)
+            feature_map = feature_map * content_mask
+            
             return feature_map
-
-    @staticmethod
-    def _create_horizontal_gradient_map(h, w, score):
-        center_x = tf.cast(w, tf.float32) / 2.0
-        x_coords = tf.range(w, dtype=tf.float32)
-        x_dist = tf.abs(x_coords - center_x) / (tf.cast(w, tf.float32) / 2.0 + StructuralFeatureExtractor.EPSILON_TF) # Use EPSILON_TF
-        gradient = 1.0 - tf.minimum(x_dist, 1.0)
-        gradient_2d = tf.ones([h, 1], dtype=tf.float32) * tf.reshape(gradient, [1, -1])
-        return gradient_2d * score
-
-    @staticmethod
-    def _create_vertical_gradient_map(h, w, score):
-        center_y = tf.cast(h, tf.float32) / 2.0
-        y_coords = tf.range(h, dtype=tf.float32)
-        y_dist = tf.abs(y_coords - center_y) / (tf.cast(h, tf.float32) / 2.0 + StructuralFeatureExtractor.EPSILON_TF) # Use EPSILON_TF
-        gradient = 1.0 - tf.minimum(y_dist, 1.0)
-        gradient_2d = tf.reshape(gradient, [-1, 1]) * tf.ones([1, w], dtype=tf.float32)
-        return gradient_2d * score
 
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_pattern_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
-        Extract repetitive pattern features using FFT.
-
-        Args:
-            image: Input image (tf.Tensor)
-
-        Returns:
-            2D feature map same size as input image with values between 0 and 1 (tf.Tensor)
+        Extract repetitive pattern features using FFT (pure TensorFlow).
         """
         with tf.name_scope('pattern_feature'):
-            image_tf = image
-
-            gray_weights = tf.constant([0.114, 0.587, 0.299], dtype=tf.float32)
-            gray = tf.reduce_sum(image_tf * gray_weights, axis=-1)
-
-            # Ensure grayscale image is 2D
+            # Convert to grayscale
+            gray = self._rgb_to_grayscale(image)
             gray = tf.cast(gray, tf.float32)
-
+            
             # Apply 2D FFT
             f_transform = tf.signal.fft2d(tf.cast(gray, tf.complex64))
             
-            # Shift the zero-frequency component to the center
+            # Shift zero-frequency to center
             f_shift = tf.signal.fftshift(f_transform)
             
-            # Compute magnitude spectrum (log scale for visualization/analysis)
-            magnitude_spectrum = tf.math.log(tf.abs(f_shift) + StructuralFeatureExtractor.EPSILON_TF)
-
-            # Calculate variance of the magnitude spectrum as a pattern score
-            pattern_variance = tf.math.reduce_variance(tf.reshape(magnitude_spectrum, [-1]))
-
-            # Invert variance to get a pattern score (higher score for lower variance, indicating more dominant patterns)
-            pattern_score = 1.0 / (pattern_variance + StructuralFeatureExtractor.EPSILON_TF)
-
-            # Broadcast the scalar pattern_score to the image dimensions
-            height, width = tf.shape(image)[0], tf.shape(image)[1]
-            feature_map = tf.fill([height, width], pattern_score)
-
-            # Normalize to 0-1 (heuristic max_val)
-            max_val = tf.constant(100.0, dtype=tf.float32) # Heuristic, adjust based on empirical 'pattern_score' values
-            feature_map = tf.clip_by_value(feature_map / max_val, 0.0, 1.0)
+            # Compute magnitude spectrum
+            magnitude_spectrum = tf.math.log(tf.abs(f_shift) + self.EPSILON_TF)
             
-            content_mask = utils.create_content_mask(image) # Use the original input image for mask creation
-            feature_map = feature_map * content_mask # Zero out features in black border regions
-
+            # Calculate pattern score based on spectral energy distribution
+            # High-frequency energy vs low-frequency energy ratio
+            h, w = tf.shape(magnitude_spectrum)[0], tf.shape(magnitude_spectrum)[1]
+            center_h, center_w = h // 2, w // 2
+            
+            # Create frequency masks
+            y_coords = tf.range(h, dtype=tf.float32)
+            x_coords = tf.range(w, dtype=tf.float32)
+            yy, xx = tf.meshgrid(y_coords, x_coords, indexing='ij')
+            
+            # Distance from center
+            dist_from_center = tf.sqrt(
+                (yy - tf.cast(center_h, tf.float32))**2 + 
+                (xx - tf.cast(center_w, tf.float32))**2
+            )
+            
+            # High frequency mask (outer region)
+            max_dist = tf.sqrt(tf.cast(center_h**2 + center_w**2, tf.float32))
+            high_freq_mask = tf.cast(dist_from_center > max_dist * 0.3, tf.float32)
+            low_freq_mask = 1.0 - high_freq_mask
+            
+            # Calculate energy in different frequency bands
+            high_freq_energy = tf.reduce_sum(magnitude_spectrum * high_freq_mask)
+            low_freq_energy = tf.reduce_sum(magnitude_spectrum * low_freq_mask)
+            
+            # Pattern score: ratio of high to low frequency energy
+            pattern_score = high_freq_energy / (low_freq_energy + self.EPSILON_TF)
+            
+            # Create feature map
+            height = tf.shape(image)[0]
+            width = tf.shape(image)[1]
+            
+            feature_map = self._create_radial_gradient_map(
+                tf.cast(height, tf.float32), 
+                tf.cast(width, tf.float32), 
+                pattern_score
+            )
+            
+            # Normalize
+            feature_map = tf.clip_by_value(feature_map / self.FEATURE_MAX_VAL, 0.0, 1.0)
+            
+            # Apply content mask
+            content_mask = utils.create_content_mask(image)
+            feature_map = feature_map * content_mask
+            
             return feature_map
 
     @tf.function(input_signature=[
@@ -153,74 +235,20 @@ class StructuralFeatureExtractor:
     ])
     def _extract_edge_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
-        Extract edge features to detect unnatural edge patterns.
-        Using Canny edge detection.
-
-        Args:
-            image: Input image (tf.Tensor, BGR format if color)
-
-        Returns:
-            2D feature map same size as input image with values between 0 and 1 (tf.Tensor)
+        Extract edge features using TensorFlow-native Canny implementation.
         """
         with tf.name_scope('edge_feature'):
-            image_tf = image
+            # Convert to grayscale
+            gray = self._rgb_to_grayscale(image)
+            gray = tf.cast(gray, tf.float32) * 255.0  # Scale to 0-255 range
             
-            image_tf = tf.image.rgb_to_grayscale(tf.cast(image_tf, tf.uint8)) # Convert to grayscale
-
-            # Canny edge detection is not directly available in TensorFlow.
-            # We must use tf.py_function for now or implement a custom Canny-like filter.
-            # For production, consider a custom tf.keras.layers.Conv2D based edge detector
-            # or pre-train a small CNN for edge detection.
+            # Apply TensorFlow-native Canny edge detection
+            edge_map = self._tf_native_canny(gray, low_threshold=50.0, high_threshold=150.0)
             
-            def py_canny(image_tf_input): # Renamed arg to avoid confusion, it's a TF Tensor initially
-                try:
-                    image_np = image_tf_input.numpy() # Convert to NumPy array
-                    
-                    # Ensure image_np is 2D grayscale for Canny
-                    if image_np.ndim == 3:
-                        if image_np.shape[-1] == 3:
-                            image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY) # Canny expects RGB if color
-                        else: # Assuming single channel in last dim
-                            image_np = np.squeeze(image_np, axis=-1)
-
-                    # Convert to uint8 if not already
-                    image_np = image_np.astype(np.uint8)
-
-                    # Ensure we have the expected shape
-                    if image_np.shape != (config.patch_size, config.patch_size):
-                        # Resize if shape doesn't match
-                        image_np = cv2.resize(image_np, (config.patch_size, config.patch_size))
-
-                    # Apply Canny, thresholds can be tuned or made dynamic
-                    edges = cv2.Canny(image_np, threshold1=100, threshold2=200)
-                    
-                    # Ensure output shape is correct
-                    if edges.shape != (config.patch_size, config.patch_size):
-                        edges = cv2.resize(edges, (config.patch_size, config.patch_size))
-                    
-                    # Normalize to 0-1
-                    result = edges.astype(np.float32) / 255.0
-                    
-                    # Final shape guarantee
-                    if result.shape != (config.patch_size, config.patch_size):
-                        result = np.full((config.patch_size, config.patch_size), 0.0, dtype=np.float32)
-                    
-                    return result
-                    
-                except Exception as e:
-                    # Return a default array if any error occurs
-                    print(f"Warning: py_canny failed with error {e}, returning default array")
-                    return np.full((config.patch_size, config.patch_size), 0.0, dtype=np.float32)
-
-            edge_map = tf.py_function(py_canny, [image_tf], tf.float32)
-            edge_map.set_shape(tf.TensorShape([config.patch_size, config.patch_size])) # Set shape info for graph compilation
+            # Apply content mask
+            content_mask = utils.create_content_mask(image)
+            feature_map = edge_map * content_mask
             
-            # Expand dims back if needed for stacking
-            feature_map = edge_map
-            
-            content_mask = utils.create_content_mask(image) # Use the original input image for mask creation
-            feature_map = feature_map * content_mask # Zero out features in black border regions
-
             return feature_map
 
     @tf.function(input_signature=[
@@ -228,107 +256,57 @@ class StructuralFeatureExtractor:
     ])
     def _extract_symmetry_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
-        Extract symmetry features. AI-generated images might exhibit unnatural symmetries.
-        This feature uses Radon transform to detect dominant angles and then assesses symmetry.
-
-        Args:
-            image: Input image (tf.Tensor)
-
-        Returns:
-            2D feature map same size as input image with values between 0 and 1 (tf.Tensor)
+        Extract symmetry features using TensorFlow operations.
+        Simplified approach that detects horizontal and vertical symmetry.
         """
         with tf.name_scope('symmetry_feature'):
-            image_tf = image
-
-            gray_weights = tf.constant([0.114, 0.587, 0.299], dtype=tf.float32)
-            gray = tf.reduce_sum(image_tf * gray_weights, axis=-1)
-            
+            # Convert to grayscale
+            gray = self._rgb_to_grayscale(image)
             gray = tf.cast(gray, tf.float32)
-
-            # Radon transform is not directly available in TensorFlow.
-            # Using tf.py_function.
-            def py_radon_symmetry(gray_tf_input): # Renamed arg to avoid confusion, it's a TF Tensor initially
-                try:
-                    gray_np = gray_tf_input.numpy() # Convert to NumPy array
-                    
-                    # Ensure input shape is correct
-                    expected_shape = (config.patch_size, config.patch_size)
-                    if gray_np.shape != expected_shape:
-                        # Resize if shape doesn't match
-                        gray_np = cv2.resize(gray_np, expected_shape)
-                    
-                    # Ensure input is float64 as skimage.radon expects it for accuracy
-                    gray_np = gray_np.astype(np.float64)
-                    
-                    # Apply Radon transform with safe parameters
-                    theta = np.linspace(0., 180., max(gray_np.shape), endpoint=False)
-                    
-                    # Ensure theta has reasonable length
-                    if len(theta) == 0:
-                        theta = np.linspace(0., 180., 180, endpoint=False)
-                    
-                    sinogram = radon(gray_np, theta=theta, circle=False)
-                    
-                    # Analyze sinogram for symmetry.
-                    # A simple approach: Compare left half with right half, or symmetry around 90/180 degrees.
-                    # For this example, let's consider the variance of projections across angles.
-                    # Perfectly symmetric patterns might have very low variance across certain projection angles.
-                    
-                    # Calculate variance for each angle's projection with bounds checking
-                    if sinogram.shape[1] > 0:
-                        variance_per_angle = np.var(sinogram, axis=0)
-                    else:
-                        variance_per_angle = np.array([1.0])  # Default value
-                    
-                    # Ensure variance_per_angle is not empty
-                    if len(variance_per_angle) == 0:
-                        variance_per_angle = np.array([1.0])
-                    
-                    # Invert variance to get a "symmetry score"
-                    # A lower variance suggests more uniform projections, potentially due to symmetry.
-                    # Normalize and clip.
-                    symmetry_score = 1.0 / (variance_per_angle + StructuralFeatureExtractor.EPSILON_NP)
-                    
-                    # Normalize symmetry_score to 0-1 with bounds checking
-                    min_score = np.min(symmetry_score)
-                    max_score = np.max(symmetry_score)
-                    score_range = max_score - min_score
-                    
-                    if score_range > StructuralFeatureExtractor.EPSILON_NP:
-                        normalized_symmetry_score = (symmetry_score - min_score) / score_range
-                    else:
-                        normalized_symmetry_score = np.zeros_like(symmetry_score)
-                    
-                    # As a feature map, we can broadcast this score to the image dimensions.
-                    # For a more localized feature, one would analyze local patches.
-                    # For simplicity, returning a global score broadcasted.
-                    global_symmetry_score = np.mean(normalized_symmetry_score) # Average across angles
-                    
-                    # Ensure global_symmetry_score is finite
-                    if not np.isfinite(global_symmetry_score):
-                        global_symmetry_score = 0.0
-                    
-                    # Create a feature map of the same size as the input image
-                    feature_map_np = np.full(expected_shape, global_symmetry_score, dtype=np.float32)
-                    
-                    # Final shape guarantee
-                    if feature_map_np.shape != expected_shape:
-                        feature_map_np = np.full(expected_shape, 0.0, dtype=np.float32)
-                    
-                    return feature_map_np
-                    
-                except Exception as e:
-                    # Return a default array if any error occurs
-                    print(f"Warning: py_radon_symmetry failed with error {e}, returning default array")
-                    expected_shape = (config.patch_size, config.patch_size)
-                    return np.full(expected_shape, 0.0, dtype=np.float32)
-
-            feature_map = tf.py_function(py_radon_symmetry, [gray], tf.float32)
             
-            # Get original H, W from input image to set exact shape
-            feature_map.set_shape(tf.TensorShape([config.patch_size, config.patch_size])) # Set exact shape info
-
-            content_mask = utils.create_content_mask(image) # Use the original input image for mask creation
-            feature_map = feature_map * content_mask # Zero out features in black border regions
-
+            # Horizontal symmetry: compare left and right halves
+            h, w = tf.shape(gray)[0], tf.shape(gray)[1]
+            left_half = gray[:, :w//2]
+            right_half = tf.reverse(gray[:, w//2:], axis=[1])
+            
+            # Ensure both halves have the same width
+            min_width = tf.minimum(tf.shape(left_half)[1], tf.shape(right_half)[1])
+            left_half = left_half[:, :min_width]
+            right_half = right_half[:, :min_width]
+            
+            # Calculate horizontal symmetry score
+            h_diff = tf.abs(left_half - right_half)
+            h_symmetry = 1.0 - tf.reduce_mean(h_diff) / (tf.reduce_max(gray) + self.EPSILON_TF)
+            
+            # Vertical symmetry: compare top and bottom halves
+            top_half = gray[:h//2, :]
+            bottom_half = tf.reverse(gray[h//2:, :], axis=[0])
+            
+            # Ensure both halves have the same height
+            min_height = tf.minimum(tf.shape(top_half)[0], tf.shape(bottom_half)[0])
+            top_half = top_half[:min_height, :]
+            bottom_half = bottom_half[:min_height, :]
+            
+            # Calculate vertical symmetry score
+            v_diff = tf.abs(top_half - bottom_half)
+            v_symmetry = 1.0 - tf.reduce_mean(v_diff) / (tf.reduce_max(gray) + self.EPSILON_TF)
+            
+            # Combine symmetry scores
+            symmetry_score = (h_symmetry + v_symmetry) / 2.0
+            symmetry_score = tf.clip_by_value(symmetry_score, 0.0, 1.0)
+            
+            # Create feature map
+            height = tf.shape(image)[0]
+            width = tf.shape(image)[1]
+            
+            feature_map = self._create_radial_gradient_map(
+                tf.cast(height, tf.float32), 
+                tf.cast(width, tf.float32), 
+                symmetry_score
+            )
+            
+            # Apply content mask
+            content_mask = utils.create_content_mask(image)
+            feature_map = feature_map * content_mask
+            
             return feature_map

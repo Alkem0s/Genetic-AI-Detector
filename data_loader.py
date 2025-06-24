@@ -89,74 +89,93 @@ class DataLoader:
         Returns:
             Subsampled DataFrame with balanced labels
         """
-        # Get unique labels and their counts
+        # Get label counts and proportions
         label_counts = df['label'].value_counts()
-        unique_labels = label_counts.index.tolist()
+        total_samples = len(df)
         
-        # Calculate minimum samples per label to ensure representation
-        min_samples_per_label = max(1, max_samples // (len(unique_labels) * 4))  # At least 1, but allow some imbalance
+        # Calculate target samples per label based on original proportions
+        target_samples_per_label = {}
+        allocated_samples = 0
         
-        subsampled_dfs = []
-        remaining_samples = max_samples
-        
-        # First pass: ensure minimum representation for each label
-        for label in unique_labels:
-            label_df = df[df['label'] == label]
-            available_samples = len(label_df)
+        # First, calculate proportional allocation
+        for label in label_counts.index:
+            proportion = label_counts[label] / total_samples
+            target_count = int(max_samples * proportion)
             
-            if available_samples == 0:
-                continue
-                
-            # Take minimum samples or all available if less than minimum
-            samples_to_take = min(min_samples_per_label, available_samples, remaining_samples)
+            # Ensure at least 1 sample per label if the label exists and we have room
+            if target_count == 0 and label_counts[label] > 0 and allocated_samples < max_samples:
+                target_count = 1
             
-            if samples_to_take > 0:
-                sampled_df = label_df.sample(n=samples_to_take, random_state=self.random_seed)
-                subsampled_dfs.append(sampled_df)
-                remaining_samples -= samples_to_take
+            # Don't exceed available samples for this label
+            target_count = min(target_count, label_counts[label])
+            
+            target_samples_per_label[label] = target_count
+            allocated_samples += target_count
         
-        # Second pass: distribute remaining samples proportionally
+        # If we haven't allocated all samples, distribute the remainder
+        # proportionally among labels that have more samples available
+        remaining_samples = max_samples - allocated_samples
+        
         if remaining_samples > 0:
-            # Calculate proportions based on original distribution
-            total_original = len(df)
+            # Calculate how many additional samples we can take from each label
+            available_additional = {}
+            for label in label_counts.index:
+                available_additional[label] = max(0, label_counts[label] - target_samples_per_label[label])
             
-            for label in unique_labels:
-                if remaining_samples <= 0:
+            # Distribute remaining samples proportionally among labels with availability
+            total_additional_available = sum(available_additional.values())
+            
+            if total_additional_available > 0:
+                for label in label_counts.index:
+                    if available_additional[label] > 0:
+                        proportion = available_additional[label] / total_additional_available
+                        additional = min(
+                            int(remaining_samples * proportion),
+                            available_additional[label]
+                        )
+                        target_samples_per_label[label] += additional
+                        remaining_samples -= additional
+                        
+                        if remaining_samples <= 0:
+                            break
+            
+            # If there are still remaining samples, add them one by one to labels with availability
+            while remaining_samples > 0:
+                added_any = False
+                for label in label_counts.index:
+                    if remaining_samples <= 0:
+                        break
+                    if target_samples_per_label[label] < label_counts[label]:
+                        target_samples_per_label[label] += 1
+                        remaining_samples -= 1
+                        added_any = True
+                
+                # If we can't add any more samples, break to avoid infinite loop
+                if not added_any:
                     break
-                    
+        
+        # Sample from each label according to target counts
+        subsampled_dfs = []
+        for label, target_count in target_samples_per_label.items():
+            if target_count > 0:
                 label_df = df[df['label'] == label]
-                already_sampled = sum(len(sub_df[sub_df['label'] == label]) 
-                                    for sub_df in subsampled_dfs)
-                available_samples = len(label_df) - already_sampled
-                
-                if available_samples <= 0:
-                    continue
-                
-                # Calculate proportional additional samples
-                original_proportion = len(label_df) / total_original
-                additional_samples = int(remaining_samples * original_proportion)
-                additional_samples = min(additional_samples, available_samples, remaining_samples)
-                
-                if additional_samples > 0:
-                    # Get samples not already selected
-                    already_selected_indices = set()
-                    for sub_df in subsampled_dfs:
-                        if label in sub_df['label'].values:
-                            already_selected_indices.update(sub_df[sub_df['label'] == label].index)
-                    
-                    available_df = label_df[~label_df.index.isin(already_selected_indices)]
-                    
-                    if len(available_df) >= additional_samples:
-                        additional_sampled = available_df.sample(n=additional_samples, 
-                                                               random_state=self.random_seed + label)
-                        subsampled_dfs.append(additional_sampled)
-                        remaining_samples -= additional_samples
+                sampled_df = label_df.sample(n=target_count, random_state=self.random_seed)
+                subsampled_dfs.append(sampled_df)
         
-        # Combine all subsampled dataframes
+        # Combine and shuffle
         result_df = pd.concat(subsampled_dfs, ignore_index=True)
-        
-        # Shuffle the final result
         result_df = result_df.sample(frac=1, random_state=self.random_seed).reset_index(drop=True)
+        
+        # Print allocation summary
+        print(f"Stratified sampling allocated {len(result_df)} samples:")
+        actual_counts = result_df['label'].value_counts().sort_index()
+        for label in sorted(target_samples_per_label.keys()):
+            original = label_counts[label]
+            target = target_samples_per_label[label]
+            actual = actual_counts.get(label, 0)
+            original_pct = (original / total_samples) * 100
+            actual_pct = (actual / len(result_df)) * 100 if len(result_df) > 0 else 0
+            print(f"  Label {label}: {actual}/{original} samples ({original_pct:.1f}% → {actual_pct:.1f}%)")
         
         return result_df
 

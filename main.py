@@ -96,6 +96,7 @@ def train_ai_detector(model_base_path):
         genetic_optimizer = GeneticFeatureOptimizer(
             images=sample_images,
             labels=sample_labels,
+            config=config,
         )
 
         # Run the genetic algorithm optimization
@@ -118,7 +119,7 @@ def train_ai_detector(model_base_path):
     )
 
     # Save the model state (NN model + genetic rules)
-    model_wrapper.save_model_state(model_base_path)
+    model_wrapper.save_model_state(model_wrapper, model_base_path)
     logger.info(f"Saved model state (NN model and genetic rules) to {model_base_path}.*")
 
     logger.info("=== Step 4: Evaluating the model ===")

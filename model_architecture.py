@@ -5,7 +5,6 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, Model, callbacks # type: ignore
 import numpy as np
 import os
-import hashlib
 
 import global_config as config
 import utils
@@ -304,7 +303,7 @@ class ModelWrapper:
         """Initialize the feature extractor if not already done"""
         if self.feature_extractor is None:
             from feature_extractor import FeatureExtractor
-            self.feature_extractor = FeatureExtractor()
+            self.feature_extractor = FeatureExtractor(config)
             logger.info("Feature extractor initialized.")
     
     def extract_batch_features(self, images):

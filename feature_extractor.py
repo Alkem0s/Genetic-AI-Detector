@@ -13,9 +13,10 @@ class FeatureExtractor:
     The GeneticFeatureOptimizer expects this module to extract features
     from patches of images and return them in a consistent format.
     """
-    def __init__(self):
+    def __init__(self, config):
         self.structural_extractor = StructuralFeatureExtractor()
         self.texture_extractor = TextureFeatureExtractor()
+        self.feature_weights = config.feature_weights
 
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[config.image_size, config.image_size, 3], dtype=tf.float32)
@@ -42,12 +43,12 @@ class FeatureExtractor:
         patch_features = tf.map_fn(
             lambda single_patch: self._extract_single_patch_features(single_patch),
             patches,
-            fn_output_signature=tf.TensorSpec(shape=[static_patch_size, static_patch_size, len(config.feature_weights)], dtype=tf.float32)
+            fn_output_signature=tf.TensorSpec(shape=[static_patch_size, static_patch_size, len(self.feature_weights)], dtype=tf.float32)
         )
 
         patch_features = tf.reduce_mean(patch_features, axis=[1, 2])
         
-        num_features = len(config.feature_weights)
+        num_features = len(self.feature_weights)
         patch_features = tf.reshape(patch_features, [n_patches_h, n_patches_w, num_features])
         
         return patch_features
@@ -79,13 +80,13 @@ class FeatureExtractor:
             n_patches_h = tf.cast(tf.floor(dummy_image_height / patch_size_float), tf.int32)
             n_patches_w = tf.cast(tf.floor(dummy_image_width / patch_size_float), tf.int32)
             
-            return tf.zeros([0, n_patches_h, n_patches_w, len(config.feature_weights)], dtype=tf.float32)
+            return tf.zeros([0, n_patches_h, n_patches_w, len(self.feature_weights)], dtype=tf.float32)
 
         # Apply extract_patch_features to each image in the batch
         batch_patches = tf.map_fn(
             lambda img: self.extract_patch_features(img),
             images,
-            fn_output_signature=tf.TensorSpec(shape=[None, None, len(config.feature_weights)], dtype=tf.float32)
+            fn_output_signature=tf.TensorSpec(shape=[None, None, len(self.feature_weights)], dtype=tf.float32)
         )
         return batch_patches
 

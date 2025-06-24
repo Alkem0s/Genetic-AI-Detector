@@ -4,8 +4,8 @@ import random
 import time
 from deap import base, creator, tools
 from feature_extractor import FeatureExtractor
-import global_config as config
-from utils import evaluate_ga_individual, generate_dynamic_mask
+from utils import generate_dynamic_mask
+from fitness_evaluation import evaluate_ga_individual
 import logging
 import tensorflow as tf
 
@@ -21,21 +21,26 @@ class GeneticFeatureOptimizer:
     Uses DEAP library to evolve optimal feature-based conditional rules that generate
     dynamic masks per image based on extracted features.
     Rules are stored as tensors from the start to avoid conversion overhead.
+    
+    Features are precomputed immediately upon initialization and reused across multiple runs.
     """
 
-    def __init__(self, images, labels):
+    def __init__(self, images, labels, config):
         """
         Initialize the genetic algorithm optimizer.
+        Features are precomputed immediately after initialization.
 
         Args:
             images: Numpy array of preprocessed images
             labels: Numpy array of labels (0 for human, 1 for AI)
+            config: A dictionary or object containing configuration parameters.
         """
         logger.info("Initializing GeneticFeatureOptimizer...")
         
         self.images = tf.convert_to_tensor(images) if not isinstance(images, tf.Tensor) else images
         self.labels = tf.convert_to_tensor(labels) if not isinstance(labels, tf.Tensor) else labels
 
+        self.config = config
         self.patch_size = config.patch_size
         self.batch_size = config.extraction_batch_size
         self.population_size = config.population_size
@@ -51,6 +56,7 @@ class GeneticFeatureOptimizer:
         self.rules_per_individual = config.rules_per_individual
         self.max_possible_rules = config.max_possible_rules
         self.random_seed = config.random_seed
+        self.verbose = config.verbose
 
         if self.random_seed is not None:
             random.seed(self.random_seed)
@@ -71,21 +77,34 @@ class GeneticFeatureOptimizer:
 
         logger.info(f"Initialized with {self.n_patches} patches ({self.n_patches_h}×{self.n_patches_w})")
 
-        self.feature_extractor = FeatureExtractor()
+        self.feature_extractor = FeatureExtractor(config)
 
         # Initialize precomputed features storage
         self.precomputed_features = None
         self.eval_labels = None
+        self.features_computed = False
 
-        self.history = []
+        # Run history for multiple runs
+        self.all_run_histories = []
+        self.current_run_history = []
+
         self._setup_deap()
-        logger.info("GeneticFeatureOptimizer initialization complete.")
+        
+        # Precompute features immediately after initialization
+        self._precompute_features()
+        
+        logger.info("GeneticFeatureOptimizer initialization complete with precomputed features.")
 
     def _precompute_features(self):
         """
-        Precompute patch features for the evaluation dataset once before GA starts.
-        This eliminates redundant feature extraction across all individuals.
+        Precompute patch features for the evaluation dataset once.
+        This eliminates redundant feature extraction across all individuals and runs.
+        Can be called multiple times safely - will skip if already computed.
         """
+        if self.features_computed:
+            logger.info("Features already precomputed, skipping...")
+            return
+            
         logger.info("Precomputing patch features for evaluation dataset...")
         start_time = time.time()
         
@@ -93,7 +112,10 @@ class GeneticFeatureOptimizer:
         
         # Determine the actual sample to use for evaluation
         if self.eval_sample_size < num_images_in_input:
-            indices = random.sample(range(num_images_in_input), self.eval_sample_size)
+            # Use consistent sampling across runs by using the same seed for sampling
+            if self.random_seed is not None:
+                np.random.seed(self.random_seed)
+            indices = np.random.choice(num_images_in_input, self.eval_sample_size, replace=False)
             indices_tensor = tf.convert_to_tensor(indices, dtype=tf.int32)
             sample_images = tf.gather(self.images, indices_tensor)
             self.eval_labels = tf.gather(self.labels, indices_tensor)
@@ -118,10 +140,27 @@ class GeneticFeatureOptimizer:
 
         # Concatenate all batch features into a single tensor
         self.precomputed_features = tf.concat(all_batch_features, axis=0)
+        self.features_computed = True
         
         end_time = time.time()
         logger.info(f"Feature precomputation complete in {end_time - start_time:.2f} seconds")
         logger.info(f"Precomputed features shape: {self.precomputed_features.shape}")
+
+    def recompute_features(self, force=False):
+        """
+        Force recomputation of features. Useful if images or configuration has changed.
+        
+        Args:
+            force (bool): If True, forces recomputation even if features are already computed.
+        """
+        if force or not self.features_computed:
+            logger.info("Forcing feature recomputation...")
+            self.features_computed = False
+            self.precomputed_features = None
+            self.eval_labels = None
+            self._precompute_features()
+        else:
+            logger.info("Features already computed. Use force=True to recompute.")
 
     def _tensor_rules_similar(self, ind1, ind2):
         """
@@ -244,22 +283,22 @@ class GeneticFeatureOptimizer:
 
     def _evaluate_individual_wrapper(self, individual):
         """Wrapper for individual evaluation that uses precomputed features"""
-        if config.verbose:
+        if self.verbose:
             start_time = time.time()
         
-        # Ensure features are precomputed
-        if self.precomputed_features is None:
-            logger.warning("Features not precomputed, computing on-the-fly (less efficient)")
-            self._precompute_features()
+        # Features should already be precomputed at this point
+        if not self.features_computed or self.precomputed_features is None:
+            logger.error("Features not precomputed! This should not happen with the refactored code.")
+            raise RuntimeError("Features must be precomputed before evaluation")
         
         # Pass the tensor directly to the evaluation function
         fitness = evaluate_ga_individual(
-            individual, self.precomputed_features, self.eval_labels, 
+            individual, self.config, self.precomputed_features, self.eval_labels, 
             self.n_patches_h, self.n_patches_w,
             self.feature_weights, self.n_patches, self.max_possible_rules,
         )
         
-        if config.verbose:
+        if self.verbose:
             end_time = time.time()
             logger.debug(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
         return fitness
@@ -398,27 +437,10 @@ class GeneticFeatureOptimizer:
         
         logger.debug(f"Initial rule-based feature scores: {feature_scores}")
 
-        # Use precomputed features if available
-        if self.precomputed_features is not None:
-            num_samples = min(50, tf.shape(self.precomputed_features)[0].numpy())
-            sample_features = self.precomputed_features[:num_samples]
-            logger.debug(f"Analyzing feature triggers on {num_samples} precomputed feature sets.")
-        else:
-            # Fallback to original sampling method
-            num_images = tf.shape(self.images)[0].numpy()
-            indices = random.sample(range(num_images), min(50, num_images))
-            indices_tensor = tf.convert_to_tensor(indices, dtype=tf.int32)
-            sample_images = tf.gather(self.images, indices_tensor)
-            logger.debug(f"Analyzing feature triggers on {len(indices)} sample images.")
-            
-            sample_features_list = []
-            num_samples = tf.shape(sample_images)[0].numpy()
-            for i in range(0, num_samples, self.batch_size):
-                batch_end = min(i + self.batch_size, num_samples)
-                batch_images = sample_images[i:batch_end]
-                batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
-                sample_features_list.append(batch_patch_features)
-            sample_features = tf.concat(sample_features_list, axis=0)
+        # Use precomputed features (should always be available now)
+        num_samples = min(50, tf.shape(self.precomputed_features)[0].numpy())
+        sample_features = self.precomputed_features[:num_samples]
+        logger.debug(f"Analyzing feature triggers on {num_samples} precomputed feature sets.")
 
         feature_triggers = {feature: 0 for feature in self.feature_names}
         total_patches_evaluated = 0
@@ -471,14 +493,28 @@ class GeneticFeatureOptimizer:
 
         return feature_scores
 
-    def run(self):
+    def run(self, run_id=None):
         """
         Execute the genetic algorithm optimization.
+        Can be called multiple times, reusing precomputed features.
+        
+        Args:
+            run_id (str, optional): Identifier for this run. If None, uses run number.
         """
-        logger.info(f"Starting genetic algorithm with population={self.population_size}, generations={self.n_generations}")
+        run_number = len(self.all_run_histories) + 1
+        if run_id is None:
+            run_id = f"run_{run_number}"
+            
+        logger.info(f"Starting genetic algorithm run '{run_id}' with population={self.population_size}, generations={self.n_generations}")
+        logger.info(f"Using precomputed features (computed={self.features_computed})")
 
-        # Precompute features once before starting GA
-        self._precompute_features()
+        # Ensure features are precomputed (should already be done in __init__)
+        if not self.features_computed:
+            logger.warning("Features not precomputed, this should not happen in refactored version")
+            self._precompute_features()
+
+        # Reset current run history
+        self.current_run_history = []
 
         pop = self.toolbox.population(n=self.population_size)
         logger.info(f"Initial population of {len(pop)} individuals created.")
@@ -494,7 +530,7 @@ class GeneticFeatureOptimizer:
         hof = tools.HallOfFame(self.num_elites, similar=self._tensor_rules_similar)
         logger.debug(f"Hall of Fame initialized with capacity {self.num_elites} and custom similarity function.")
 
-        self.history = []
+        run_start_time = time.time()
 
         for gen in range(self.n_generations):
             logger.info(f"Generation {gen + 1}/{self.n_generations}")
@@ -517,7 +553,7 @@ class GeneticFeatureOptimizer:
             
             logger.info(f"Gen {gen + 1}: Max={record['max']:.4f}, Avg={record['avg']:.4f}, Std={record['std']:.4f}")
             
-            self.history.append({
+            self.current_run_history.append({
                 'generation': gen + 1,
                 'max_fitness': record['max'],
                 'avg_fitness': record['avg'],
@@ -552,7 +588,10 @@ class GeneticFeatureOptimizer:
                 
                 pop[:] = elites + offspring
 
-        logger.info("Genetic algorithm evolution complete.")
+        run_end_time = time.time()
+        total_run_time = run_end_time - run_start_time
+
+        logger.info(f"Genetic algorithm run '{run_id}' complete in {total_run_time:.2f} seconds.")
 
         best_ind = hof[0]
 
@@ -593,7 +632,10 @@ class GeneticFeatureOptimizer:
         logger.info(f"Rules: {best_ind.num_active_rules}")
         logger.info(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
 
-        return best_ind, {
+        # Store run results
+        run_results = {
+            'run_id': run_id,
+            'run_number': run_number,
             'best_fitness': best_ind.fitness.values[0],
             'rule_count': best_ind.num_active_rules,
             'avg_active_patches': avg_active.numpy(),
