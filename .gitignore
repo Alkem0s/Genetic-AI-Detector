@@ -15,3 +15,7 @@
 /train.csv
 /test.csv
 /test.py
+*.png
+*.pdf
+*.docx
+*.jpg

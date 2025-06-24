@@ -16,7 +16,7 @@ class DataLoader:
         Initialize the data loader with configuration settings.
         """
         self.image_size = config.image_size
-        self.batch_size = config.batch_size
+        self.batch_size = config.cnn_batch_size
         self.random_seed = config.random_seed
         self.test_size = config.test_size
         self.max_images = config.max_images 

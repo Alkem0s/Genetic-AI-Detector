@@ -13,20 +13,8 @@ from visualization import Visualizer
 
 import global_config as config
 
-logger = logging.getLogger('ai_detector')
+logger = logging.getLogger('ai_detector_main')
 logger.setLevel(logging.INFO)
-
-# Check if handlers already exist to prevent duplicate output
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-
-    logger.propagate = False
-
-    logger.info("Logging configured.")
-
 
 def setup_environment():
     """Setup environment variables and configurations"""
@@ -39,6 +27,26 @@ def setup_environment():
 
     # Create feature cache directory
     os.makedirs(os.path.join(config.output_dir, config.feature_cache_dir), exist_ok=True)
+
+    # Clear existing handlers to prevent duplicates if called multiple times (though not expected in main)
+    if logger.handlers:
+        for handler in logger.handlers[:]: # Iterate over a copy
+            logger.removeHandler(handler)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    logger.propagate = False # Usually set once globally for the logger
+
+    # Add file handler to logger
+    log_file_path = os.path.join(config.output_dir, 'ai_detector.log')
+    file_handler = logging.FileHandler(log_file_path)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.info(f"Console output will also be saved to {log_file_path}")
 
     # Setup GPU memory growth
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -62,7 +70,7 @@ def setup_environment():
         tf.keras.mixed_precision.set_global_policy(policy)
         logger.info("Mixed precision enabled (float16)")
 
-    # Prepare base path for saving/loading complete model state
+    # Prepare base path for saving/loading model state
     model_base_path = os.path.join(config.output_dir, config.model_path.split('.')[0])
     return model_base_path
 
@@ -109,9 +117,9 @@ def train_ai_detector(model_base_path):
         model_path=config.model_path
     )
 
-    # Save the complete model state (NN model + genetic rules)
-    model_wrapper.save_complete_model_state(model_base_path)
-    logger.info(f"Saved complete model state (NN model and genetic rules) to {model_base_path}.*")
+    # Save the model state (NN model + genetic rules)
+    model_wrapper.save_model_state(model_base_path)
+    logger.info(f"Saved model state (NN model and genetic rules) to {model_base_path}.*")
 
     logger.info("=== Step 4: Evaluating the model ===")
     model = model_wrapper.get_model()
@@ -134,7 +142,7 @@ def train_ai_detector(model_base_path):
     # Save metrics summary
     save_metrics(metrics, history)
 
-    logger.info(f"Model training complete. Complete model state saved to {model_base_path}.*")
+    logger.info(f"Model training complete. Model state saved to {model_base_path}.*")
     return model_wrapper, best_rules, {"ga_stats": ga_stats, "training_history": history}
 
 
@@ -228,15 +236,15 @@ def load_model_and_rules(model_base_path):
     # Initialize model wrapper
     model_wrapper = ModelWrapper()
 
-    # Load the complete model state
+    # Load the model state
     try:
-        model_wrapper.load_complete_model_state(model_base_path)
+        model_wrapper.load_model_state(model_base_path)
     except FileNotFoundError as e:
-        raise FileNotFoundError(f"Could not find complete model state at {model_base_path}.* : {e}")
+        raise FileNotFoundError(f"Could not find model state at {model_base_path}.* : {e}")
 
     # The genetic rules are now loaded within the model_wrapper
     best_rules = model_wrapper.genetic_rules
-    logger.info("Complete model state loaded successfully.")
+    logger.info("Model state loaded successfully.")
 
     return model_wrapper, best_rules
 
@@ -283,7 +291,7 @@ def main():
     model_state_exists = os.path.exists(f"{model_base_path}_config.json")
 
     if config.skip_training and model_state_exists:
-        model_wrapper, best_rules = load_model_and_rules(model_base_path)
+        model_wrapper, best_rules = ModelWrapper.load_model_state(model_base_path)
     else:
         model_wrapper, best_rules, stats = train_ai_detector(model_base_path)
 

@@ -37,7 +37,7 @@ class GeneticFeatureOptimizer:
         self.labels = tf.convert_to_tensor(labels) if not isinstance(labels, tf.Tensor) else labels
 
         self.patch_size = config.patch_size
-        self.batch_size = config.batch_size
+        self.batch_size = config.extraction_batch_size
         self.population_size = config.population_size
         self.n_generations = config.n_generations
         self.crossover_prob = config.crossover_prob

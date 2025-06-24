@@ -3,8 +3,9 @@
 # --- Detector Configuration ---
 data = "train.csv"
 output_dir = "output"
-batch_size = 250
-max_images = 5000
+cnn_batch_size = 64
+extraction_batch_size = 330
+max_images = 10000
 epochs = 50
 test_size = 0.2
 random_seed = 42
@@ -13,7 +14,7 @@ mask_path = "optimized_patch_mask.npy"
 rules_path = "genetic_rules.pkl"
 feature_cache_dir = "feature_cache"
 mixed_precision = True
-visualize = False
+visualize = True
 predict = False
 predict_path = ""
 skip_training = False
@@ -28,8 +29,8 @@ patch_size = 16
 scale_factor = 1.0
 
 # --- Genetic Algorithm Configuration ---
-population_size = 50
-n_generations = 20
+population_size = 100
+n_generations = 100
 sample_size = 1000
 crossover_prob = 0.8
 mutation_prob = 0.4

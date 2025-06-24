@@ -2,6 +2,11 @@
 import tensorflow as tf
 import global_config as config
 
+
+def get_timestamp():
+    import datetime
+    return datetime.datetime.now().isoformat()
+
 @tf.function
 def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor):
     """
@@ -408,49 +413,60 @@ def evaluate_ga_individual(individual, precomputed_features, labels,
 @tf.function
 def convert_patch_mask_to_pixel_mask(patch_mask):
     """
-    Convert a 2D patch mask to pixel-level mask using GPU-optimized TensorFlow operations.
-    Designed for fixed patch sizes and image shapes with minimal function tracing.
+    Convert patch masks to pixel-level masks with explicit shape handling
     
     Args:
-        patch_mask (tf.Tensor): 2D binary mask of shape (n_patches_h, n_patches_w)
+        patch_mask (tf.Tensor): 2D or 3D binary mask:
+            - Single mask: (n_patches_h, n_patches_w)
+            - Batch of masks: (batch_size, n_patches_h, n_patches_w)
     
     Returns:
-        tf.Tensor: Pixel-level binary mask of shape (height, width)
+        tf.Tensor: Pixel-level mask(s) of shape (height, width) or (batch_size, height, width)
     """
-
+    # Get configuration values
     patch_size = config.patch_size
     image_shape = (config.image_size, config.image_size)
-
-    # Handle patch size input
-    if isinstance(patch_size, int):
-        patch_h = patch_w = patch_size
-    else:
-        patch_h, patch_w = patch_size
     
-    # Convert to TensorFlow constants for graph optimization
-    patch_h = tf.constant(patch_h, dtype=tf.int32)
-    patch_w = tf.constant(patch_w, dtype=tf.int32)
-    img_h = tf.constant(image_shape[0], dtype=tf.int32)
-    img_w = tf.constant(image_shape[1], dtype=tf.int32)
+    # Get static rank if available
+    input_rank = patch_mask.shape.rank
     
-    # Ensure patch_mask is float32 and add batch/channel dimensions for tf.image.resize
-    patch_mask_float = tf.cast(patch_mask, tf.float32)
-    expanded_mask = tf.expand_dims(tf.expand_dims(patch_mask_float, axis=0), axis=-1)
+    # Handle different input dimensions
+    if input_rank == 2:
+        patch_mask = tf.expand_dims(patch_mask, 0)
+    elif input_rank is None:  # Handle unknown rank
+        patch_mask = tf.cond(
+            tf.equal(tf.rank(patch_mask), 2),
+            lambda: tf.expand_dims(patch_mask, 0),
+            lambda: patch_mask
+        )
     
-    # Use tf.image.resize with nearest neighbor - this is GPU-optimized
+    # Add channel dimension
+    expanded_mask = tf.expand_dims(tf.cast(patch_mask, tf.float32), axis=-1)
+    
+    # Set known dimensions for the tensor
+    expanded_mask = tf.ensure_shape(expanded_mask, [None, None, None, 1])
+    
+    # Resize with nearest neighbor
     pixel_mask = tf.image.resize(
         expanded_mask,
-        [img_h, img_w],
+        image_shape,
         method=tf.image.ResizeMethod.NEAREST_NEIGHBOR
     )
     
-    # Remove batch and channel dimensions
-    pixel_mask = tf.squeeze(pixel_mask, axis=[0, -1])
+    # Remove channel dimension
+    pixel_mask = tf.squeeze(pixel_mask, axis=-1)
     
-    # Ensure binary output (handle any floating point precision issues)
-    pixel_mask = tf.cast(pixel_mask >= 0.5, tf.float32)
+    # Remove batch dimension if input was 2D
+    if input_rank == 2:
+        pixel_mask = tf.squeeze(pixel_mask, axis=0)
+    elif input_rank is None:
+        pixel_mask = tf.cond(
+            tf.equal(tf.rank(patch_mask), 3),
+            lambda: tf.squeeze(pixel_mask, axis=0),
+            lambda: pixel_mask
+        )
     
-    return pixel_mask
+    return tf.cast(pixel_mask >= 0.5, tf.float32)
 
 
 def get_edge_detection(image, method='canny', **kwargs):
