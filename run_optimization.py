@@ -17,9 +17,9 @@ def main():
     optimizer = HyperparameterOptimizer()
     best_weights, best_ga_config = optimizer.run_optimization()
     
-    print("\n🎉 Optimization completed successfully!")
-    print(f"📊 Best fitness achieved: {optimizer.best_fitness:.4f}")
-    print(f"💾 Results saved to JSON files")
+    print("\nOptimization completed successfully!")
+    print(f"Best fitness achieved: {optimizer.best_fitness:.4f}")
+    print(f"Results saved to JSON files")
 
 if __name__ == "__main__":
     main()
