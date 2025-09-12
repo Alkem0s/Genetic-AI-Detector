@@ -136,7 +136,7 @@ class GeneticFeatureOptimizer:
             batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
             all_batch_features.append(batch_patch_features)
             
-            logger.debug(f"Processed batch {i//self.batch_size + 1}/{(num_samples + self.batch_size - 1)//self.batch_size}")
+            logger.info(f"Processed batch {i//self.batch_size + 1}/{(num_samples + self.batch_size - 1)//self.batch_size}")
 
         # Concatenate all batch features into a single tensor
         self.precomputed_features = tf.concat(all_batch_features, axis=0)
@@ -300,12 +300,12 @@ class GeneticFeatureOptimizer:
         
         if self.verbose:
             end_time = time.time()
-            logger.debug(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
+            logger.info(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
         return fitness
 
     def _sequential_evaluate_population(self, population):
         """Evaluate population sequentially on the main process"""
-        logger.debug(f"Evaluating population of {len(population)} individuals sequentially on GPU/CPU.")
+        logger.info(f"Evaluating population of {len(population)} individuals sequentially on GPU/CPU.")
 
         results = []
         for i, ind in enumerate(population):
@@ -435,12 +435,12 @@ class GeneticFeatureOptimizer:
                 feature_name = self.feature_names[idx.numpy()]
                 feature_scores[feature_name] += 1
         
-        logger.debug(f"Initial rule-based feature scores: {feature_scores}")
+        logger.info(f"Initial rule-based feature scores: {feature_scores}")
 
-        # Use precomputed features (should always be available now)
+        # Use precomputed features
         num_samples = min(50, tf.shape(self.precomputed_features)[0].numpy())
         sample_features = self.precomputed_features[:num_samples]
-        logger.debug(f"Analyzing feature triggers on {num_samples} precomputed feature sets.")
+        logger.info(f"Analyzing feature triggers on {num_samples} precomputed feature sets.")
 
         feature_triggers = {feature: 0 for feature in self.feature_names}
         total_patches_evaluated = 0
@@ -477,7 +477,7 @@ class GeneticFeatureOptimizer:
                         
                         total_patches_evaluated += 1
 
-        logger.debug(f"Feature triggers: {feature_triggers}. Total patches evaluated: {total_patches_evaluated}")
+        logger.info(f"Feature triggers: {feature_triggers}. Total patches evaluated: {total_patches_evaluated}")
 
         # Combine rule frequency and trigger frequency
         for feature in feature_scores:
@@ -528,7 +528,7 @@ class GeneticFeatureOptimizer:
 
         # Create HallOfFame with custom similarity function
         hof = tools.HallOfFame(self.num_elites, similar=self._tensor_rules_similar)
-        logger.debug(f"Hall of Fame initialized with capacity {self.num_elites} and custom similarity function.")
+        logger.info(f"Hall of Fame initialized with capacity {self.num_elites} and custom similarity function.")
 
         run_start_time = time.time()
 
@@ -538,7 +538,7 @@ class GeneticFeatureOptimizer:
             gen_start_time = time.time()
             try:
                 fitnesses = self._sequential_evaluate_population(pop)
-                logger.debug(f"Generation {gen + 1}: Received {len(fitnesses)} fitness values")
+                logger.info(f"Generation {gen + 1}: Received {len(fitnesses)} fitness values")
             except Exception as e:
                 logger.error(f"Error in sequential evaluation for generation {gen + 1}: {e}")
                 raise
@@ -576,7 +576,7 @@ class GeneticFeatureOptimizer:
                         del child1.fitness.values
                         del child2.fitness.values
                 crossover_end_time = time.time()
-                logger.debug(f"Crossover phase took {crossover_end_time - crossover_start_time:.4f} seconds.")
+                logger.info(f"Crossover phase took {crossover_end_time - crossover_start_time:.4f} seconds.")
 
                 mutation_start_time = time.time()
                 for mutant in offspring:
@@ -584,8 +584,8 @@ class GeneticFeatureOptimizer:
                         self.toolbox.mutate(mutant)
                         del mutant.fitness.values
                 mutation_end_time = time.time()
-                logger.debug(f"Mutation phase took {mutation_end_time - mutation_start_time:.4f} seconds.")
-                
+                logger.info(f"Mutation phase took {mutation_end_time - mutation_start_time:.4f} seconds.")
+
                 pop[:] = elites + offspring
 
         run_end_time = time.time()
@@ -637,11 +637,18 @@ class GeneticFeatureOptimizer:
             'run_id': run_id,
             'run_number': run_number,
             'best_fitness': best_ind.fitness.values[0],
+            'best_rules_tensor': best_ind.rules_tensor.numpy().tolist(),
+            'best_feature_importance': self.get_feature_importance(best_ind),
             'rule_count': best_ind.num_active_rules,
             'avg_active_patches': avg_active.numpy(),
             'avg_active_percentage': avg_percentage.numpy(),
-            'history': self.history
+            'history': self.history,
+            'total_run_time': total_run_time
         }
+        
+        self.all_run_histories.append(run_results)
+        self.history = self.current_run_history
+        return run_results
 
     def get_run_history(self):
         """
