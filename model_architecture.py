@@ -1,4 +1,3 @@
-
 # model_architecture.py
 import json
 import tensorflow as tf
@@ -7,7 +6,7 @@ import numpy as np
 import os
 
 import global_config as config
-import utils
+from feature_extractor import FeaturePipeline
 
 import logging
 logger = logging.getLogger(__name__)
@@ -252,200 +251,88 @@ class AIDetectorModel:
 class ModelWrapper:
     """
     Wrapper class that integrates genetic algorithm dynamic masks with the CNN model.
-    Handles feature extraction using the evolved genetic rules and manages model training.
+    Feature extraction, caching, and dataset preparation are delegated to FeaturePipeline.
     """
-    def __init__(self, feature_channels=8, genetic_rules: tf.Tensor= None):
+
+    def __init__(self, feature_channels: int = 8, genetic_rules: tf.Tensor = None):
         """
-        Initialize the model wrapper with genetic algorithm integration.
-        
         Args:
-            feature_channels (int): Number of feature channels from feature extraction
-            genetic_rules (tf.Tensor, optional): Evolved rules from genetic algorithm as a TensorFlow tensor.
+            feature_channels: Number of feature channels produced by the feature extractor.
+            genetic_rules:    Evolved rules from the genetic algorithm as a TensorFlow tensor.
         """
         logger.info("Initializing ModelWrapper...")
-        self.input_shape = (config.image_size, config.image_size, 3)
-        self.use_features = config.use_feature_extraction
+        self.input_shape     = (config.image_size, config.image_size, 3)
+        self.use_features    = config.use_feature_extraction
         self.feature_channels = feature_channels
-        self.patch_size = config.patch_size
-        self.genetic_rules = tf.convert_to_tensor(genetic_rules, dtype=tf.float32) if genetic_rules is not None else None
-        
-        # Calculate patch grid dimensions using TensorFlow operations
+        self.patch_size      = config.patch_size
+        self.genetic_rules   = (
+            tf.convert_to_tensor(genetic_rules, dtype=tf.float32)
+            if genetic_rules is not None else None
+        )
+
         self.n_patches_h = tf.constant(self.input_shape[0] // self.patch_size, dtype=tf.int32)
         self.n_patches_w = tf.constant(self.input_shape[1] // self.patch_size, dtype=tf.int32)
 
-        # Initialize the model
-        self.model = AIDetectorModel(feature_channels=feature_channels)
-
-        # Feature extraction components will be initialized when needed
-        self.feature_extractor = None
-        
-        # Precomputed feature maps cache
         self.feature_cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
-        os.makedirs(self.feature_cache_dir, exist_ok=True)
-        
+
+        self.pipeline = FeaturePipeline(
+            genetic_rules     = self.genetic_rules,
+            n_patches_h       = self.n_patches_h,
+            n_patches_w       = self.n_patches_w,
+            feature_cache_dir = self.feature_cache_dir,
+            feature_channels  = feature_channels,
+        )
+
+        self.model = AIDetectorModel(feature_channels=feature_channels)
         logger.info("ModelWrapper initialized.")
-        
-    def set_genetic_rules(self, genetic_rules: tf.Tensor):
-        """
-        Set or update the genetic algorithm rules for dynamic mask generation.
-        
-        Args:
-            genetic_rules (tf.Tensor): Evolved rules from genetic algorithm as a TensorFlow tensor.
-        """
+
+    def set_genetic_rules(self, genetic_rules: tf.Tensor) -> None:
+        """Update genetic rules in both the wrapper and the pipeline."""
         self.genetic_rules = tf.convert_to_tensor(genetic_rules, dtype=tf.float32)
+        self.pipeline.set_genetic_rules(self.genetic_rules)
         logger.info(f"Updated genetic rules. Shape: {tf.shape(self.genetic_rules)}")
 
-        # Clear precomputed feature maps when rules change since they depend on genetic rules
-        self.precomputed_feature_maps = {}
-        logger.debug("Precomputed feature maps cleared due to rule change.")
-            
-    def _ensure_feature_extractor(self):
-        """Initialize the feature extractor if not already done"""
-        if self.feature_extractor is None:
-            from feature_extractor import FeatureExtractor
-            self.feature_extractor = FeatureExtractor(config)
-            logger.info("Feature extractor initialized.")
-    
-    def extract_batch_features(self, images):
-        """Extract features without caching (on-the-fly)"""
+    def _ensure_feature_extractor(self) -> None:
+        self.pipeline._ensure_feature_extractor()
+
+    def extract_batch_features(self, images: tf.Tensor) -> tf.Tensor:
+        """Extract masked pixel-level feature maps for a batch of images."""
         logger.info("Extracting batch features using genetic dynamic masks.")
-        self._ensure_feature_extractor()
-        
-        # Convert to tensor if needed
-        if not isinstance(images, tf.Tensor):
-            images = tf.convert_to_tensor(images, dtype=tf.float32)
-        
-        # Extract patch features
-        patch_features = self.feature_extractor.extract_batch_patch_features(images)
-        
-        # Generate masks for all images in batch
-        batch_masks = []
-        for i in range(images.shape[0]):
-            mask = utils.generate_dynamic_mask(
-                patch_features[i],
-                self.n_patches_h,
-                self.n_patches_w,
-                self.genetic_rules
-            )
-            batch_masks.append(mask)
-        
-        # Convert to pixel masks with batch support
-        pixel_mask = utils.convert_patch_mask_to_pixel_mask(tf.stack(batch_masks))
-        
-        # Ensure proper dimensions for broadcasting
-        if pixel_mask.shape.rank == 3:  # Batch of 2D masks
-            pixel_mask = tf.expand_dims(pixel_mask, axis=-1)
-        elif pixel_mask.shape.rank == 2:  # Single 2D mask
-            pixel_mask = tf.expand_dims(tf.expand_dims(pixel_mask, 0), axis=-1)
-        
-        # Resize feature maps and apply mask
-        resized_feature_maps = tf.image.resize(
-            patch_features,
-            [config.image_size, config.image_size],
-            method=tf.image.ResizeMethod.BILINEAR
-        )
-        
-        return resized_feature_maps * pixel_mask
-        
-    def extract_single_image_features(self, image):
-        """Public wrapper for single image feature extraction"""
+        return self.pipeline.extract_batch_features(images)
+
+    def extract_single_image_features(self, image: tf.Tensor) -> tf.Tensor:
+        """Extract features for a single image tensor."""
         if len(image.shape) == 3:
             image = tf.expand_dims(image, axis=0)
-        return self._extract_single_image_features(image)[0]
+        return self.pipeline.extract_single_image_features(image[0])
 
-    def precompute_features(self, dataset, dataset_name):
-        """Precompute and save features for a dataset"""
-        logger.info(f"Precomputing features for {dataset_name}")
-        save_dir = os.path.join(self.feature_cache_dir, dataset_name)
-        os.makedirs(save_dir, exist_ok=True)
-        
-        index = 0
-        for batch in dataset:
-            images = batch[0] if isinstance(batch, tuple) else batch
-            features = self.extract_batch_features(images)
-            
-            for i in range(features.shape[0]):
-                feature = features[i].numpy()
-                np.save(os.path.join(save_dir, f"feature_{index}.npy"), feature)
-                index += 1
-        
-        logger.info(f"Saved {index} features for {dataset_name}")
+    def precompute_features(
+        self, dataset: tf.data.Dataset, dataset_name: str
+    ) -> None:
+        """Precompute and cache features for an entire dataset."""
+        self.pipeline.precompute_features(dataset, dataset_name)
 
-    def load_features(self, dataset_name):
-        """Load precomputed features into a dataset"""
-        logger.info(f"Loading precomputed features for {dataset_name}")
-        save_dir = os.path.join(self.feature_cache_dir, dataset_name)
-        feature_paths = sorted(
-            [os.path.join(save_dir, f) for f in os.listdir(save_dir) if f.endswith('.npy')],
-            key=lambda x: int(x.split('_')[-1].split('.')[0])
-        )
+    def load_features(self, dataset_name: str) -> tf.data.Dataset:
+        """Load pre-computed features from the cache as a tf.data.Dataset."""
+        return self.pipeline.load_features(dataset_name)
 
-        def load_feature(path):
-            return np.load(path.decode('utf-8'))
-        
-        feature_dataset = tf.data.Dataset.from_tensor_slices(feature_paths)
-        feature_dataset = feature_dataset.map(
-            lambda path: tf.numpy_function(load_feature, [path], tf.float32),
-            num_parallel_calls=tf.data.AUTOTUNE
-        )
-        # Ensure correct shape
-        feature_dataset = feature_dataset.map(
-            lambda x: tf.ensure_shape(x, [config.image_size, config.image_size, self.feature_channels])
-        )
-        return feature_dataset
-
-    def prepare_dataset(self, dataset, dataset_name=None):
-        """Prepare dataset with precomputed features"""
+    def prepare_dataset(
+        self,
+        dataset: tf.data.Dataset,
+        dataset_name: str | None = None,
+    ) -> tf.data.Dataset:
+        """Combine image dataset with feature maps (cached or on-the-fly)."""
         if not self.use_features:
             return dataset
-        
-        # For training/validation
-        if dataset_name:
-            feature_dataset = self.load_features(dataset_name)
-            
-            def combine(inputs, feature):
-                # Add batch dimension to feature tensor
-                feature = tf.expand_dims(feature, axis=0)
-                
-                if isinstance(inputs, tuple):
-                    image, label = inputs
-                    # Ensure feature matches batch size
-                    feature = tf.repeat(feature, tf.shape(image)[0], axis=0)
-                    return {'image_input': image, 'feature_input': feature}, label
-                return {'image_input': inputs, 'feature_input': feature}
-            
-            # Create combined dataset
-            combined = tf.data.Dataset.zip((dataset, feature_dataset))
-            return combined.map(
-                combine, 
-                num_parallel_calls=tf.data.AUTOTUNE
-            ).prefetch(tf.data.AUTOTUNE)
-        
-        # For prediction without precomputation
-        return self._prepare_dataset_on_the_fly(dataset)
-    
-    def _prepare_dataset_on_the_fly(self, dataset):
-        """
-        Fallback method to prepare dataset with on-the-fly feature computation
-        """
+        return self.pipeline.prepare_dataset(dataset, dataset_name)
+
+    def _prepare_dataset_on_the_fly(
+        self, dataset: tf.data.Dataset
+    ) -> tf.data.Dataset:
+        """Fallback: compute features inline for each batch."""
         if not self.use_features:
             return dataset
-        
-        logger.info("Preparing dataset with on-the-fly feature computation")
-        
-        def add_features_on_the_fly(images, labels):
-            """Compute features on-the-fly for each batch"""
-            images = tf.cast(images, tf.float32)
-            
-            # Extract features using the existing method
-            features = self.extract_batch_features(images)
-            
-            return {'image_input': images, 'feature_input': features}, labels
-        
-        return dataset.map(
-            add_features_on_the_fly,
-            num_parallel_calls=tf.data.AUTOTUNE
-        ).prefetch(tf.data.AUTOTUNE)
+        return self.pipeline._prepare_dataset_on_the_fly(dataset)
 
     def train(self, train_dataset, validation_dataset=None, model_path='ai_detector_model.h5', precompute_features=True):
         """Training method with index-based feature caching"""
@@ -474,24 +361,14 @@ class ModelWrapper:
         return history
 
     def evaluate(self, test_dataset):
-        """
-        Evaluate the model on test data.
-        
-        Args:
-            test_dataset (tf.data.Dataset): Test dataset
-            
-        Returns:
-            tuple: (test_loss, test_accuracy)
-        """
         logger.info("Evaluating model wrapper on test dataset.")
-        # Prepare test dataset with features if needed
         if self.use_features:
-            logger.info("Preparing test dataset with genetic features.")
-            prepared_test_ds = self.prepare_dataset(test_dataset)
+            logger.info("Precomputing and preparing test dataset with genetic features.")
+            self.precompute_features(test_dataset, "test")
+            prepared_test_ds = self.prepare_dataset(test_dataset, "test")
         else:
-            logger.info("Evaluating without genetic features. Using original test dataset.")
+            logger.info("Evaluating without genetic features.")
             prepared_test_ds = test_dataset
-            
         results = self.model.evaluate(prepared_test_ds)
         logger.info(f"Model wrapper evaluation complete. Loss: {results[0]:.4f}, Accuracy: {results[1]:.4f}")
         return results
@@ -522,26 +399,24 @@ class ModelWrapper:
             'raw_prediction': float(prediction)
         }
     
-    @staticmethod
-    def save_model_state(model_wrapper, base_path):
+    def save(self, base_path):
         """
         Save the complete model state including neural network and genetic rules.
         
         Args:
-            model_wrapper (ModelWrapper): The model wrapper instance to save
             base_path (str): Base path for saving (without extension)
         """
         logger.info(f"Saving complete model state to {base_path}.*")
         
         # Save the neural network model
         model_path = f"{base_path}_model.h5"
-        model_wrapper.model.save(model_path)
+        self.model.save(model_path)
         
         # Save genetic rules and configuration
         config_data = {
-            'use_features': model_wrapper.use_features,
-            'feature_channels': model_wrapper.feature_channels,
-            'genetic_rules': model_wrapper.genetic_rules.numpy().tolist() if model_wrapper.genetic_rules is not None else None
+            'use_features': self.use_features,
+            'feature_channels': self.feature_channels,
+            'genetic_rules': self.genetic_rules.numpy().tolist() if self.genetic_rules is not None else None
         }
         
         config_path = f"{base_path}_config.json"
@@ -550,8 +425,8 @@ class ModelWrapper:
         
         logger.info(f"Model state saved: {model_path}, {config_path}")
 
-    @staticmethod
-    def load_model_state(base_path):
+    @classmethod
+    def load(cls, base_path):
         """
         Load the complete model state and create a new ModelWrapper instance.
         
@@ -573,8 +448,8 @@ class ModelWrapper:
         if config_data['genetic_rules'] is not None:
             genetic_rules = tf.convert_to_tensor(config_data['genetic_rules'], dtype=tf.float32)
         
-        # Create new ModelWrapper instance
-        model_wrapper = ModelWrapper(
+        # Create new ModelWrapper instance via the class (respects subclassing)
+        model_wrapper = cls(
             feature_channels=config_data['feature_channels'],
             genetic_rules=genetic_rules
         )
@@ -582,6 +457,8 @@ class ModelWrapper:
         # Load the neural network model
         model_path = f"{base_path}_model.h5"
         model_wrapper.model.load(model_path)
+
+        model_wrapper.use_features = config_data.get('use_features', model_wrapper.model.use_features)
         
         logger.info(f"Model state loaded from: {model_path}, {config_path}")
         return model_wrapper

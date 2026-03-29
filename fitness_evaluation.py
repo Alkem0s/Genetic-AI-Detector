@@ -1,6 +1,81 @@
 # fitness_evaluation.py
 import tensorflow as tf
-from utils import generate_dynamic_mask
+import metrics
+
+@tf.function
+def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor):
+    """
+    Generate a binary mask for patches based on dynamic rules.
+    
+    Args:
+        patch_features: [n_patches_h, n_patches_w, n_features]
+        n_patches_h: Height in patches
+        n_patches_w: Width in patches  
+        rule_tensor: [max_rules, 4] tensor where each row is [feature_idx, threshold, operator, action]
+    
+    Returns:
+        Binary mask tensor of shape [n_patches_h, n_patches_w]
+    """
+    # Initialize mask with all zeros
+    patch_mask = tf.zeros((n_patches_h, n_patches_w), dtype=tf.bool)
+    
+    # Filter valid rules (feature_idx >= 0 and action == 1)
+    feature_indices = rule_tensor[:, 0]
+    actions = rule_tensor[:, 3]
+    
+    valid_mask = tf.logical_or(
+        tf.logical_and(feature_indices >= 0, actions == 1),
+        tf.logical_and(feature_indices >= 0, actions == 0)
+    )
+
+    # Extract valid rules
+    valid_rules = tf.boolean_mask(rule_tensor, valid_mask)
+    n_valid_rules = tf.shape(valid_rules)[0]
+    
+    # Extract rule components
+    valid_feature_indices = tf.cast(valid_rules[:, 0], tf.int32)
+    valid_thresholds = valid_rules[:, 1]
+    valid_operators = tf.cast(valid_rules[:, 2], tf.int32)
+    
+    # Process each valid rule and OR the results
+    def process_rule(i, current_mask):
+        feature_idx = valid_feature_indices[i]
+        threshold = valid_thresholds[i]
+        operator = valid_operators[i]
+        
+        # Bounds check for feature index
+        feature_idx = tf.minimum(feature_idx, tf.shape(patch_features)[2] - 1)
+        
+        # Extract feature values for all patches
+        feature_values = patch_features[:, :, feature_idx]
+        
+        # Apply condition based on operator
+        condition = tf.cond(
+            tf.equal(operator, 0),  # '>' operator
+            lambda: feature_values > threshold,
+            lambda: feature_values < threshold  # '<' operator
+        )
+        
+        # OR with current mask
+        return tf.logical_or(current_mask, condition)
+    
+    # Apply all valid rules using while_loop
+    def rule_loop_condition(i, mask):
+        return i < n_valid_rules
+    
+    def rule_loop_body(i, mask):
+        new_mask = process_rule(i, mask)
+        return i + 1, new_mask
+    
+    _, final_mask = tf.while_loop(
+        rule_loop_condition,
+        rule_loop_body,
+        [tf.constant(0), patch_mask],
+        parallel_iterations=1
+    )
+    
+    return tf.cast(final_mask, tf.int8)
+
 
 @tf.function
 def calculate_connectivity(patch_mask):
@@ -179,8 +254,8 @@ def compute_fitness_score(config, precomputed_features, labels,
     )
     
     # Calculate metrics (optimized versions)
-    precision, recall, f1 = calculate_precision_recall_f1(labels, predictions)
-    balanced_accuracy = calculate_balanced_accuracy(labels, predictions)
+    precision, recall, f1 = metrics.calculate_precision_recall_f1(labels, predictions)
+    balanced_accuracy = metrics.calculate_balanced_accuracy(labels, predictions)
     
     # Calculate efficiency and other scores
     total_active_patches = tf.reduce_sum(active_patches_per_image)
@@ -198,8 +273,6 @@ def compute_fitness_score(config, precomputed_features, labels,
     fitness = (
         balanced_accuracy * config.fitness_weights['balanced_accuracy'] +
         f1 * config.fitness_weights['f1'] +
-        precision * config.fitness_weights['precision'] +
-        recall * config.fitness_weights['recall'] +
         efficiency_score * config.fitness_weights['efficiency_score'] +
         connectivity_score * config.fitness_weights['connectivity_score'] +
         simplicity_score * config.fitness_weights['simplicity_score']
@@ -211,10 +284,8 @@ def compute_fitness_score(config, precomputed_features, labels,
         tf.print("Scores mean/std:", score_mean, score_std)
         tf.print("Threshold:", adaptive_threshold)
         tf.print("Predictions:", tf.reduce_sum(tf.cast(predictions, tf.float32)), "/", num_samples)
-        tf.print("Precision:", precision)
-        tf.print("Recall:", recall)
-        tf.print("F1:", f1)
         tf.print("Balanced Acc:", balanced_accuracy)
+        tf.print("F1:", f1)
         tf.print("Efficiency score:", efficiency_score)
         tf.print("Simplicity score:", simplicity_score)
         tf.print("Connectivity score:", connectivity_score)
@@ -222,90 +293,6 @@ def compute_fitness_score(config, precomputed_features, labels,
         tf.print("==================")
     
     return fitness
-
-
-@tf.function
-def calculate_precision_recall_f1(y_true, y_pred):
-    """
-    Optimized precision, recall, F1 calculation with fewer operations.
-    """
-    y_true_f = tf.cast(y_true, tf.float32)
-    y_pred_f = tf.cast(y_pred, tf.float32)
-    
-    # Calculate components in one pass
-    tp = tf.reduce_sum(y_true_f * y_pred_f)
-    fp = tf.reduce_sum((1 - y_true_f) * y_pred_f)
-    fn = tf.reduce_sum(y_true_f * (1 - y_pred_f))
-    
-    # Calculate precision and recall with single condition checks
-    precision = tf.cond(
-        tf.equal(tp + fp, 0),
-        lambda: tf.cond(tf.equal(tf.reduce_sum(y_true_f), 0), lambda: 1.0, lambda: 0.0),
-        lambda: tp / (tp + fp)
-    )
-    
-    recall = tf.cond(
-        tf.equal(tp + fn, 0),
-        lambda: 1.0,
-        lambda: tp / (tp + fn)
-    )
-    
-    f1 = tf.cond(
-        tf.equal(precision + recall, 0),
-        lambda: 0.0,
-        lambda: 2 * (precision * recall) / (precision + recall)
-    )
-    
-    return precision, recall, f1
-
-@tf.function
-def calculate_matthews_correlation_coefficient(y_true, y_pred):
-    """
-    Calculate Matthews Correlation Coefficient (MCC).
-    MCC is a more balanced measure for imbalanced datasets.
-    Returns a value between -1 and 1, where 1 is perfect prediction.
-    """
-    y_true = tf.cast(y_true, tf.int64)
-    y_pred = tf.cast(y_pred, tf.int64)
-    
-    y_true_f = tf.cast(y_true, tf.float32)
-    y_pred_f = tf.cast(y_pred, tf.float32)
-    
-    # Calculate confusion matrix components
-    tp = tf.reduce_sum(y_true_f * y_pred_f)
-    fp = tf.reduce_sum((1 - y_true_f) * y_pred_f)
-    fn = tf.reduce_sum(y_true_f * (1 - y_pred_f))
-    tn = tf.reduce_sum((1 - y_true_f) * (1 - y_pred_f))
-    
-    # MCC formula: (TP*TN - FP*FN) / sqrt((TP+FP)(TP+FN)(TN+FP)(TN+FN))
-    numerator = tp * tn - fp * fn
-    denominator = tf.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
-    
-    mcc = tf.cond(
-        tf.equal(denominator, 0),
-        lambda: tf.constant(0.0, dtype=tf.float32),  # Return 0 if denominator is 0
-        lambda: numerator / denominator
-    )
-    
-    return mcc
-
-@tf.function
-def calculate_balanced_accuracy(y_true, y_pred):
-    """
-    Optimized balanced accuracy calculation.
-    """
-    y_true_f = tf.cast(y_true, tf.float32)
-    y_pred_f = tf.cast(y_pred, tf.float32)
-    
-    tp = tf.reduce_sum(y_true_f * y_pred_f)
-    fp = tf.reduce_sum((1 - y_true_f) * y_pred_f)
-    fn = tf.reduce_sum(y_true_f * (1 - y_pred_f))
-    tn = tf.reduce_sum((1 - y_true_f) * (1 - y_pred_f))
-    
-    sensitivity = tf.cond(tf.equal(tp + fn, 0), lambda: 1.0, lambda: tp / (tp + fn))
-    specificity = tf.cond(tf.equal(tn + fp, 0), lambda: 1.0, lambda: tn / (tn + fp))
-    
-    return (sensitivity + specificity) / 2.0
 
 
 def evaluate_ga_individual(individual, config, precomputed_features, labels, 

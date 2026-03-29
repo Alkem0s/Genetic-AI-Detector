@@ -5,7 +5,7 @@ data = "train.csv"
 output_dir = "output"
 cnn_batch_size = 64
 extraction_batch_size = 330
-max_images = 10000
+max_images = 100
 epochs = 50
 test_size = 0.2
 random_seed = 42
@@ -29,8 +29,8 @@ patch_size = 16
 scale_factor = 1.0
 
 # --- Genetic Algorithm Configuration ---
-population_size = 100
-n_generations = 100
+population_size = 5
+n_generations = 2
 sample_size = 1000
 crossover_prob = 0.8
 mutation_prob = 0.4
@@ -43,14 +43,11 @@ max_possible_rules = 100
 # --- Fitness Weights for Model Evaluation Metrics ---
 # These weights determine the importance of each metric in the overall fitness score
 fitness_weights = {
-    'balanced_accuracy': 0.3,
-    'f1': 0.25,
-    'mcc': 0.2,
-    'precision': 0.05,
-    'recall': 0.05,
-    'efficiency_score': 0.05,
-    'connectivity_score': 0.05,
-    'simplicity_score': 0.05
+    'balanced_accuracy': 0.35,
+    'f1': 0.35,
+    'efficiency_score': 0.1,
+    'connectivity_score': 0.1,
+    'simplicity_score': 0.1
 }
 
 # --- Feature Weights (should sum to 1.0) ---

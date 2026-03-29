@@ -100,7 +100,7 @@ def train_ai_detector(model_base_path):
         )
 
         # Run the genetic algorithm optimization
-        best_ind, ga_stats = genetic_optimizer.run()
+        results = genetic_optimizer.run()
     else:
         logger.info("=== Step 2: Skipping genetic algorithm ===")
 
@@ -108,7 +108,7 @@ def train_ai_detector(model_base_path):
 
     # Initialize model wrapper with optimized genetic rules (or None if not using features)
     model_wrapper = ModelWrapper(
-        genetic_rules=best_ind.rules_tensor if config.use_feature_extraction else None,
+        genetic_rules=results['best_individual'].rules_tensor if config.use_feature_extraction else None,
     )
 
     # Train the model with the optimized features
@@ -119,14 +119,11 @@ def train_ai_detector(model_base_path):
     )
 
     # Save the model state (NN model + genetic rules)
-    model_wrapper.save_model_state(model_wrapper, model_base_path)
+    model_wrapper.save(model_base_path)
     logger.info(f"Saved model state (NN model and genetic rules) to {model_base_path}.*")
 
     logger.info("=== Step 4: Evaluating the model ===")
-    model = model_wrapper.get_model()
-
-    # Evaluate on the test dataset
-    metrics, y_true, y_pred = evaluate_model(model, test_ds)
+    metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
 
     # Print evaluation results
     logger.info(f"Test accuracy: {metrics['accuracy']:.4f}")
@@ -147,50 +144,100 @@ def train_ai_detector(model_base_path):
     return model_wrapper, best_rules, {"ga_stats": ga_stats, "training_history": history}
 
 
-def evaluate_model(model, test_ds):
-    """Evaluate model on test dataset and compute metrics"""
-    # Evaluate the model
-    results = model.evaluate(test_ds, verbose=1)
+def evaluate_model(model_wrapper, test_ds):
+    from metrics import calculate_precision_recall_f1, calculate_balanced_accuracy
 
-    # TensorFlow will return all metrics defined in the model
-    if isinstance(results, list):
-        metrics = {
-            'loss': results[0],
-            'accuracy': results[1]
-        }
+    # Prepare the test dataset through the wrapper
+    if model_wrapper.use_features:
+        model_wrapper.precompute_features(test_ds, "test")
+        prepared_ds = model_wrapper.prepare_dataset(test_ds, "test")
     else:
-        metrics = {
-            'loss': results,
-            'accuracy': None
+        prepared_ds = test_ds
+
+    # Evaluate using the inner Keras model on the already-prepared dataset
+    results = model_wrapper.model.model.evaluate(prepared_ds, verbose=1)
+    metrics = {
+        'loss': results[0],
+        'accuracy': results[1] if len(results) > 1 else None
+    }
+
+    # Collect predictions
+    try:
+        y_true_list, y_pred_list = [], []
+        for batch in prepared_ds:
+            inputs, labels = batch
+            pred = model_wrapper.model.model.predict_on_batch(inputs)
+            pred_classes = (pred > 0.5).astype(int).flatten()
+            y_true_list.extend(labels.numpy())
+            y_pred_list.extend(pred_classes)
+
+        y_true = tf.cast(y_true_list, tf.int64)
+        y_pred = tf.cast(y_pred_list, tf.int64)
+
+        # Calculate metrics using metrics.py functions
+        precision, recall, f1 = calculate_precision_recall_f1(y_true, y_pred)
+        balanced_accuracy = calculate_balanced_accuracy(y_true, y_pred)
+
+        # Build confusion matrix components via TensorFlow
+        y_true_f = tf.cast(y_true, tf.float32)
+        y_pred_f = tf.cast(y_pred, tf.float32)
+        tp = int(tf.reduce_sum(y_true_f * y_pred_f).numpy())
+        fp = int(tf.reduce_sum((1 - y_true_f) * y_pred_f).numpy())
+        fn = int(tf.reduce_sum(y_true_f * (1 - y_pred_f)).numpy())
+        tn = int(tf.reduce_sum((1 - y_true_f) * (1 - y_pred_f)).numpy())
+
+        precision_val = float(precision.numpy())
+        recall_val = float(recall.numpy())
+        f1_val = float(f1.numpy())
+        balanced_acc_val = float(balanced_accuracy.numpy())
+
+        # Build a classification_report-compatible dict for downstream consumers
+        human_precision = tn / (tn + fn) if (tn + fn) > 0 else 0.0
+        human_recall = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        human_f1 = (2 * human_precision * human_recall / (human_precision + human_recall)
+                    if (human_precision + human_recall) > 0 else 0.0)
+        total = tp + fp + fn + tn
+        metrics['classification_report'] = {
+            'Human': {
+                'precision': human_precision,
+                'recall': human_recall,
+                'f1-score': human_f1,
+                'support': tn + fp,
+            },
+            'AI': {
+                'precision': precision_val,
+                'recall': recall_val,
+                'f1-score': f1_val,
+                'support': tp + fn,
+            },
+            'balanced_accuracy': balanced_acc_val,
         }
 
-    # Compute detailed metrics
-    try:
-        y_true = []
-        y_pred = []
+        # Confusion matrix as a plain nested list [[TN, FP], [FN, TP]]
+        metrics['confusion_matrix'] = [[tn, fp], [fn, tp]]
 
-        # Collect predictions on batches
-        for images, labels in test_ds:
-            pred = model.predict(images, verbose=0)
-            pred_classes = (pred > 0.5).astype(int).flatten()
-
-            y_true.extend(labels.numpy())
-            y_pred.extend(pred_classes)
-
-        # Calculate metrics
-        from sklearn.metrics import classification_report, confusion_matrix
-
-        metrics['classification_report'] = classification_report(
-            y_true, y_pred, target_names=['Human', 'AI'], output_dict=True
-        )
-
-        metrics['confusion_matrix'] = confusion_matrix(y_true, y_pred)
+        metrics['precision'] = precision_val
+        metrics['recall'] = recall_val
+        metrics['f1'] = f1_val
+        metrics['balanced_accuracy'] = balanced_acc_val
 
         logger.info("\nClassification Report:")
-        logger.info(classification_report(y_true, y_pred, target_names=['Human', 'AI']))
+        logger.info(f"{'':>10} {'precision':>10} {'recall':>10} {'f1-score':>10} {'support':>10}")
+        for cls, name in [(metrics['classification_report']['Human'], 'Human'),
+                          (metrics['classification_report']['AI'], 'AI')]:
+            logger.info(
+                f"{name:>10} {cls['precision']:>10.4f} {cls['recall']:>10.4f} "
+                f"{cls['f1-score']:>10.4f} {cls['support']:>10}"
+            )
+        logger.info(f"\n{'balanced_accuracy':>10}: {balanced_acc_val:.4f}")
 
-        logger.info("\nConfusion Matrix:")
-        logger.info(metrics['confusion_matrix'])
+        logger.info("\nConfusion Matrix (rows=actual, cols=predicted):")
+        logger.info(f"              Predicted Human  Predicted AI")
+        logger.info(f"Actual Human  {tn:>14}  {fp:>12}")
+        logger.info(f"Actual AI     {fn:>14}  {tp:>12}")
+
+        y_true = y_true_list
+        y_pred = y_pred_list
 
     except Exception as e:
         logger.warning(f"Could not compute detailed metrics: {e}")
@@ -234,12 +281,8 @@ def load_model_and_rules(model_base_path):
     """Load a trained model and genetic rules using the ModelWrapper's combined load method."""
     logger.info(f"Loading existing model and rules from {model_base_path}.*")
 
-    # Initialize model wrapper
-    model_wrapper = ModelWrapper()
-
-    # Load the model state
     try:
-        model_wrapper.load_model_state(model_base_path)
+        model_wrapper = ModelWrapper.load(model_base_path)
     except FileNotFoundError as e:
         raise FileNotFoundError(f"Could not find model state at {model_base_path}.* : {e}")
 
@@ -292,7 +335,7 @@ def main():
     model_state_exists = os.path.exists(f"{model_base_path}_config.json")
 
     if config.skip_training and model_state_exists:
-        model_wrapper, best_rules = ModelWrapper.load_model_state(model_base_path)
+        model_wrapper, best_rules = load_model_and_rules(model_base_path)
     else:
         model_wrapper, best_rules, stats = train_ai_detector(model_base_path)
 

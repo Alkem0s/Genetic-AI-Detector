@@ -260,8 +260,8 @@ class HyperparameterOptimizer:
                 logger.info(f"Trial {trial.number}: Testing feature weights: {feature_weights}")
             
             # Run GA with updated weights (features are already precomputed!)
-            best_ind, ga_stats = self.genetic_optimizer.run(run_id=f"fw_trial_{trial.number}")
-            fitness = best_ind.fitness.values[0]
+            results = self.genetic_optimizer.run(run_id=f"fw_trial_{trial.number}")
+            fitness = results['best_fitness']
             
             # Report intermediate result for pruning
             if config.enable_pruning:
@@ -317,12 +317,12 @@ class HyperparameterOptimizer:
                 logger.info(f"Trial {trial.number}: Testing GA config: {ga_params}")
             
             # Run GA with updated configuration (features are already precomputed!)
-            best_ind, ga_stats = self.genetic_optimizer.run(run_id=f"ga_trial_{trial.number}")
-            fitness = best_ind.fitness.values[0]
+            results = self.genetic_optimizer.run(run_id=f"ga_trial_{trial.number}")
+            fitness = results['best_fitness']
             
             # Report intermediate results for pruning
-            if config.enable_pruning and 'history' in ga_stats:
-                for i, gen_data in enumerate(ga_stats['history']):
+            if config.enable_pruning and 'history' in results:
+                for i, gen_data in enumerate(results['history']):
                     if i >= config.pruning_warmup_steps and i % config.pruning_interval == 0:
                         trial.report(gen_data['max_fitness'], i)
                         if trial.should_prune():

@@ -4,7 +4,7 @@ import random
 import time
 from deap import base, creator, tools
 from feature_extractor import FeatureExtractor
-from utils import generate_dynamic_mask
+from fitness_evaluation import generate_dynamic_mask
 from fitness_evaluation import evaluate_ga_individual
 import logging
 import tensorflow as tf
@@ -632,10 +632,13 @@ class GeneticFeatureOptimizer:
         logger.info(f"Rules: {best_ind.num_active_rules}")
         logger.info(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
 
+        self.history = self.current_run_history
+
         # Store run results
         run_results = {
             'run_id': run_id,
             'run_number': run_number,
+            'best_individual': best_ind,
             'best_fitness': best_ind.fitness.values[0],
             'best_rules_tensor': best_ind.rules_tensor.numpy().tolist(),
             'best_feature_importance': self.get_feature_importance(best_ind),
@@ -647,7 +650,6 @@ class GeneticFeatureOptimizer:
         }
         
         self.all_run_histories.append(run_results)
-        self.history = self.current_run_history
         return run_results
 
     def get_run_history(self):
