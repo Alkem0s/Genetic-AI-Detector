@@ -43,28 +43,53 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
     @staticmethod
     @tf.function
     def _apply_sobel_filters(gray: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
-        gray_expanded = tf.expand_dims(tf.expand_dims(gray, 0), -1)
+        rank = tf.rank(gray)
+        gray_expanded = tf.cond(
+            tf.equal(rank, 2),
+            lambda: tf.expand_dims(tf.expand_dims(gray, 0), -1),
+            lambda: tf.expand_dims(gray, -1)
+        )
         grad_x = tf.nn.conv2d(gray_expanded, StructuralFeatureExtractor.SOBEL_X_KERNEL,
                               strides=[1, 1, 1, 1], padding='SAME')
         grad_y = tf.nn.conv2d(gray_expanded, StructuralFeatureExtractor.SOBEL_Y_KERNEL,
                               strides=[1, 1, 1, 1], padding='SAME')
-        return tf.squeeze(grad_x, [0, 3]), tf.squeeze(grad_y, [0, 3])
+        grad_x = tf.cond(tf.equal(rank, 2), lambda: tf.squeeze(grad_x, [0, 3]), lambda: tf.squeeze(grad_x, [3]))
+        grad_y = tf.cond(tf.equal(rank, 2), lambda: tf.squeeze(grad_y, [0, 3]), lambda: tf.squeeze(grad_y, [3]))
+        return grad_x, grad_y
 
     @staticmethod
     @tf.function
     def _tf_native_canny(gray, low_threshold=50.0, high_threshold=150.0):
-        gray_expanded = tf.expand_dims(tf.expand_dims(gray, 0), -1)
+        rank = tf.rank(gray)
+        gray_expanded = tf.cond(
+            tf.equal(rank, 2),
+            lambda: tf.expand_dims(tf.expand_dims(gray, 0), -1),
+            lambda: tf.expand_dims(gray, -1)
+        )
         blurred = tf.nn.conv2d(gray_expanded, StructuralFeatureExtractor.GAUSSIAN_KERNEL,
                                strides=[1, 1, 1, 1], padding='SAME')
-        blurred = tf.squeeze(blurred, [0, 3])
+        blurred = tf.cond(tf.equal(rank, 2), lambda: tf.squeeze(blurred, [0, 3]), lambda: tf.squeeze(blurred, [3]))
         grad_x, grad_y = StructuralFeatureExtractor._apply_sobel_filters(blurred)
         magnitude = tf.sqrt(grad_x**2 + grad_y**2 + BaseFeatureExtractor.EPSILON_TF)
-        magnitude_padded = tf.pad(magnitude, [[1, 1], [1, 1]], mode='REFLECT')
-        max_pooled = tf.nn.max_pool2d(
-            tf.expand_dims(tf.expand_dims(magnitude_padded, 0), -1),
-            ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='VALID'
+        
+        magnitude_padded = tf.cond(
+            tf.equal(rank, 2),
+            lambda: tf.pad(magnitude, [[1, 1], [1, 1]], mode='REFLECT'),
+            lambda: tf.pad(magnitude, [[0, 0], [1, 1], [1, 1]], mode='REFLECT')
         )
-        max_pooled = tf.squeeze(max_pooled, [0, 3])
+        
+        max_pooled = tf.cond(
+            tf.equal(rank, 2),
+            lambda: tf.squeeze(tf.nn.max_pool2d(
+                tf.expand_dims(tf.expand_dims(magnitude_padded, 0), -1),
+                ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='VALID'
+            ), [0, 3]),
+            lambda: tf.squeeze(tf.nn.max_pool2d(
+                tf.expand_dims(magnitude_padded, -1),
+                ksize=[1, 3, 3, 1], strides=[1, 1, 1, 1], padding='VALID'
+            ), [3])
+        )
+            
         suppressed   = tf.where(tf.equal(magnitude, max_pooled), magnitude, 0.0)
         strong_edges = tf.cast(suppressed > high_threshold, tf.float32)
         weak_edges   = tf.cast(
@@ -86,23 +111,33 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
         distance    = tf.sqrt((yy - center_y)**2 + (xx - center_x)**2)
         max_distance = tf.sqrt(center_y**2 + center_x**2) + BaseFeatureExtractor.EPSILON_TF
         gradient    = 1.0 - tf.minimum(distance / max_distance, 1.0)
+        
+        # Broadcast score if batched
+        rank = tf.rank(score)
+        score = tf.cond(
+            tf.equal(rank, 0),
+            lambda: score,
+            lambda: tf.reshape(score, [-1, 1, 1])
+        )
+            
         return gradient * score
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_gradient_feature(self, image: tf.Tensor) -> tf.Tensor:
         with tf.name_scope('gradient_feature'):
-            gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)   # ← inherited
+            gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)
             grad_x, grad_y = self._apply_sobel_filters(gray)
             magnitude = tf.sqrt(grad_x**2 + grad_y**2 + self.EPSILON_TF)
             magnitude_normalized = tf.clip_by_value(
                 magnitude / (self.GRADIENT_MAX_VAL + self.EPSILON_TF), 0.0, 1.0
             )
-            mean_mag  = tf.reduce_mean(magnitude_normalized)
-            variance  = tf.reduce_mean(tf.square(magnitude_normalized - mean_mag))
+            mean_mag  = tf.reduce_mean(magnitude_normalized, axis=[-2, -1], keepdims=True)
+            variance  = tf.reduce_mean(tf.square(magnitude_normalized - mean_mag), axis=[-2, -1])
             perfection_score = 1.0 / (variance + self.EPSILON_TF)
-            h, w = tf.shape(image)[0], tf.shape(image)[1]
+            
+            h, w = tf.shape(image)[-3], tf.shape(image)[-2]
             feature_map = self._create_radial_gradient_map(
                 tf.cast(h, tf.float32), tf.cast(w, tf.float32), perfection_score
             )
@@ -110,7 +145,7 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
             return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_pattern_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -126,7 +161,7 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
 
             # --- Original magnitude ratio score ---
             magnitude_spectrum = tf.math.log(tf.abs(f_shift) + self.EPSILON_TF)
-            h, w = tf.shape(magnitude_spectrum)[0], tf.shape(magnitude_spectrum)[1]
+            h, w = tf.shape(magnitude_spectrum)[-2], tf.shape(magnitude_spectrum)[-1]
             center_h, center_w = h // 2, w // 2
             yy, xx = tf.meshgrid(
                 tf.range(h, dtype=tf.float32),
@@ -140,38 +175,39 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
             max_dist        = tf.sqrt(tf.cast(center_h**2 + center_w**2, tf.float32))
             high_freq_mask  = tf.cast(dist_from_center > max_dist * 0.3, tf.float32)
             low_freq_mask   = 1.0 - high_freq_mask
-            high_freq_energy = tf.reduce_sum(magnitude_spectrum * high_freq_mask)
-            low_freq_energy  = tf.reduce_sum(magnitude_spectrum * low_freq_mask)
+            high_freq_energy = tf.reduce_sum(magnitude_spectrum * high_freq_mask, axis=[-2, -1])
+            low_freq_energy  = tf.reduce_sum(magnitude_spectrum * low_freq_mask, axis=[-2, -1])
             magnitude_score  = high_freq_energy / (low_freq_energy + self.EPSILON_TF)
 
             # --- Phase consistency score ---
-            # AI images tend to have unnaturally consistent (low variance) phase patterns.
             phase = tf.math.angle(f_shift)  # shape [H, W], values in [-pi, pi]
-            phase_variance = tf.math.reduce_variance(phase)
-            # Invert: low variance → high score (more AI-like)
+            phase_variance = tf.math.reduce_variance(phase, axis=[-2, -1])
             phase_score = 1.0 / (phase_variance + self.EPSILON_TF)
             phase_score = tf.clip_by_value(phase_score / self.FEATURE_MAX_VAL, 0.0, 1.0)
 
             # --- Periodic peak detector via comb filter ---
-            # Expand magnitude spectrum for conv2d: [1, H, W, 1]
-            mag_exp = tf.expand_dims(tf.expand_dims(magnitude_spectrum, 0), -1)
+            rank = tf.rank(magnitude_spectrum)
+            mag_exp = tf.cond(
+                tf.equal(rank, 2),
+                lambda: tf.expand_dims(tf.expand_dims(magnitude_spectrum, 0), -1),
+                lambda: tf.expand_dims(magnitude_spectrum, -1)
+            )
             comb_response = tf.nn.conv2d(
                 mag_exp, self.COMB_KERNEL, strides=[1, 1, 1, 1], padding='SAME'
             )
-            comb_response = tf.squeeze(comb_response, [0, 3])
-            # A strong comb response relative to mean indicates periodic grid artifacts
-            comb_mean   = tf.reduce_mean(comb_response)
-            comb_max    = tf.reduce_max(comb_response)
+            comb_response = tf.cond(tf.equal(rank, 2), lambda: tf.squeeze(comb_response, [0, 3]), lambda: tf.squeeze(comb_response, [3]))
+            
+            comb_mean   = tf.reduce_mean(comb_response, axis=[-2, -1])
+            comb_max    = tf.reduce_max(comb_response, axis=[-2, -1])
             comb_score  = (comb_max - comb_mean) / (comb_mean + self.EPSILON_TF)
             comb_score  = tf.clip_by_value(comb_score / self.FEATURE_MAX_VAL, 0.0, 1.0)
 
-            # Combine all three sub-scores into a single pattern score
             pattern_score = (magnitude_score / self.FEATURE_MAX_VAL) * 0.4 \
                             + phase_score * 0.3 \
                             + comb_score * 0.3
             pattern_score = tf.clip_by_value(pattern_score, 0.0, 1.0)
 
-            ih, iw = tf.shape(image)[0], tf.shape(image)[1]
+            ih, iw = tf.shape(image)[-3], tf.shape(image)[-2]
             feature_map = self._create_radial_gradient_map(
                 tf.cast(ih, tf.float32), tf.cast(iw, tf.float32), pattern_score
             )
@@ -179,7 +215,7 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
             return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_edge_feature(self, image: tf.Tensor) -> tf.Tensor:
         with tf.name_scope('edge_feature'):
@@ -188,31 +224,38 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
             return self._apply_mask(edge_map, image)
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_symmetry_feature(self, image: tf.Tensor) -> tf.Tensor:
         with tf.name_scope('symmetry_feature'):
             gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)
-            h, w = tf.shape(gray)[0], tf.shape(gray)[1]
-            left_half  = gray[:, :w // 2]
-            right_half = tf.reverse(gray[:, w // 2:], axis=[1])
-            min_w      = tf.minimum(tf.shape(left_half)[1], tf.shape(right_half)[1])
-            h_sym = 1.0 - tf.reduce_mean(tf.abs(left_half[:, :min_w] - right_half[:, :min_w])) / \
-                    (tf.reduce_max(gray) + self.EPSILON_TF)
-            top_half    = gray[:h // 2, :]
-            bottom_half = tf.reverse(gray[h // 2:, :], axis=[0])
-            min_h       = tf.minimum(tf.shape(top_half)[0], tf.shape(bottom_half)[0])
-            v_sym = 1.0 - tf.reduce_mean(tf.abs(top_half[:min_h, :] - bottom_half[:min_h, :])) / \
-                    (tf.reduce_max(gray) + self.EPSILON_TF)
+            h, w = tf.shape(gray)[-2], tf.shape(gray)[-1]
+            left_half  = gray[..., :, :w // 2]
+            right_half = tf.reverse(gray[..., :, w // 2:], axis=[-1])
+            min_w      = tf.minimum(tf.shape(left_half)[-1], tf.shape(right_half)[-1])
+            
+            diff_h = tf.abs(left_half[..., :, :min_w] - right_half[..., :, :min_w])
+            h_sym = 1.0 - tf.reduce_mean(diff_h, axis=[-2, -1]) / \
+                    (tf.reduce_max(gray, axis=[-2, -1]) + self.EPSILON_TF)
+                    
+            top_half    = gray[..., :h // 2, :]
+            bottom_half = tf.reverse(gray[..., h // 2:, :], axis=[-2])
+            min_h       = tf.minimum(tf.shape(top_half)[-2], tf.shape(bottom_half)[-2])
+            
+            diff_v = tf.abs(top_half[..., :min_h, :] - bottom_half[..., :min_h, :])
+            v_sym = 1.0 - tf.reduce_mean(diff_v, axis=[-2, -1]) / \
+                    (tf.reduce_max(gray, axis=[-2, -1]) + self.EPSILON_TF)
+                    
             symmetry_score = tf.clip_by_value((h_sym + v_sym) / 2.0, 0.0, 1.0)
-            ih, iw = tf.shape(image)[0], tf.shape(image)[1]
+            
+            ih, iw = tf.shape(image)[-3], tf.shape(image)[-2]
             feature_map = self._create_radial_gradient_map(
                 tf.cast(ih, tf.float32), tf.cast(iw, tf.float32), symmetry_score
             )
             return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_dct_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
@@ -224,10 +267,13 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
         with tf.name_scope('dct_feature'):
             gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)
 
-            # Extract 8x8 non-overlapping blocks using extract_patches
-            # Pad if patch_size is not divisible by 8
             block_size = 8
-            gray_exp = tf.expand_dims(tf.expand_dims(gray, 0), -1)  # [1, H, W, 1]
+            rank = tf.rank(gray)
+            gray_exp = tf.cond(
+                tf.equal(rank, 2),
+                lambda: tf.expand_dims(tf.expand_dims(gray, 0), -1),
+                lambda: tf.expand_dims(gray, -1)
+            )
             blocks = tf.image.extract_patches(
                 images=gray_exp,
                 sizes=[1, block_size, block_size, 1],
@@ -235,30 +281,26 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
                 rates=[1, 1, 1, 1],
                 padding='VALID'
             )
-            # blocks: [1, n_bh, n_bw, block_size*block_size]
+            n_batch = tf.shape(blocks)[0]
             n_bh = tf.shape(blocks)[1]
             n_bw = tf.shape(blocks)[2]
-            blocks = tf.reshape(blocks, [n_bh * n_bw, block_size, block_size])
+            blocks = tf.reshape(blocks, [n_batch * n_bh * n_bw, block_size, block_size])
 
-            # Apply 2D DCT: DCT along rows then columns
-            dct_rows = tf.signal.dct(blocks, type=2, norm='ortho')          # [..., block_size]
+            dct_rows = tf.signal.dct(blocks, type=2, norm='ortho')
             dct_2d   = tf.signal.dct(tf.transpose(dct_rows, [0, 2, 1]),
                                      type=2, norm='ortho')
-            dct_2d   = tf.transpose(dct_2d, [0, 2, 1])  # [n_blocks, 8, 8]
+            dct_2d   = tf.transpose(dct_2d, [0, 2, 1])
 
-            # DC component is the top-left (0,0) coefficient
-            dc_energy = tf.square(dct_2d[:, 0, 0])  # [n_blocks]
-            # AC energy is the rest of the coefficients
+            dc_energy = tf.square(dct_2d[:, 0, 0])
             ac_energy = tf.reduce_sum(tf.square(dct_2d), axis=[1, 2]) - dc_energy
 
-            # AC/DC ratio: low ratio → smooth → more AI-like
-            # Score: 1 - normalized_ac_dc_ratio (higher = more AI-like)
             ac_dc_ratio = ac_energy / (dc_energy + self.EPSILON_TF)
-            mean_ratio  = tf.reduce_mean(ac_dc_ratio)
-            # Normalize against a typical ratio of ~50 for real images
+            ac_dc_ratio = tf.reshape(ac_dc_ratio, [n_batch, n_bh * n_bw])
+            mean_ratio  = tf.reduce_mean(ac_dc_ratio, axis=1)
+            
             dct_score = 1.0 - tf.clip_by_value(mean_ratio / 50.0, 0.0, 1.0)
+            
+            dct_score = tf.reshape(dct_score, [-1, 1, 1])
+            feature_map = tf.ones_like(gray) * dct_score
 
-            # Broadcast scalar score to a spatial feature map
-            h, w = tf.shape(image)[0], tf.shape(image)[1]
-            feature_map = tf.fill([h, w], dct_score)
             return self._apply_mask(feature_map, image)

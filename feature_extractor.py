@@ -64,16 +64,8 @@ class FeatureExtractor:
             all_patches, [total_patches, static_patch_size, static_patch_size, 3]
         )
 
-        # Process all patches in a single map_fn with high parallelism
-        flat_features = tf.map_fn(
-            self._extract_single_patch_features,
-            flat_patches,
-            fn_output_signature=tf.TensorSpec(
-                shape=[static_patch_size, static_patch_size, num_features],
-                dtype=tf.float32
-            ),
-            parallel_iterations=64,
-        )
+        # Process all patches directly using fully vectorized tensor operations
+        flat_features = self._extract_single_patch_features(flat_patches)
         # Reduce spatial dims of each patch to a scalar per feature: [total_patches, num_features]
         flat_features = tf.reduce_mean(flat_features, axis=[1, 2])
 
@@ -86,7 +78,7 @@ class FeatureExtractor:
 
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_single_patch_features(self, patch: tf.Tensor) -> tf.Tensor:
         """

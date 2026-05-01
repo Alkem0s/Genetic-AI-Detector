@@ -13,4 +13,4 @@ test.py
 *.docx
 *.jpg
 *.prof
-scratch.py
+smoke_test.py
