@@ -24,76 +24,65 @@ class FeatureExtractor:
         self.feature_weights = config.feature_weights
 
     @tf.function(input_signature=[
-        tf.TensorSpec(shape=[config.image_size, config.image_size, 3], dtype=tf.float32)
+        tf.TensorSpec(shape=[None, config.image_size, config.image_size, 3], dtype=tf.float32)
     ])
-    def extract_patch_features(self, image: tf.Tensor) -> tf.Tensor:
-        image_expanded = tf.expand_dims(image, 0)
+    def extract_batch_patch_features(self, images: tf.Tensor) -> tf.Tensor:
+        """
+        Vectorized batch feature extraction.
+        Extracts all patches from the entire image batch in one shot, then runs
+        a single flat tf.map_fn over all (batch * n_patches_h * n_patches_w) patches
+        simultaneously.  This eliminates the previously nested map_fn loop and
+        lets the GPU work on the full patch workload at once.
 
+        Returns:
+            Float32 tensor of shape (batch_size, n_patches_h, n_patches_w, n_features).
+        """
+        num_features    = len(self.feature_weights)
         static_patch_size = config.patch_size
 
-        patches = tf.image.extract_patches(
-            images=image_expanded,
+        if tf.size(images) == 0:
+            n_patches_h = config.image_size // static_patch_size
+            n_patches_w = config.image_size // static_patch_size
+            return tf.zeros([0, n_patches_h, n_patches_w, num_features], dtype=tf.float32)
+
+        batch_size = tf.shape(images)[0]
+
+        # Extract all patches from all images: [batch, n_ph, n_pw, patch_size*patch_size*3]
+        all_patches = tf.image.extract_patches(
+            images=images,
             sizes=[1, static_patch_size, static_patch_size, 1],
             strides=[1, static_patch_size, static_patch_size, 1],
             rates=[1, 1, 1, 1],
             padding='VALID'
         )
-        
-        patches_shape = tf.shape(patches)
-        n_patches_h = patches_shape[1]
-        n_patches_w = patches_shape[2]
+        n_patches_h = tf.shape(all_patches)[1]
+        n_patches_w = tf.shape(all_patches)[2]
+        total_patches = batch_size * n_patches_h * n_patches_w
 
-        patches = tf.reshape(patches, [-1, static_patch_size, static_patch_size, 3])
-
-        patch_features = tf.map_fn(
-            lambda single_patch: self._extract_single_patch_features(single_patch),
-            patches,
-            fn_output_signature=tf.TensorSpec(shape=[static_patch_size, static_patch_size, len(self.feature_weights)], dtype=tf.float32)
+        # Flatten to [total_patches, patch_size, patch_size, 3]
+        flat_patches = tf.reshape(
+            all_patches, [total_patches, static_patch_size, static_patch_size, 3]
         )
 
-        patch_features = tf.reduce_mean(patch_features, axis=[1, 2])
-        
-        num_features = len(self.feature_weights)
-        patch_features = tf.reshape(patch_features, [n_patches_h, n_patches_w, num_features])
-        
-        return patch_features
-    
-    @tf.function(input_signature=[
-        tf.TensorSpec(shape=[None, config.image_size, config.image_size, 3], dtype=tf.float32) # Batch of images (batch_size, H, W, C)
-    ])
-    def extract_batch_patch_features(self, images: tf.Tensor) -> tf.Tensor:
-        """
-        Batch processing version of extract_patch_features.
-        Returns tensor shaped as (batch_size, n_patches_h, n_patches_w, n_features).
-
-        Args:
-            images: Input batch of images as a single TensorFlow tensor (batch_size, height, width, channels).
-            patch_size: Size of patches to analyze.
-
-        Returns:
-            4D tensor with shape (batch_size, n_patches_h, n_patches_w, n_features) containing
-            average feature values for each patch across the batch.
-        """
-        if tf.size(images) == 0:
-            # Use static patch size for calculations
-            static_patch_size = config.patch_size
-            dummy_image_height = tf.constant(config.image_size, dtype=tf.float32)
-            dummy_image_width = tf.constant(config.image_size, dtype=tf.float32)
-            patch_size_float = tf.constant(static_patch_size, dtype=tf.float32)
-
-            # Number of patches in height/width direction using floor division (mimicking 'VALID' padding)
-            n_patches_h = tf.cast(tf.floor(dummy_image_height / patch_size_float), tf.int32)
-            n_patches_w = tf.cast(tf.floor(dummy_image_width / patch_size_float), tf.int32)
-            
-            return tf.zeros([0, n_patches_h, n_patches_w, len(self.feature_weights)], dtype=tf.float32)
-
-        # Apply extract_patch_features to each image in the batch
-        batch_patches = tf.map_fn(
-            lambda img: self.extract_patch_features(img),
-            images,
-            fn_output_signature=tf.TensorSpec(shape=[None, None, len(self.feature_weights)], dtype=tf.float32)
+        # Process all patches in a single map_fn with high parallelism
+        flat_features = tf.map_fn(
+            self._extract_single_patch_features,
+            flat_patches,
+            fn_output_signature=tf.TensorSpec(
+                shape=[static_patch_size, static_patch_size, num_features],
+                dtype=tf.float32
+            ),
+            parallel_iterations=64,
         )
-        return batch_patches
+        # Reduce spatial dims of each patch to a scalar per feature: [total_patches, num_features]
+        flat_features = tf.reduce_mean(flat_features, axis=[1, 2])
+
+        # Reshape back to [batch, n_patches_h, n_patches_w, num_features]
+        return tf.reshape(flat_features, [batch_size, n_patches_h, n_patches_w, num_features])
+
+    def extract_patch_features(self, image: tf.Tensor) -> tf.Tensor:
+        """Single-image wrapper that delegates to extract_batch_patch_features."""
+        return self.extract_batch_patch_features(tf.expand_dims(image, 0))[0]
 
 
     @tf.function(input_signature=[
@@ -101,33 +90,41 @@ class FeatureExtractor:
     ])
     def _extract_single_patch_features(self, patch: tf.Tensor) -> tf.Tensor:
         """
-        Extracts all individual features from a single patch.
-        Returns a 3D tensor where each channel is a feature map for the patch.
-        Shape: [patch_size, patch_size, num_features]
+        Extracts all 11 individual features from a single patch.
+        Returns a 3D tensor: [patch_size, patch_size, num_features]
+
+        Feature order must match global_config.feature_weights key order:
+            gradient, pattern, noise, edge, symmetry, texture,
+            color, hash, dct, channel_correlation, glcm
         """
-        gradient_feature = self.structural_extractor._extract_gradient_feature(patch)
-        pattern_feature = self.structural_extractor._extract_pattern_feature(patch)
-        edge_feature = self.structural_extractor._extract_edge_feature(patch)
-        symmetry_feature = self.structural_extractor._extract_symmetry_feature(patch)
+        gradient_feature   = self.structural_extractor._extract_gradient_feature(patch)
+        pattern_feature    = self.structural_extractor._extract_pattern_feature(patch)
+        edge_feature       = self.structural_extractor._extract_edge_feature(patch)
+        symmetry_feature   = self.structural_extractor._extract_symmetry_feature(patch)
+        dct_feature        = self.structural_extractor._extract_dct_feature(patch)
 
-        noise_feature = self.texture_extractor._extract_noise_feature(patch)
-        texture_feature = self.texture_extractor._extract_texture_feature(patch)
-        color_feature = self.texture_extractor._extract_color_feature(patch)
-        hash_feature = self.texture_extractor._extract_hash_feature(patch)
+        noise_feature               = self.texture_extractor._extract_noise_feature(patch)
+        texture_feature             = self.texture_extractor._extract_texture_feature(patch)
+        color_feature               = self.texture_extractor._extract_color_feature(patch)
+        hash_feature                = self.texture_extractor._extract_hash_feature(patch)
+        channel_correlation_feature = self.texture_extractor._extract_channel_correlation_feature(patch)
+        glcm_feature                = self.texture_extractor._extract_glcm_feature(patch)
 
-        # Stack all feature maps. Each feature map is [patch_size, patch_size].
-        # Stacking along a new axis to get [patch_size, patch_size, num_features]
+        # Stack in the same order as feature_weights in global_config.py
         feature_stack = tf.stack([
             gradient_feature,
             pattern_feature,
+            noise_feature,
             edge_feature,
             symmetry_feature,
-            noise_feature,
             texture_feature,
             color_feature,
-            hash_feature
-        ], axis=-1)
-        
+            hash_feature,
+            dct_feature,
+            channel_correlation_feature,
+            glcm_feature,
+        ], axis=-1)  # [patch_size, patch_size, 11]
+
         return feature_stack
     
 class FeaturePipeline:

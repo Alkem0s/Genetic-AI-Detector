@@ -39,14 +39,18 @@ class DataLoader:
         if missing:
             raise ValueError(f"CSV is missing required columns: {missing}")
         
-        # Check for missing files
-        missing_files = [path for path in df['file_name'] if not os.path.exists(path)]
+        # Check for missing files efficiently using ThreadPoolExecutor
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+            exists_mask = list(executor.map(os.path.exists, df['file_name']))
+            
+        missing_files = df[~np.array(exists_mask)]['file_name'].tolist()
         if missing_files:
             print(f"Warning: {len(missing_files)} image files not found")
             print(f"First few missing: {missing_files[:5] if len(missing_files) > 5 else missing_files}")
             
-            # Remove missing files from dataframe
-            df = df[df['file_name'].apply(os.path.exists)]
+        # Remove missing files from dataframe
+        df = df[exists_mask]
         
         # Print original label distribution
         print("Original label distribution:")

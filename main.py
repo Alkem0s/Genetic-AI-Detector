@@ -1,5 +1,7 @@
 # main.py
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 import json
 import pickle
 import logging
@@ -28,24 +30,27 @@ def setup_environment():
     # Create feature cache directory
     os.makedirs(os.path.join(config.output_dir, config.feature_cache_dir), exist_ok=True)
 
-    # Clear existing handlers to prevent duplicates if called multiple times (though not expected in main)
-    if logger.handlers:
-        for handler in logger.handlers[:]: # Iterate over a copy
-            logger.removeHandler(handler)
+    # Configure root logger to capture all module logs
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Clear existing handlers
+    if root_logger.handlers:
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
 
     # Console handler
     console_handler = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    logger.propagate = False # Usually set once globally for the logger
+    root_logger.addHandler(console_handler)
 
     # Add file handler to logger
     log_file_path = os.path.join(config.output_dir, 'ai_detector.log')
     file_handler = logging.FileHandler(log_file_path)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    root_logger.addHandler(file_handler)
+    
     logger.info(f"Console output will also be saved to {log_file_path}")
 
     # Setup GPU memory growth
@@ -115,7 +120,7 @@ def train_ai_detector(model_base_path):
     history = model_wrapper.train(
         train_dataset=train_ds,
         validation_dataset=test_ds,
-        model_path=config.model_path
+        model_path=os.path.join(config.output_dir, config.model_path)
     )
 
     # Save the model state (NN model + genetic rules)

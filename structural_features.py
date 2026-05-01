@@ -27,6 +27,18 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
         ], dtype=tf.float32) / 273.0,
         [5, 5, 1, 1]
     )
+    # Comb filter for periodic peak detection in FFT magnitude spectrum.
+    # A 5x5 kernel with peaks at (0,0) and (0,2) detects grid-aligned periodicity.
+    COMB_KERNEL = tf.reshape(
+        tf.constant([
+            [1., 0., 1., 0., 1.],
+            [0., 0., 0., 0., 0.],
+            [1., 0., 0., 0., 1.],
+            [0., 0., 0., 0., 0.],
+            [1., 0., 1., 0., 1.],
+        ], dtype=tf.float32) / 8.0,
+        [5, 5, 1, 1]
+    )
 
     @staticmethod
     @tf.function
@@ -101,10 +113,18 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
         tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_pattern_feature(self, image: tf.Tensor) -> tf.Tensor:
+        """
+        Step 22: Enhanced Fourier analysis with:
+        - Original high/low freq energy ratio (magnitude score)
+        - Phase consistency score: low variance in phase → AI image
+        - Periodic peak detection via comb filter convolution on magnitude spectrum
+        """
         with tf.name_scope('pattern_feature'):
             gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)
             f_transform = tf.signal.fft2d(tf.cast(gray, tf.complex64))
             f_shift     = tf.signal.fftshift(f_transform)
+
+            # --- Original magnitude ratio score ---
             magnitude_spectrum = tf.math.log(tf.abs(f_shift) + self.EPSILON_TF)
             h, w = tf.shape(magnitude_spectrum)[0], tf.shape(magnitude_spectrum)[1]
             center_h, center_w = h // 2, w // 2
@@ -122,12 +142,40 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
             low_freq_mask   = 1.0 - high_freq_mask
             high_freq_energy = tf.reduce_sum(magnitude_spectrum * high_freq_mask)
             low_freq_energy  = tf.reduce_sum(magnitude_spectrum * low_freq_mask)
-            pattern_score   = high_freq_energy / (low_freq_energy + self.EPSILON_TF)
+            magnitude_score  = high_freq_energy / (low_freq_energy + self.EPSILON_TF)
+
+            # --- Phase consistency score ---
+            # AI images tend to have unnaturally consistent (low variance) phase patterns.
+            phase = tf.math.angle(f_shift)  # shape [H, W], values in [-pi, pi]
+            phase_variance = tf.math.reduce_variance(phase)
+            # Invert: low variance → high score (more AI-like)
+            phase_score = 1.0 / (phase_variance + self.EPSILON_TF)
+            phase_score = tf.clip_by_value(phase_score / self.FEATURE_MAX_VAL, 0.0, 1.0)
+
+            # --- Periodic peak detector via comb filter ---
+            # Expand magnitude spectrum for conv2d: [1, H, W, 1]
+            mag_exp = tf.expand_dims(tf.expand_dims(magnitude_spectrum, 0), -1)
+            comb_response = tf.nn.conv2d(
+                mag_exp, self.COMB_KERNEL, strides=[1, 1, 1, 1], padding='SAME'
+            )
+            comb_response = tf.squeeze(comb_response, [0, 3])
+            # A strong comb response relative to mean indicates periodic grid artifacts
+            comb_mean   = tf.reduce_mean(comb_response)
+            comb_max    = tf.reduce_max(comb_response)
+            comb_score  = (comb_max - comb_mean) / (comb_mean + self.EPSILON_TF)
+            comb_score  = tf.clip_by_value(comb_score / self.FEATURE_MAX_VAL, 0.0, 1.0)
+
+            # Combine all three sub-scores into a single pattern score
+            pattern_score = (magnitude_score / self.FEATURE_MAX_VAL) * 0.4 \
+                            + phase_score * 0.3 \
+                            + comb_score * 0.3
+            pattern_score = tf.clip_by_value(pattern_score, 0.0, 1.0)
+
             ih, iw = tf.shape(image)[0], tf.shape(image)[1]
             feature_map = self._create_radial_gradient_map(
                 tf.cast(ih, tf.float32), tf.cast(iw, tf.float32), pattern_score
             )
-            feature_map = tf.clip_by_value(feature_map / self.FEATURE_MAX_VAL, 0.0, 1.0)
+            feature_map = tf.clip_by_value(feature_map, 0.0, 1.0)
             return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
@@ -161,4 +209,56 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
             feature_map = self._create_radial_gradient_map(
                 tf.cast(ih, tf.float32), tf.cast(iw, tf.float32), symmetry_score
             )
+            return self._apply_mask(feature_map, image)
+
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[config.patch_size, config.patch_size, 3], dtype=tf.float32)
+    ])
+    def _extract_dct_feature(self, image: tf.Tensor) -> tf.Tensor:
+        """
+        Step 23: DCT block artifact feature.
+        Divides the patch into 8x8 blocks (matching JPEG boundaries), applies DCT
+        to each block, and computes the AC/DC energy ratio.
+        AI images have smoother (lower) AC energy relative to DC energy.
+        """
+        with tf.name_scope('dct_feature'):
+            gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)
+
+            # Extract 8x8 non-overlapping blocks using extract_patches
+            # Pad if patch_size is not divisible by 8
+            block_size = 8
+            gray_exp = tf.expand_dims(tf.expand_dims(gray, 0), -1)  # [1, H, W, 1]
+            blocks = tf.image.extract_patches(
+                images=gray_exp,
+                sizes=[1, block_size, block_size, 1],
+                strides=[1, block_size, block_size, 1],
+                rates=[1, 1, 1, 1],
+                padding='VALID'
+            )
+            # blocks: [1, n_bh, n_bw, block_size*block_size]
+            n_bh = tf.shape(blocks)[1]
+            n_bw = tf.shape(blocks)[2]
+            blocks = tf.reshape(blocks, [n_bh * n_bw, block_size, block_size])
+
+            # Apply 2D DCT: DCT along rows then columns
+            dct_rows = tf.signal.dct(blocks, type=2, norm='ortho')          # [..., block_size]
+            dct_2d   = tf.signal.dct(tf.transpose(dct_rows, [0, 2, 1]),
+                                     type=2, norm='ortho')
+            dct_2d   = tf.transpose(dct_2d, [0, 2, 1])  # [n_blocks, 8, 8]
+
+            # DC component is the top-left (0,0) coefficient
+            dc_energy = tf.square(dct_2d[:, 0, 0])  # [n_blocks]
+            # AC energy is the rest of the coefficients
+            ac_energy = tf.reduce_sum(tf.square(dct_2d), axis=[1, 2]) - dc_energy
+
+            # AC/DC ratio: low ratio → smooth → more AI-like
+            # Score: 1 - normalized_ac_dc_ratio (higher = more AI-like)
+            ac_dc_ratio = ac_energy / (dc_energy + self.EPSILON_TF)
+            mean_ratio  = tf.reduce_mean(ac_dc_ratio)
+            # Normalize against a typical ratio of ~50 for real images
+            dct_score = 1.0 - tf.clip_by_value(mean_ratio / 50.0, 0.0, 1.0)
+
+            # Broadcast scalar score to a spatial feature map
+            h, w = tf.shape(image)[0], tf.shape(image)[1]
+            feature_map = tf.fill([h, w], dct_score)
             return self._apply_mask(feature_map, image)

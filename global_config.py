@@ -51,13 +51,17 @@ fitness_weights = {
 }
 
 # --- Feature Weights (should sum to 1.0) ---
+# Key ORDER must match the tf.stack order in feature_extractor._extract_single_patch_features
 feature_weights = {
-    'gradient': 0.10, # Measures unnatural gradient perfection
-    'pattern': 0.12, # Detects repeating patterns/artifacts
-    'noise': 0.14, # Analyzes noise distribution
-    'edge': 0.10, # Examines edge coherence and artifacts
-    'symmetry': 0.16, # Measures unnatural symmetry
-    'texture': 0.12, # Analyzes texture consistency
-    'color': 0.10, # Detects color distribution anomalies
-    'hash': 0.16 # Perceptual hash similarity to known AI patterns
+    'gradient':            0.08, # Measures unnatural gradient perfection
+    'pattern':             0.10, # Detects repeating patterns/artifacts + phase + comb
+    'noise':               0.09, # Analyzes noise distribution
+    'edge':                0.08, # Examines edge coherence and artifacts
+    'symmetry':            0.10, # Measures unnatural symmetry
+    'texture':             0.08, # Analyzes LBP texture consistency
+    'color':               0.08, # Detects color distribution anomalies
+    'hash':                0.10, # Perceptual hash similarity to known AI patterns
+    'dct':                 0.10, # Analyzes DCT AC/DC energy ratios (JPEG artifact)
+    'channel_correlation': 0.10, # Detects chromatic aberration vs AI channel alignment
+    'glcm':                0.09  # GLCM contrast/homogeneity (smooth AI textures)
 }

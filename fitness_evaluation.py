@@ -200,9 +200,13 @@ def calculate_adaptive_threshold(scores, labels):
 
 
 @tf.function(reduce_retracing=True)
-def compute_fitness_score(config, precomputed_features, labels,
-                                n_patches_h, n_patches_w, feature_weights, n_patches, 
-                                individual_len, max_possible_rules, individual_rule_tensor):
+def compute_fitness_score(image_size, 
+                          weight_balanced_acc, weight_f1, 
+                          weight_efficiency, weight_connectivity, weight_simplicity,
+                          verbose,
+                          precomputed_features, labels,
+                          n_patches_h, n_patches_w, feature_weights, n_patches, 
+                          individual_len, max_possible_rules, individual_rule_tensor):
     """
     Core fitness computation with batch processing.
     """
@@ -219,7 +223,7 @@ def compute_fitness_score(config, precomputed_features, labels,
     )
     
     # Normalize scores by image size
-    normalized_scores = scores / (config.image_size * config.image_size)
+    normalized_scores = scores / (image_size * image_size)
 
     # Calculate adaptive threshold
     adaptive_threshold = calculate_adaptive_threshold(normalized_scores, labels)
@@ -271,15 +275,15 @@ def compute_fitness_score(config, precomputed_features, labels,
     
     # Calculate final fitness
     fitness = (
-        balanced_accuracy * config.fitness_weights['balanced_accuracy'] +
-        f1 * config.fitness_weights['f1'] +
-        efficiency_score * config.fitness_weights['efficiency_score'] +
-        connectivity_score * config.fitness_weights['connectivity_score'] +
-        simplicity_score * config.fitness_weights['simplicity_score']
+        balanced_accuracy * weight_balanced_acc +
+        f1 * weight_f1 +
+        efficiency_score * weight_efficiency +
+        connectivity_score * weight_connectivity +
+        simplicity_score * weight_simplicity
     )
     
     # Debug information
-    if config.verbose:
+    def print_debug():
         tf.print("=== Fitness Debug ===")
         tf.print("Scores mean/std:", score_mean, score_std)
         tf.print("Threshold:", adaptive_threshold)
@@ -291,6 +295,9 @@ def compute_fitness_score(config, precomputed_features, labels,
         tf.print("Connectivity score:", connectivity_score)
         tf.print("Fitness:", fitness)
         tf.print("==================")
+        return tf.constant(0)
+
+    tf.cond(verbose, print_debug, lambda: tf.constant(0))
     
     return fitness
 
@@ -302,8 +309,17 @@ def evaluate_ga_individual(individual, config, precomputed_features, labels,
     Evaluate a single individual in the genetic algorithm.
     """
     try:
+        image_size_tf = tf.constant(config.image_size, dtype=tf.float32)
+        weight_bal_acc = tf.constant(config.fitness_weights['balanced_accuracy'], dtype=tf.float32)
+        weight_f1 = tf.constant(config.fitness_weights['f1'], dtype=tf.float32)
+        weight_eff = tf.constant(config.fitness_weights['efficiency_score'], dtype=tf.float32)
+        weight_conn = tf.constant(config.fitness_weights['connectivity_score'], dtype=tf.float32)
+        weight_simp = tf.constant(config.fitness_weights['simplicity_score'], dtype=tf.float32)
+        verbose_tf = tf.constant(bool(config.verbose), dtype=tf.bool)
+        
         fitness = compute_fitness_score(
-            config, precomputed_features, labels, n_patches_h, n_patches_w, feature_weights, n_patches,
+            image_size_tf, weight_bal_acc, weight_f1, weight_eff, weight_conn, weight_simp, verbose_tf,
+            precomputed_features, labels, n_patches_h, n_patches_w, feature_weights, n_patches,
             individual.num_active_rules, max_possible_rules, individual.rules_tensor
         )
         

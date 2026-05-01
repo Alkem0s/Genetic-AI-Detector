@@ -28,7 +28,7 @@ class AIDetectorModel:
     Class containing model architecture and training functionality for detecting AI-generated images.
     Can be configured to use image inputs only or combined with feature maps from feature extraction.
     """
-    def __init__(self, feature_channels=8):
+    def __init__(self, feature_channels=len(config.feature_weights)):
         """
         Initialize the model architecture.
         
@@ -254,7 +254,7 @@ class ModelWrapper:
     Feature extraction, caching, and dataset preparation are delegated to FeaturePipeline.
     """
 
-    def __init__(self, feature_channels: int = 8, genetic_rules: tf.Tensor = None):
+    def __init__(self, feature_channels: int = len(config.feature_weights), genetic_rules: tf.Tensor = None):
         """
         Args:
             feature_channels: Number of feature channels produced by the feature extractor.
@@ -409,7 +409,7 @@ class ModelWrapper:
         logger.info(f"Saving complete model state to {base_path}.*")
         
         # Save the neural network model
-        model_path = f"{base_path}_model.h5"
+        model_path = f"{base_path}.h5"
         self.model.save(model_path)
         
         # Save genetic rules and configuration

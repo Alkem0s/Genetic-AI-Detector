@@ -127,16 +127,19 @@ class GeneticFeatureOptimizer:
         logger.info(f"Extracting features for {num_samples} evaluation images...")
 
         # Extract features for all images in batches
+        tf.profiler.experimental.start("logs/profile_features")
         all_batch_features = []
         for i in range(0, num_samples, self.batch_size):
             batch_end = min(i + self.batch_size, num_samples)
             batch_images = sample_images[i:batch_end]
             
             # Extract features once per batch
-            batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
+            with tf.profiler.experimental.Trace('batch_extraction', step_num=i):
+                batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
             all_batch_features.append(batch_patch_features)
             
             logger.info(f"Processed batch {i//self.batch_size + 1}/{(num_samples + self.batch_size - 1)//self.batch_size}")
+        tf.profiler.experimental.stop()
 
         # Concatenate all batch features into a single tensor
         self.precomputed_features = tf.concat(all_batch_features, axis=0)
@@ -300,18 +303,30 @@ class GeneticFeatureOptimizer:
         
         if self.verbose:
             end_time = time.time()
-            logger.info(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
+            logger.debug(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
         return fitness
 
     def _sequential_evaluate_population(self, population):
         """Evaluate population sequentially on the main process"""
         logger.info(f"Evaluating population of {len(population)} individuals sequentially on GPU/CPU.")
 
+        profile_dir = "logs/profile"
+        if not hasattr(self, '_profiled_generation'):
+            tf.profiler.experimental.start(profile_dir)
+            self._profiled_generation = True
+            started_profiler = True
+        else:
+            started_profiler = False
+
         results = []
         for i, ind in enumerate(population):
             result = self._evaluate_individual_wrapper(ind)
             results.append(result)
             logger.debug(f"Individual {i+1} fitness: {result[0]:.4f}")
+            
+        if started_profiler:
+            tf.profiler.experimental.stop()
+            
         return results
 
     def _crossover_tensor_rules(self, ind1, ind2):
@@ -447,35 +462,28 @@ class GeneticFeatureOptimizer:
 
         # Analyze trigger frequency using tensor operations
         if tf.shape(active_rules)[0] > 0:
-            for j in range(tf.shape(sample_features)[0]):
-                patch_features = sample_features[j]
+            total_patches_evaluated = num_samples * self.n_patches_h.numpy() * self.n_patches_w.numpy()
+            
+            for rule_idx in range(tf.shape(active_rules)[0]):
+                rule = active_rules[rule_idx]
+                feature_idx = tf.cast(rule[0], tf.int32)
+                threshold = rule[1] 
+                operator = tf.cast(rule[2], tf.int32)
                 
-                for h in range(self.n_patches_h):
-                    for w in range(self.n_patches_w):
-                        patch_feature_values = patch_features[h, w, :]
-                        
-                        # Check each active rule
-                        for rule_idx in range(tf.shape(active_rules)[0]):
-                            rule = active_rules[rule_idx]
-                            feature_idx = tf.cast(rule[0], tf.int32)
-                            threshold = rule[1] 
-                            operator = tf.cast(rule[2], tf.int32)
-                            
-                            if feature_idx < tf.shape(patch_feature_values)[0]:
-                                value = patch_feature_values[feature_idx]
-                                
-                                # Check condition
-                                condition_met = tf.cond(
-                                    tf.equal(operator, 0),
-                                    lambda: value > threshold,
-                                    lambda: value < threshold
-                                )
-                                
-                                if condition_met:
-                                    feature_name = self.feature_names[feature_idx.numpy()]
-                                    feature_triggers[feature_name] += 1
-                        
-                        total_patches_evaluated += 1
+                if feature_idx < tf.shape(sample_features)[3]:
+                    feature_values = sample_features[:, :, :, feature_idx]
+                    
+                    # Check condition across the whole volume
+                    condition_met = tf.cond(
+                        tf.equal(operator, 0),
+                        lambda: feature_values > threshold,
+                        lambda: feature_values < threshold
+                    )
+                    
+                    triggers = tf.reduce_sum(tf.cast(condition_met, tf.int32)).numpy()
+                    
+                    feature_name = self.feature_names[feature_idx.numpy()]
+                    feature_triggers[feature_name] += int(triggers)
 
         logger.info(f"Feature triggers: {feature_triggers}. Total patches evaluated: {total_patches_evaluated}")
 
