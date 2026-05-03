@@ -171,32 +171,14 @@ def compute_image_scores(precomputed_features, feature_weights_sliced,
 
 
 @tf.function
-def calculate_adaptive_threshold(scores, labels):
+def calculate_honest_threshold(scores):
     """    
-    Calculate adaptive threshold based on scores and labels.
+    Honestly calculate threshold without peeking at labels.
+    Uses a fixed 0.5 threshold on normalized scores.
     """
-    num_samples = tf.shape(scores)[0]
-    score_mean = tf.reduce_mean(scores)
-    score_std = tf.math.reduce_std(scores)
-    
-    # Calculate positive ratio
-    positive_ratio = tf.reduce_mean(tf.cast(labels, tf.float32))
-    
-    # Percentile-based threshold
-    sorted_scores = tf.sort(scores, direction='DESCENDING')
-    threshold_idx = tf.cast(positive_ratio * tf.cast(num_samples, tf.float32), tf.int32)
-    threshold_idx = tf.clip_by_value(threshold_idx, 0, num_samples - 1)
-    percentile_threshold = sorted_scores[threshold_idx]
-    
-    # Statistical threshold
-    statistical_threshold = score_mean + 0.5 * score_std
-    
-    # Conservative threshold
-    adaptive_threshold = tf.minimum(percentile_threshold, statistical_threshold)
-    adaptive_threshold = tf.maximum(adaptive_threshold, score_mean * 0.1)
-    adaptive_threshold = tf.minimum(adaptive_threshold, score_mean + 2 * score_std)
-    
-    return adaptive_threshold
+    # In a real-world scenario, we don't know the positive ratio.
+    # We use a fixed 0.5 threshold on the normalized detection scores.
+    return tf.constant(0.5, dtype=tf.float32)
 
 
 @tf.function(reduce_retracing=True)
@@ -224,38 +206,16 @@ def compute_fitness_score(image_size,
     
     # Normalize scores by image size
     normalized_scores = scores / (image_size * image_size)
-
-    # Calculate adaptive threshold
-    adaptive_threshold = calculate_adaptive_threshold(normalized_scores, labels)
     
-    # Generate predictions
-    predictions = tf.cast(normalized_scores > adaptive_threshold, tf.int64)
-    
-    # Fallback for extreme predictions
-    num_predictions = tf.reduce_sum(tf.cast(predictions, tf.float32))
+    # Calculate stats for debug (honestly, from the scores themselves)
     score_mean = tf.reduce_mean(normalized_scores)
     score_std = tf.math.reduce_std(normalized_scores)
+
+    # Calculate honest threshold
+    threshold = calculate_honest_threshold(normalized_scores)
     
-    def fallback_predictions():
-        fallback_threshold = tf.cond(
-            tf.equal(num_predictions, 0),
-            lambda: score_mean * 0.5,
-            lambda: tf.cond(
-                tf.equal(num_predictions, tf.cast(num_samples, tf.float32)),
-                lambda: score_mean + score_std,
-                lambda: adaptive_threshold
-            )
-        )
-        return tf.cast(normalized_scores > fallback_threshold, tf.int64)
-    
-    predictions = tf.cond(
-        tf.logical_or(
-            tf.equal(num_predictions, 0),
-            tf.equal(num_predictions, tf.cast(num_samples, tf.float32))
-        ),
-        fallback_predictions,
-        lambda: predictions
-    )
+    # Generate predictions
+    predictions = tf.cast(normalized_scores > threshold, tf.int64)
     
     # Calculate metrics (optimized versions)
     precision, recall, f1 = metrics.calculate_precision_recall_f1(labels, predictions)
@@ -286,7 +246,7 @@ def compute_fitness_score(image_size,
     def print_debug():
         tf.print("=== Fitness Debug ===")
         tf.print("Scores mean/std:", score_mean, score_std)
-        tf.print("Threshold:", adaptive_threshold)
+        tf.print("Threshold:", threshold)
         tf.print("Predictions:", tf.reduce_sum(tf.cast(predictions, tf.float32)), "/", num_samples)
         tf.print("Balanced Acc:", balanced_accuracy)
         tf.print("F1:", f1)

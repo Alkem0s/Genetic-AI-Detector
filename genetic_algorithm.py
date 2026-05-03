@@ -5,9 +5,9 @@ import random
 import time
 from deap import base, creator, tools
 from feature_extractor import FeatureExtractor
-from fitness_evaluation import generate_dynamic_mask
-from fitness_evaluation import evaluate_ga_individual
+from fitness_evaluation import generate_dynamic_mask, evaluate_ga_individual, compute_fitness_score
 import logging
+import json
 import tensorflow as tf
 
 logging.basicConfig(level=logging.DEBUG, 
@@ -100,6 +100,7 @@ class GeneticFeatureOptimizer:
         self.precomputed_features = None
         self.eval_labels = None
         self.features_computed = False
+        self.feature_scales = None
 
         # Run history for multiple runs
         self.all_run_histories = []
@@ -168,12 +169,39 @@ class GeneticFeatureOptimizer:
             logger.info("Feature extraction profiling stopped.")
 
         # Concatenate all batch features into a single tensor
-        self.precomputed_features = tf.concat(all_batch_features, axis=0)
+        raw_features = tf.concat(all_batch_features, axis=0)
+        
+        # --- Automated Feature Scaling (Dynamic Normalization) ---
+        # We calculate the 99th percentile for each feature to use as a scaling divisor.
+        # This maps the vast majority of 'AI signals' into the [0, 1] range.
+        logger.info("Auto-calibrating feature scales (Dynamic Normalization)...")
+        
+        # Flatten across batch and spatial dims to get [total_patches, num_features]
+        total_patches = tf.shape(raw_features)[0] * tf.shape(raw_features)[1] * tf.shape(raw_features)[2]
+        flat_raw = tf.reshape(raw_features, [total_patches, -1])
+        
+        # Only calculate scales if they don't exist (i.e., during initial training setup)
+        if self.feature_scales is None:
+            logger.info("Auto-calibrating feature scales (Dynamic Normalization)...")
+            # Move to numpy for percentile calculation
+            flat_raw_np = flat_raw.numpy()
+            scales = np.percentile(np.abs(flat_raw_np), 99, axis=0)
+            
+            # Avoid division by zero
+            scales = np.maximum(scales, 1e-6)
+            self.feature_scales = tf.convert_to_tensor(scales, dtype=tf.float32)
+            logger.debug(f"Calculated feature scales: {dict(zip(self.feature_names, scales.tolist()))}")
+        else:
+            logger.info("Using existing feature scales for normalization.")
+        
+        # Apply scaling: [batch, h, w, features] / [features]
+        self.precomputed_features = raw_features / self.feature_scales
         self.features_computed = True
         
         end_time = time.time()
-        logger.info(f"Feature precomputation complete in {end_time - start_time:.2f} seconds")
-        logger.info(f"Precomputed features shape: {self.precomputed_features.shape}")
+        logger.info(f"Feature precomputation and auto-calibration complete in {end_time - start_time:.2f} seconds")
+        logger.info(f"Final normalized features shape: {self.precomputed_features.shape}")
+        logger.debug(f"Calculated feature scales: {dict(zip(self.feature_names, scales))}")
 
     def recompute_features(self, force=False):
         """
@@ -740,8 +768,76 @@ class GeneticFeatureOptimizer:
         self.all_run_histories.append(run_results)
         return run_results
 
+    def validate(self, images, labels, individual):
+        """
+        Evaluate a single individual on a new set of images (Validation).
+        This is used for 'Honest' evaluation on unseen data.
+        
+        Args:
+            images: New set of images
+            labels: Labels for the new images
+            individual: The individual (rule set) to evaluate
+            
+        Returns:
+            Validation fitness score
+        """
+        logger.info(f"Starting 'Honest' validation on {len(images)} unseen images...")
+        
+        # 1. Precompute features for the validation set (one-time)
+        # We temporarily swap out images/labels to use the existing _precompute_features
+        old_images = self.images
+        old_labels = self.labels
+        old_features = self.precomputed_features
+        
+        self.images = images
+        self.labels = tf.convert_to_tensor(labels, dtype=tf.float32)
+        self._precompute_features()
+        
+        # 2. Evaluate the individual on these features
+        fitness = compute_fitness_score(
+            self.image_size_tf, self.weight_bal_acc, self.weight_f1, self.weight_eff, self.weight_conn, self.weight_simp,
+            tf.constant(True), # Verbose for validation
+            self.precomputed_features, self.labels,
+            self.n_patches_h, self.n_patches_w, self.feature_weights, self.n_patches_tf,
+            individual.num_active_rules, self.max_rules_tf, individual.rules_tensor
+        )
+        
+        # 3. Restore training data
+        self.images = old_images
+        self.labels = old_labels
+        self.precomputed_features = old_features
+        self.features_computed = True
+        
+        logger.info(f"Honest Validation Fitness: {fitness:.4f}")
+        return float(fitness)
+
     def get_run_history(self):
         """
         Returns the history of fitness statistics and timing recorded during the last GA run.
         """
         return self.history
+
+    def save_feature_scales(self, path):
+        """Save feature scales to a JSON file"""
+        if self.feature_scales is None:
+            logger.warning("No feature scales to save.")
+            return
+            
+        scales_dict = dict(zip(self.feature_names, self.feature_scales.numpy().tolist()))
+        with open(path, 'w') as f:
+            json.dump(scales_dict, f, indent=4)
+        logger.info(f"Feature scales saved to {path}")
+
+    def load_feature_scales(self, path):
+        """Load feature scales from a JSON file"""
+        if not os.path.exists(path):
+            logger.warning(f"Feature scales file {path} not found.")
+            return
+            
+        with open(path, 'r') as f:
+            scales_dict = json.load(f)
+            
+        # Reconstruct the tensor in the correct order
+        scales_list = [scales_dict[name] for name in self.feature_names]
+        self.feature_scales = tf.convert_to_tensor(scales_list, dtype=tf.float32)
+        logger.info(f"Feature scales loaded from {path}")

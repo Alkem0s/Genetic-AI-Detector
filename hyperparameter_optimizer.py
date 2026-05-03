@@ -36,8 +36,25 @@ class HyperparameterOptimizer:
         
         # Load data once at the beginning
         self.data_loader = DataLoader()
-        self.train_ds, self.test_ds, self.sample_images, self.sample_labels = self.data_loader.create_datasets()
-        logger.info(f"Loaded dataset with {len(self.sample_images)} samples")
+        _, _, all_images, all_labels = self.data_loader.create_datasets()
+        
+        # Implement 80/20 Train-Test Split for Honesty
+        num_samples = len(all_images)
+        split_idx = int(num_samples * 0.8)
+        
+        # Shuffle indices for a fair split
+        indices = np.arange(num_samples)
+        np.random.shuffle(indices)
+        
+        train_indices = indices[:split_idx]
+        test_indices = indices[split_idx:]
+        
+        self.train_images = all_images[train_indices]
+        self.train_labels = all_labels[train_indices]
+        self.test_images = all_images[test_indices]
+        self.test_labels = all_labels[test_indices]
+        
+        logger.info(f"Dataset split: {len(self.train_images)} Training, {len(self.test_images)} Validation")
         
         # 1. Load Strict Source-of-Truth JSONs (Optimization Baseline)
         try:
@@ -56,15 +73,19 @@ class HyperparameterOptimizer:
         logger.info("Creating GeneticFeatureOptimizer instance (features will be precomputed once)...")
         
         self.genetic_optimizer = GeneticFeatureOptimizer(
-            images=self.sample_images,
-            labels=self.sample_labels,
+            images=self.train_images,
+            labels=self.train_labels,
             config=base_config
         )
+        
+        # Save the auto-calibrated scales for future use/inference
+        self.genetic_optimizer.save_feature_scales("feature_scales.json")
         
         logger.info("GeneticFeatureOptimizer created with precomputed features - ready for optimization!")
         
         # Store best results
         self.best_fitness = -float('inf')
+        self.best_individual = None
         self.fw_study = None
         self.ga_study = None
         
@@ -289,6 +310,7 @@ class HyperparameterOptimizer:
             if fitness > self.best_fitness:
                 self.best_fitness = fitness
                 self.best_feature_weights = feature_weights
+                self.best_individual = results['best_individual']
 
             return fitness
             
@@ -355,6 +377,7 @@ class HyperparameterOptimizer:
             if fitness > self.best_fitness:
                 self.best_fitness = fitness
                 self.best_ga_config = ga_params
+                self.best_individual = results['best_individual']
 
             return fitness
             
@@ -427,6 +450,18 @@ class HyperparameterOptimizer:
         self.best_feature_weights = best_weights
         self.save_json(best_weights, config.feature_weights_output_file)
         
+        # 3. Honest Validation
+        if self.best_individual is not None:
+            logger.info("\n" + "="*60)
+            logger.info("FINAL HONEST VALIDATION (PHASE 1)")
+            logger.info("="*60)
+            val_fitness = self.genetic_optimizer.validate(
+                self.test_images, self.test_labels, self.best_individual
+            )
+            logger.info(f"Phase 1 Train Fitness: {best_trial.value:.4f}")
+            logger.info(f"Phase 1 Test Fitness:  {val_fitness:.4f}")
+            logger.info("="*60 + "\n")
+        
         return best_weights
     
     def optimize_ga_config(self) -> Dict[str, Any]:
@@ -486,6 +521,18 @@ class HyperparameterOptimizer:
         self.best_fitness = best_trial.value
         self.save_json(best_ga_config, config.ga_config_output_file)
         
+        # 3. Honest Validation
+        if self.best_individual is not None:
+            logger.info("\n" + "="*60)
+            logger.info("FINAL HONEST VALIDATION (PHASE 2)")
+            logger.info("="*60)
+            val_fitness = self.genetic_optimizer.validate(
+                self.test_images, self.test_labels, self.best_individual
+            )
+            logger.info(f"Phase 2 Train Fitness: {best_trial.value:.4f}")
+            logger.info(f"Phase 2 Test Fitness:  {val_fitness:.4f}")
+            logger.info("="*60 + "\n")
+            
         return best_ga_config
     
     def save_json(self, data: Dict, filename: str):
