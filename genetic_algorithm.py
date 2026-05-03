@@ -1,4 +1,5 @@
 import sys
+import os
 import numpy as np
 import random
 import time
@@ -37,8 +38,10 @@ class GeneticFeatureOptimizer:
         """
         logger.info("Initializing GeneticFeatureOptimizer...")
         
-        self.images = tf.convert_to_tensor(images) if not isinstance(images, tf.Tensor) else images
-        self.labels = tf.convert_to_tensor(labels) if not isinstance(labels, tf.Tensor) else labels
+        # Keep raw images on CPU (Numpy) to save VRAM
+        # We only upload batches to GPU during _precompute_features
+        self.images = images 
+        self.labels = tf.convert_to_tensor(labels, dtype=tf.float32) if not isinstance(labels, tf.Tensor) else labels
 
         self.config = config
         self.patch_size = config.patch_size
@@ -50,7 +53,9 @@ class GeneticFeatureOptimizer:
         self.tournament_size = config.tournament_size
         self.num_elites = config.num_elites
 
-        self.eval_sample_size = min(config.sample_size, tf.shape(images)[0].numpy())
+        # Use numpy shape to avoid triggering a full GPU copy
+        image_count = images.shape[0] if hasattr(images, 'shape') else len(images)
+        self.eval_sample_size = min(config.sample_size, image_count)
         logger.info(f"Using evaluation sample size: {self.eval_sample_size}")
 
         self.rules_per_individual = config.rules_per_individual
@@ -64,16 +69,28 @@ class GeneticFeatureOptimizer:
             tf.random.set_seed(self.random_seed)
             logger.info(f"Random seed set to {self.random_seed}")
 
+        # Pre-calculate constants for evaluation
+        self.image_size_tf = tf.constant(config.image_size, dtype=tf.float32)
+        self.weight_f1 = tf.constant(config.fitness_weights.get('f1', 0.35), dtype=tf.float32)
+        self.weight_bal_acc = tf.constant(config.fitness_weights.get('balanced_accuracy', 0.35), dtype=tf.float32)
+        self.weight_eff = tf.constant(config.fitness_weights.get('efficiency_score', 0.1), dtype=tf.float32)
+        self.weight_conn = tf.constant(config.fitness_weights.get('connectivity_score', 0.1), dtype=tf.float32)
+        self.weight_simp = tf.constant(config.fitness_weights.get('simplicity_score', 0.1), dtype=tf.float32)
+        self.verbose_tf = tf.constant(bool(config.verbose), dtype=tf.bool)
+        
         self.feature_weights = tf.convert_to_tensor(list(config.feature_weights.values()), dtype=tf.float32)
         self.feature_names = list(config.feature_weights.keys())
+        self.num_features = len(self.feature_names)
 
         # Create feature name to index mapping for tensor operations
         self.feature_name_to_idx = {name: idx for idx, name in enumerate(self.feature_names)}
-        self.num_features = len(self.feature_names)
 
         self.n_patches_h = tf.constant(config.image_size // self.patch_size, dtype=tf.int32)
         self.n_patches_w = tf.constant(config.image_size // self.patch_size, dtype=tf.int32)
         self.n_patches = self.n_patches_h * self.n_patches_w
+        
+        self.n_patches_tf = tf.constant(self.n_patches, dtype=tf.int32)
+        self.max_rules_tf = tf.constant(self.max_possible_rules, dtype=tf.int32)
 
         logger.info(f"Initialized with {self.n_patches} patches ({self.n_patches_h}×{self.n_patches_w})")
 
@@ -127,7 +144,13 @@ class GeneticFeatureOptimizer:
         logger.info(f"Extracting features for {num_samples} evaluation images...")
 
         # Extract features for all images in batches
-        tf.profiler.experimental.start("logs/profile_features")
+        started_profiler = False
+        if self.config.profile:
+            profile_dir = os.path.join(self.config.profile_log_dir, 'feature_extraction')
+            tf.profiler.experimental.start(profile_dir)
+            started_profiler = True
+            logger.info(f"Feature extraction profiling started. Logging to {profile_dir}")
+
         all_batch_features = []
         for i in range(0, num_samples, self.batch_size):
             batch_end = min(i + self.batch_size, num_samples)
@@ -139,7 +162,10 @@ class GeneticFeatureOptimizer:
             all_batch_features.append(batch_patch_features)
             
             logger.info(f"Processed batch {i//self.batch_size + 1}/{(num_samples + self.batch_size - 1)//self.batch_size}")
-        tf.profiler.experimental.stop()
+            
+        if started_profiler:
+            tf.profiler.experimental.stop()
+            logger.info("Feature extraction profiling stopped.")
 
         # Concatenate all batch features into a single tensor
         self.precomputed_features = tf.concat(all_batch_features, axis=0)
@@ -208,7 +234,7 @@ class GeneticFeatureOptimizer:
 
     def _setup_deap(self):
         """Set up the DEAP genetic algorithm framework"""
-        logger.info("Setting up DEAP components...")
+        logger.debug("Setting up DEAP components...")
         if not hasattr(creator, "FitnessMax"):
             creator.create("FitnessMax", base.Fitness, weights=(1.0,))
             logger.debug("Created 'FitnessMax' in DEAP creator.")
@@ -227,17 +253,17 @@ class GeneticFeatureOptimizer:
         self.toolbox.register("evaluate", self._evaluate_individual_wrapper)
         self.toolbox.register("mate", self._crossover_tensor_rules)
         self.toolbox.register("mutate", self._mutate_tensor_rules)
-        self.toolbox.register("select", tools.selTournament, tournsize=self.tournament_size)
+        self.toolbox.register("select", self._tensor_tournament_selection)
         logger.debug("DEAP toolbox registered for evaluation, mating, mutation, and selection.")
 
         self._setup_sequential_processing()
-        logger.info("DEAP setup complete.")
+        logger.debug("DEAP setup complete.")
 
     def _setup_sequential_processing(self):
         """Setup for sequential processing as per user's request to use single GPU."""
         self.use_joblib = False
         self.n_workers = 1
-        logger.info("Configured for sequential evaluation on the main process to leverage GPU.")
+        logger.debug("Configured for sequential evaluation on the main process to leverage GPU.")
 
     def _create_individual(self):
         """Create an individual with tensor-based rules"""
@@ -291,7 +317,7 @@ class GeneticFeatureOptimizer:
         
         # Features should already be precomputed at this point
         if not self.features_computed or self.precomputed_features is None:
-            logger.error("Features not precomputed! This should not happen with the refactored code.")
+            logger.error("Features not precomputed!")
             raise RuntimeError("Features must be precomputed before evaluation")
         
         # Pass the tensor directly to the evaluation function
@@ -306,28 +332,47 @@ class GeneticFeatureOptimizer:
             logger.debug(f"Individual evaluation took {end_time - start_time:.4f} seconds.")
         return fitness
 
-    def _sequential_evaluate_population(self, population):
-        """Evaluate population sequentially on the main process"""
-        logger.info(f"Evaluating population of {len(population)} individuals sequentially on GPU/CPU.")
-
-        profile_dir = "logs/profile"
-        if not hasattr(self, '_profiled_generation'):
-            tf.profiler.experimental.start(profile_dir)
-            self._profiled_generation = True
-            started_profiler = True
-        else:
-            started_profiler = False
-
-        results = []
-        for i, ind in enumerate(population):
-            result = self._evaluate_individual_wrapper(ind)
-            results.append(result)
-            logger.debug(f"Individual {i+1} fitness: {result[0]:.4f}")
+    def _evaluate_population(self, population):
+        """
+        Evaluate fitness for the entire population in a single batch on the GPU.
+        Only evaluates individuals with invalid fitness.
+        """
+        # Find individuals that need evaluation
+        invalid_ind = [ind for ind in population if not ind.fitness.valid]
+        
+        if not invalid_ind:
+            return [ind.fitness.values for ind in population]
             
-        if started_profiler:
-            tf.profiler.experimental.stop()
-            
-        return results
+        # Collect rules and num_active_rules into tensors
+        rules_tensors = tf.stack([ind.rules_tensor for ind in invalid_ind])
+        num_active_rules_tensors = tf.stack([tf.cast(ind.num_active_rules, tf.int32) for ind in invalid_ind])
+        
+        from fitness_evaluation import evaluate_ga_population
+        
+        # Call the batch evaluation function
+        batch_fitnesses = evaluate_ga_population(
+            rules_tensors, num_active_rules_tensors,
+            self.image_size_tf, self.weight_bal_acc, self.weight_f1, self.weight_eff, self.weight_conn, self.weight_simp,
+            self.verbose_tf, self.precomputed_features, self.eval_labels,
+            self.n_patches_h, self.n_patches_w, self.feature_weights,
+            self.n_patches_tf, self.max_rules_tf
+        )
+        
+        # Convert to list of tuples for DEAP
+        batch_fitness_list = [(float(f),) for f in batch_fitnesses.numpy()]
+        
+        # Map back to the population and assign fitness values
+        invalid_idx = 0
+        final_fitnesses = []
+        for ind in population:
+            if not ind.fitness.valid:
+                ind.fitness.values = batch_fitness_list[invalid_idx]
+                final_fitnesses.append(ind.fitness.values)
+                invalid_idx += 1
+            else:
+                final_fitnesses.append(ind.fitness.values)
+                
+        return final_fitnesses
 
     def _crossover_tensor_rules(self, ind1, ind2):
         """Crossover operation for tensor-based rules"""
@@ -391,11 +436,15 @@ class GeneticFeatureOptimizer:
         mutation_mask_expanded = tf.expand_dims(tf.cast(mutation_mask, tf.float32), 1)
         
         new_rules = tf.stack([
-            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_features, rules[:, 0]),
-            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_thresholds, rules[:, 1]),
-            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_operators, rules[:, 2]),
-            tf.where(tf.squeeze(mutation_mask_expanded) > 0, new_actions, rules[:, 3])
+            tf.where(mutation_mask, new_features, rules[:, 0]),
+            tf.where(mutation_mask, new_thresholds, rules[:, 1]),
+            tf.where(mutation_mask, new_operators, rules[:, 2]),
+            tf.where(mutation_mask, new_actions, rules[:, 3])
         ], axis=1)
+        
+        # Update individual
+        individual.rules_tensor = new_rules
+        individual[0] = new_rules
         
         # Possibly add or remove rules
         if tf.random.uniform([]) < 0.05 and individual.num_active_rules < self.max_possible_rules:
@@ -403,8 +452,8 @@ class GeneticFeatureOptimizer:
             next_idx = individual.num_active_rules
             if next_idx < self.max_possible_rules:
                 new_rule_data = self._random_rule_tensor()
-                new_rules = tf.tensor_scatter_nd_update(
-                    new_rules, 
+                individual.rules_tensor = tf.tensor_scatter_nd_update(
+                    individual.rules_tensor, 
                     [[next_idx]], 
                     [new_rule_data]
                 )
@@ -413,18 +462,51 @@ class GeneticFeatureOptimizer:
         if tf.random.uniform([]) < 0.05 and individual.num_active_rules > 1:
             # Remove a rule by setting it to -1
             remove_idx = tf.random.uniform([], 0, individual.num_active_rules, dtype=tf.int32)
-            new_rules = tf.tensor_scatter_nd_update(
-                new_rules,
+            individual.rules_tensor = tf.tensor_scatter_nd_update(
+                individual.rules_tensor,
                 [[remove_idx]],
                 [[-1.0, -1.0, -1.0, -1.0]]
             )
-            individual.num_active_rules -= 1
+            # We don't decrement num_active_rules immediately to keep indexing simple,
+            # but we update the rule itself. Better: compact rules.
+            # For now just update the tensor.
         
-        # Update individual
-        individual.rules_tensor = new_rules
-        individual[0] = new_rules
+        # Re-sync DEAP list with tensor
+        individual[0] = individual.rules_tensor
         
         return individual,
+
+    def _tensor_tournament_selection(self, individuals, k):
+        """
+        Perform tournament selection using vectorized tensor operations.
+        """
+        # Get all fitness values as a single tensor
+        fitnesses = tf.constant([ind.fitness.values[0] for ind in individuals], dtype=tf.float32)
+        pop_size = len(individuals)
+        
+        # Generate random tournament indices for all k selection slots at once
+        tourn_indices = tf.random.uniform(
+            [k, self.tournament_size], 
+            minval=0, 
+            maxval=pop_size, 
+            dtype=tf.int32
+        )
+        
+        # Gather fitnesses for each tournament bracket
+        bracket_fitnesses = tf.gather(fitnesses, tourn_indices)
+        
+        # Find the index of the best individual in each bracket
+        winners_in_bracket_idx = tf.argmax(bracket_fitnesses, axis=1, output_type=tf.int32)
+        
+        # Map back to the original population indices
+        row_indices = tf.range(k, dtype=tf.int32)
+        final_winner_indices = tf.gather_nd(
+            tourn_indices, 
+            tf.stack([row_indices, winners_in_bracket_idx], axis=1)
+        )
+        
+        # Return the winning individuals
+        return [individuals[i] for i in final_winner_indices.numpy()]
 
     def _count_active_rules(self, rules_tensor):
         """Count the number of active rules in a tensor (non -1 entries)"""
@@ -435,7 +517,7 @@ class GeneticFeatureOptimizer:
         Analyze which features contribute most based on the tensor rule set.
         Uses precomputed features for efficiency.
         """
-        logger.info("Calculating feature importance...")
+        logger.debug("Calculating feature importance...")
         feature_scores = {feature: 0 for feature in self.feature_names}
         
         # Extract active rules from tensor
@@ -450,12 +532,12 @@ class GeneticFeatureOptimizer:
                 feature_name = self.feature_names[idx.numpy()]
                 feature_scores[feature_name] += 1
         
-        logger.info(f"Initial rule-based feature scores: {feature_scores}")
+        logger.debug(f"Initial rule-based feature scores: {feature_scores}")
 
         # Use precomputed features
         num_samples = min(50, tf.shape(self.precomputed_features)[0].numpy())
         sample_features = self.precomputed_features[:num_samples]
-        logger.info(f"Analyzing feature triggers on {num_samples} precomputed feature sets.")
+        logger.debug(f"Analyzing feature triggers on {num_samples} precomputed feature sets.")
 
         feature_triggers = {feature: 0 for feature in self.feature_names}
         total_patches_evaluated = 0
@@ -485,7 +567,7 @@ class GeneticFeatureOptimizer:
                     feature_name = self.feature_names[feature_idx.numpy()]
                     feature_triggers[feature_name] += int(triggers)
 
-        logger.info(f"Feature triggers: {feature_triggers}. Total patches evaluated: {total_patches_evaluated}")
+        logger.debug(f"Feature triggers: {feature_triggers}. Total patches evaluated: {total_patches_evaluated}")
 
         # Combine rule frequency and trigger frequency
         for feature in feature_scores:
@@ -497,7 +579,7 @@ class GeneticFeatureOptimizer:
         if total > 0:
             for key in feature_scores:
                 feature_scores[key] = feature_scores[key] / total
-        logger.info(f"Feature importance calculation complete. Scores: {feature_scores}")
+        logger.debug(f"Feature importance calculation complete. Scores: {feature_scores}")
 
         return feature_scores
 
@@ -513,8 +595,8 @@ class GeneticFeatureOptimizer:
         if run_id is None:
             run_id = f"run_{run_number}"
             
-        logger.info(f"Starting genetic algorithm run '{run_id}' with population={self.population_size}, generations={self.n_generations}")
-        logger.info(f"Using precomputed features (computed={self.features_computed})")
+        logger.debug(f"Starting genetic algorithm run '{run_id}' with population={self.population_size}, generations={self.n_generations}")
+        logger.debug(f"Using precomputed features (computed={self.features_computed})")
 
         # Ensure features are precomputed (should already be done in __init__)
         if not self.features_computed:
@@ -525,7 +607,7 @@ class GeneticFeatureOptimizer:
         self.current_run_history = []
 
         pop = self.toolbox.population(n=self.population_size)
-        logger.info(f"Initial population of {len(pop)} individuals created.")
+        logger.debug(f"Initial population of {len(pop)} individuals created.")
 
         stats = tools.Statistics(lambda ind: ind.fitness.values)
         stats.register("avg", np.mean)
@@ -536,22 +618,19 @@ class GeneticFeatureOptimizer:
 
         # Create HallOfFame with custom similarity function
         hof = tools.HallOfFame(self.num_elites, similar=self._tensor_rules_similar)
-        logger.info(f"Hall of Fame initialized with capacity {self.num_elites} and custom similarity function.")
+        logger.debug(f"Hall of Fame initialized with capacity {self.num_elites} and custom similarity function.")
 
         run_start_time = time.time()
 
         for gen in range(self.n_generations):
-            logger.info(f"Generation {gen + 1}/{self.n_generations}")
-            
             gen_start_time = time.time()
             try:
-                fitnesses = self._sequential_evaluate_population(pop)
-                logger.info(f"Generation {gen + 1}: Received {len(fitnesses)} fitness values")
+                fitnesses = self._evaluate_population(pop)
             except Exception as e:
                 logger.error(f"Error in sequential evaluation for generation {gen + 1}: {e}")
                 raise
             gen_end_time = time.time()
-            logger.info(f"Generation {gen + 1} evaluation phase took {gen_end_time - gen_start_time:.4f} seconds.")
+            logger.debug(f"Generation {gen + 1} evaluation phase took {gen_end_time - gen_start_time:.4f} seconds.")
             
             for ind, fit in zip(pop, fitnesses):
                 ind.fitness.values = fit
@@ -559,7 +638,8 @@ class GeneticFeatureOptimizer:
             hof.update(pop)
             record = stats.compile(pop)
             
-            logger.info(f"Gen {gen + 1}: Max={record['max']:.4f}, Avg={record['avg']:.4f}, Std={record['std']:.4f}")
+            # Only log generation stats at DEBUG level to keep the console clean during HPO
+            logger.debug(f"  [{run_id}] Gen {gen + 1}/{self.n_generations}: Max={record['max']:.4f}, Avg={record['avg']:.4f}")
             
             self.current_run_history.append({
                 'generation': gen + 1,
@@ -584,7 +664,7 @@ class GeneticFeatureOptimizer:
                         del child1.fitness.values
                         del child2.fitness.values
                 crossover_end_time = time.time()
-                logger.info(f"Crossover phase took {crossover_end_time - crossover_start_time:.4f} seconds.")
+                logger.debug(f"Crossover phase took {crossover_end_time - crossover_start_time:.4f} seconds.")
 
                 mutation_start_time = time.time()
                 for mutant in offspring:
@@ -592,18 +672,18 @@ class GeneticFeatureOptimizer:
                         self.toolbox.mutate(mutant)
                         del mutant.fitness.values
                 mutation_end_time = time.time()
-                logger.info(f"Mutation phase took {mutation_end_time - mutation_start_time:.4f} seconds.")
+                logger.debug(f"Mutation phase took {mutation_end_time - mutation_start_time:.4f} seconds.")
 
                 pop[:] = elites + offspring
 
         run_end_time = time.time()
         total_run_time = run_end_time - run_start_time
 
-        logger.info(f"Genetic algorithm run '{run_id}' complete in {total_run_time:.2f} seconds.")
+        logger.debug(f"Genetic algorithm run '{run_id}' complete in {total_run_time:.2f} seconds.")
 
         best_ind = hof[0]
 
-        logger.info("Best rule set found:")
+        logger.debug("Best rule set found:")
         active_rules = tf.boolean_mask(best_ind.rules_tensor, best_ind.rules_tensor[:, 0] >= 0)
         for i in range(tf.shape(active_rules)[0]):
             rule = active_rules[i]
@@ -612,12 +692,12 @@ class GeneticFeatureOptimizer:
             operator = ">" if tf.cast(rule[2], tf.int32) == 0 else "<"
             action = "include" if tf.cast(rule[3], tf.int32) == 1 else "exclude"
             feature_name = self.feature_names[feature_idx.numpy()]
-            logger.info(f"Rule {i+1}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
+            logger.debug(f"Rule {i+1}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
 
         # Calculate final statistics using precomputed features
         sample_size = min(20, tf.shape(self.precomputed_features)[0].numpy())
         sample_features = self.precomputed_features[:sample_size]
-        logger.info(f"Calculating average mask statistics on {sample_size} sample images.")
+        logger.debug(f"Calculating average mask statistics on {sample_size} sample images.")
 
         total_active = tf.constant(0, dtype=tf.float32)
 
@@ -631,14 +711,14 @@ class GeneticFeatureOptimizer:
                 mask = tf.cast(mask, tf.float32)
             total_active += tf.reduce_sum(mask)
         mask_gen_end_time = time.time()
-        logger.info(f"Mask generation for final statistics took {mask_gen_end_time - mask_gen_start_time:.4f} seconds.")
+        logger.debug(f"Mask generation for final statistics took {mask_gen_end_time - mask_gen_start_time:.4f} seconds.")
 
         avg_active = total_active / tf.cast(sample_size, tf.float32)
         avg_percentage = avg_active / (tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)) * 100
 
-        logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
-        logger.info(f"Rules: {best_ind.num_active_rules}")
-        logger.info(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
+        logger.debug(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
+        logger.debug(f"Rules: {best_ind.num_active_rules}")
+        logger.debug(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
 
         self.history = self.current_run_history
 

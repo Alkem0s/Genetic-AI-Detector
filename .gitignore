@@ -4,6 +4,7 @@ train_data/
 __pycache__/
 output/
 logs/
+profiler_logs/
 paper/
 train.csv
 test.csv
@@ -13,4 +14,6 @@ test.py
 *.docx
 *.jpg
 *.prof
+*.txt
+*.db
 smoke_test.py

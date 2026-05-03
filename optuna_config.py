@@ -23,60 +23,25 @@ optimization_seed = 42
 verbosity = 1
 
 # =============================================================================
-# BASE CONFIGURATION (unchanged parameters)
-# =============================================================================
-
-# Image and patch configuration
-image_size = 224
-patch_size = 16
-
-# Data configuration  
-sample_size = 1000  # Number of images to use for evaluation during optimization
-extraction_batch_size = 330
-
-# Fixed feature extraction settings
-use_feature_extraction = True
-
-# Fixed fitness weights (these won't be optimized)
-fitness_weights = {
-    'balanced_accuracy': 0.3,
-    'f1': 0.25,
-    'mcc': 0.2,
-    'precision': 0.05,
-    'recall': 0.05,
-    'efficiency_score': 0.05,
-    'connectivity_score': 0.05,
-    'simplicity_score': 0.05
-}
-
-# =============================================================================
 # FEATURE WEIGHT OPTIMIZATION RANGES
 # =============================================================================
 
 # These define the search space for feature weights
 # The optimizer will ensure they sum to 1.0
 feature_weight_ranges = {
-    'gradient': (0.05, 0.25),    # Measures unnatural gradient perfection
-    'pattern': (0.05, 0.25),     # Detects repeating patterns/artifacts  
-    'noise': (0.05, 0.25),       # Analyzes noise distribution
-    'edge': (0.05, 0.20),        # Examines edge coherence and artifacts
-    'symmetry': (0.08, 0.30),    # Measures unnatural symmetry
-    'texture': (0.05, 0.25),     # Analyzes texture consistency
-    'color': (0.05, 0.20),       # Detects color distribution anomalies
-    'hash': (0.08, 0.30)         # Perceptual hash similarity to known AI patterns
+    'gradient': (0.0, 1.0),    # Measures unnatural gradient perfection
+    'pattern': (0.0, 1.0),     # Detects repeating patterns/artifacts  
+    'noise': (0.0, 1.0),       # Analyzes noise distribution
+    'edge': (0.0, 1.0),        # Examines edge coherence and artifacts
+    'symmetry': (0.0, 1.0),    # Measures unnatural symmetry
+    'texture': (0.0, 1.0),     # Analyzes texture consistency
+    'color': (0.0, 1.0),       # Detects color distribution anomalies
+    'hash': (0.0, 1.0),        # Perceptual hash similarity to known AI patterns
+    'dct': (0.0, 1.0),         # Analyzes DCT AC/DC energy ratios
+    'channel_correlation': (0.0, 1.0), # Detects chromatic aberration vs AI alignment
+    'glcm': (0.0, 1.0)         # GLCM contrast/homogeneity
 }
 
-# Default feature weights (fallback/starting point)
-default_feature_weights = {
-    'gradient': 0.10,
-    'pattern': 0.12, 
-    'noise': 0.14,
-    'edge': 0.10,
-    'symmetry': 0.16,
-    'texture': 0.12,
-    'color': 0.10,
-    'hash': 0.16
-}
 
 # =============================================================================
 # GA CONFIGURATION OPTIMIZATION RANGES
@@ -96,19 +61,6 @@ mutation_prob_range = (0.1, 0.5)
 tournament_size_range = (2, 8)
 num_elites_range = (1, 5)
 
-# Default GA configuration (fallback/starting point)
-default_ga_config = {
-    'population_size': 100,
-    'n_generations': 100,
-    'rules_per_individual': 8,
-    'max_possible_rules': 20,
-    'crossover_prob': 0.7,
-    'mutation_prob': 0.2,
-    'tournament_size': 3,
-    'num_elites': 2,
-    'random_seed': 42,
-    'verbose': False  # Keep verbose False during optimization
-}
 
 # =============================================================================
 # PRUNING CONFIGURATION
@@ -116,8 +68,8 @@ default_ga_config = {
 
 # Enable pruning for faster optimization
 enable_pruning = True
-pruning_warmup_steps = 5  # Number of generations before pruning can occur
-pruning_interval = 3      # Check for pruning every N generations
+pruning_warmup_steps = 10  # Number of generations before pruning can occur
+pruning_interval = 5      # Check for pruning every N generations
 
 # Minimum fitness threshold for early stopping
 min_fitness_threshold = 0.1  # Stop trial if fitness is too low

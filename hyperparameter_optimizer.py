@@ -11,6 +11,7 @@ from typing import Dict, Any, Tuple
 from data_loader import DataLoader
 from genetic_algorithm import GeneticFeatureOptimizer
 import optuna_config as config
+import global_config
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +19,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     stream=sys.stdout
 )
+# Ensure the GA logger specifically respects the level to avoid DEBUG spam
+logging.getLogger('genetic_algorithm').setLevel(logging.INFO if config.verbosity >= 1 else logging.WARNING)
 logger = logging.getLogger(__name__)
 
 class HyperparameterOptimizer:
@@ -36,7 +39,18 @@ class HyperparameterOptimizer:
         self.train_ds, self.test_ds, self.sample_images, self.sample_labels = self.data_loader.create_datasets()
         logger.info(f"Loaded dataset with {len(self.sample_images)} samples")
         
-        # Create a single GeneticFeatureOptimizer instance with default config
+        # 1. Load Strict Source-of-Truth JSONs (Optimization Baseline)
+        try:
+            with open(config.feature_weights_output_file, 'r') as f:
+                self.json_weights = json.load(f)
+            with open(config.ga_config_output_file, 'r') as f:
+                self.json_ga_config = json.load(f)
+        except Exception as e:
+            logger.error(f"FATAL: Could not load baseline configuration from JSON: {e}")
+            logger.error(f"Please ensure {config.feature_weights_output_file} and {config.ga_config_output_file} exist.")
+            sys.exit(1)
+
+        # 2. Create a single GeneticFeatureOptimizer instance
         # Features will be precomputed once during initialization
         base_config = self.create_base_config()
         logger.info("Creating GeneticFeatureOptimizer instance (features will be precomputed once)...")
@@ -50,9 +64,9 @@ class HyperparameterOptimizer:
         logger.info("GeneticFeatureOptimizer created with precomputed features - ready for optimization!")
         
         # Store best results
-        self.best_feature_weights = None
-        self.best_ga_config = None
         self.best_fitness = -float('inf')
+        self.fw_study = None
+        self.ga_study = None
         
         # Set random seed if specified
         if config.optimization_seed is not None:
@@ -60,44 +74,27 @@ class HyperparameterOptimizer:
             np.random.seed(config.optimization_seed)
     
     def create_base_config(self, feature_weights: Dict[str, float] = None, 
-                          ga_params: Dict[str, Any] = None) -> Any:
-        """
-        Create a configuration object with the given parameters.
-        
-        Args:
-            feature_weights: Dictionary of feature weights
-            ga_params: Dictionary of GA parameters
-            
-        Returns:
-            Configuration object compatible with GeneticFeatureOptimizer
-        """
+                          ga_params: Dict[str, Any] = None):
+        """Create a configuration object combining global settings with overrides."""
         class Config:
             pass
         
         cfg = Config()
         
-        # Base configuration
-        cfg.image_size = config.image_size
-        cfg.patch_size = config.patch_size
-        cfg.sample_size = config.sample_size
-        cfg.extraction_batch_size = config.extraction_batch_size
-        cfg.use_feature_extraction = config.use_feature_extraction
-        cfg.fitness_weights = config.fitness_weights.copy()
+        # Copy environment attributes from global_config
+        for attr in dir(global_config):
+            if not attr.startswith("__"):
+                setattr(cfg, attr, getattr(global_config, attr))
         
-        # Feature weights
-        if feature_weights is not None:
-            cfg.feature_weights = feature_weights.copy()
-        else:
-            cfg.feature_weights = config.default_feature_weights.copy()
+        # Use existing JSON loads if not provided as overrides
+        # Set feature weights (Passed weights override JSON weights)
+        cfg.feature_weights = feature_weights.copy() if feature_weights is not None else self.json_weights.copy()
         
-        # GA parameters
-        if ga_params is not None:
-            for key, value in ga_params.items():
-                setattr(cfg, key, value)
-        else:
-            for key, value in config.default_ga_config.items():
-                setattr(cfg, key, value)
-        
+        # Set GA parameters (Passed params override JSON params)
+        base_ga = ga_params if ga_params is not None else self.json_ga_config
+        for key, value in base_ga.items():
+            setattr(cfg, key, value)
+            
         return cfg
     
     def update_optimizer_config(self, feature_weights: Dict[str, float] = None, 
@@ -164,11 +161,12 @@ class HyperparameterOptimizer:
         """
         weights = {}
         for feature, (min_val, max_val) in config.feature_weight_ranges.items():
-            weights[feature] = trial.suggest_float(
+            # Explicitly cast to float to avoid any SQLite/numpy compatibility issues
+            weights[feature] = float(trial.suggest_float(
                 f"weight_{feature}", 
-                min_val, 
-                max_val
-            )
+                float(min_val), 
+                float(max_val)
+            ))
         
         # Normalize to sum to 1.0
         return self.normalize_weights(weights)
@@ -185,45 +183,53 @@ class HyperparameterOptimizer:
         """
         ga_config = {}
         
-        ga_config['population_size'] = trial.suggest_int(
+        ga_config['population_size'] = int(trial.suggest_int(
             'population_size', 
-            *config.population_size_range
-        )
+            int(config.population_size_range[0]), 
+            int(config.population_size_range[1])
+        ))
         
-        ga_config['n_generations'] = trial.suggest_int(
+        ga_config['n_generations'] = int(trial.suggest_int(
             'n_generations', 
-            *config.n_generations_range
-        )
+            int(config.n_generations_range[0]), 
+            int(config.n_generations_range[1])
+        ))
         
-        ga_config['rules_per_individual'] = trial.suggest_int(
+        ga_config['rules_per_individual'] = int(trial.suggest_int(
             'rules_per_individual', 
-            *config.rules_per_individual_range
-        )
+            int(config.rules_per_individual_range[0]), 
+            int(config.rules_per_individual_range[1])
+        ))
         
-        ga_config['max_possible_rules'] = trial.suggest_int(
+        ga_config['max_possible_rules'] = int(trial.suggest_int(
             'max_possible_rules', 
-            *config.max_possible_rules_range
-        )
+            int(config.max_possible_rules_range[0]), 
+            int(config.max_possible_rules_range[1])
+        ))
         
-        ga_config['crossover_prob'] = trial.suggest_float(
+        ga_config['crossover_prob'] = float(trial.suggest_float(
             'crossover_prob', 
-            *config.crossover_prob_range
-        )
+            float(config.crossover_prob_range[0]), 
+            float(config.crossover_prob_range[1])
+        ))
         
-        ga_config['mutation_prob'] = trial.suggest_float(
+        ga_config['mutation_prob'] = float(trial.suggest_float(
             'mutation_prob', 
-            *config.mutation_prob_range
-        )
+            float(config.mutation_prob_range[0]), 
+            float(config.mutation_prob_range[1])
+        ))
         
-        ga_config['tournament_size'] = trial.suggest_int(
+        ga_config['tournament_size'] = int(trial.suggest_int(
             'tournament_size', 
-            *config.tournament_size_range
-        )
+            int(config.tournament_size_range[0]), 
+            int(config.tournament_size_range[1])
+        ))
         
-        ga_config['num_elites'] = trial.suggest_int(
+        ga_config['num_elites'] = int(trial.suggest_int(
             'num_elites', 
-            *config.num_elites_range
-        )
+            int(config.num_elites_range[0]), 
+            int(config.num_elites_range[1])
+        ))
         
         # Fixed parameters
         ga_config['random_seed'] = config.optimization_seed
@@ -253,7 +259,7 @@ class HyperparameterOptimizer:
             # Update the existing optimizer with new feature weights
             self.update_optimizer_config(
                 feature_weights=feature_weights,
-                ga_params=config.default_ga_config  # Use default GA config for Phase 1
+                ga_params=self.json_ga_config  # Use baseline GA config for Phase 1
             )
             
             if config.verbosity >= 2:
@@ -273,9 +279,17 @@ class HyperparameterOptimizer:
             if fitness < config.min_fitness_threshold:
                 raise optuna.TrialPruned()
             
+            # Sanitize fitness to avoid SQLite issues with NaN/Inf
+            fitness = float(np.nan_to_num(fitness, nan=-1.0, posinf=-1.0, neginf=-1.0))
+            
             if config.verbosity >= 1:
                 logger.info(f"Trial {trial.number}: Fitness = {fitness:.4f}")
             
+            # Update internal best for tracking
+            if fitness > self.best_fitness:
+                self.best_fitness = fitness
+                self.best_feature_weights = feature_weights
+
             return fitness
             
         except optuna.TrialPruned:
@@ -300,10 +314,9 @@ class HyperparameterOptimizer:
             # Suggest GA configuration
             ga_params = self.suggest_ga_config(trial)
             
-            # Use best feature weights from previous optimization
+            # Use best feature weights from previous optimization or baseline JSON
             if self.best_feature_weights is None:
-                logger.warning("No best feature weights found, using defaults")
-                feature_weights = config.default_feature_weights
+                feature_weights = self.json_weights
             else:
                 feature_weights = self.best_feature_weights
             
@@ -332,9 +345,17 @@ class HyperparameterOptimizer:
             if fitness < config.min_fitness_threshold:
                 raise optuna.TrialPruned()
             
+            # Sanitize fitness to avoid SQLite issues with NaN/Inf
+            fitness = float(np.nan_to_num(fitness, nan=-1.0, posinf=-1.0, neginf=-1.0))
+            
             if config.verbosity >= 1:
                 logger.info(f"Trial {trial.number}: Fitness = {fitness:.4f}")
             
+            # Update internal best
+            if fitness > self.best_fitness:
+                self.best_fitness = fitness
+                self.best_ga_config = ga_params
+
             return fitness
             
         except optuna.TrialPruned:
@@ -355,12 +376,35 @@ class HyperparameterOptimizer:
         logger.info("="*60)
         logger.info("Using precomputed features - no re-extraction needed!")
         
-        # Create study
-        study = optuna.create_study(
+        # Use robust RDBStorage with WAL mode and high timeout
+        storage_url = 'sqlite:///optuna_study.db'
+        
+        # Ensure we use WAL mode for better concurrency and reliability
+        storage = optuna.storages.RDBStorage(
+            url=storage_url,
+            engine_kwargs={
+                "connect_args": {"timeout": 60},
+                "pool_pre_ping": True
+            }
+        )
+        
+        # Set WAL mode manually via PRAGMA
+        import sqlite3
+        try:
+            conn = sqlite3.connect('optuna_study.db')
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not set WAL mode: {e}")
+
+        self.fw_study = optuna.create_study(
             direction='maximize',
             study_name=config.feature_weight_study_name,
+            storage=storage,
+            load_if_exists=True,
             pruner=optuna.pruners.MedianPruner() if config.enable_pruning else None
         )
+        study = self.fw_study
         
         # Optimize
         start_time = time.time()
@@ -399,15 +443,26 @@ class HyperparameterOptimizer:
         logger.info("Using precomputed features - no re-extraction needed!")
         
         if self.best_feature_weights is None:
-            logger.warning("No feature weights optimized yet, using defaults")
-            self.best_feature_weights = config.default_feature_weights
+            self.best_feature_weights = self.json_weights
         
-        # Create study
-        study = optuna.create_study(
+        # Use robust RDBStorage with WAL mode and high timeout
+        storage_url = 'sqlite:///optuna_study.db'
+        storage = optuna.storages.RDBStorage(
+            url=storage_url,
+            engine_kwargs={
+                "connect_args": {"timeout": 60},
+                "pool_pre_ping": True
+            }
+        )
+        
+        self.ga_study = optuna.create_study(
             direction='maximize',
             study_name=config.ga_config_study_name,
+            storage=storage,
+            load_if_exists=True,
             pruner=optuna.pruners.MedianPruner() if config.enable_pruning else None
         )
+        study = self.ga_study
         
         # Optimize
         start_time = time.time()
@@ -448,24 +503,6 @@ class HyperparameterOptimizer:
         except Exception as e:
             logger.error(f"Failed to save {filename}: {str(e)}")
     
-    def save_combined_config(self):
-        """Save combined configuration with both feature weights and GA config."""
-        if self.best_feature_weights is None or self.best_ga_config is None:
-            logger.warning("Cannot save combined config - missing optimization results")
-            return
-        
-        combined_config = {
-            'feature_weights': self.best_feature_weights,
-            'ga_config': self.best_ga_config,
-            'best_fitness': self.best_fitness,
-            'base_config': {
-                'image_size': config.image_size,
-                'patch_size': config.patch_size,
-                'fitness_weights': config.fitness_weights
-            }
-        }
-        
-        self.save_json(combined_config, config.combined_config_output_file)
     
     def run_optimization(self) -> Tuple[Dict[str, float], Dict[str, Any]]:
         """
@@ -487,9 +524,6 @@ class HyperparameterOptimizer:
             # Phase 2: Optimize GA configuration
             best_ga_config = self.optimize_ga_config()
             
-            # Save combined results
-            self.save_combined_config()
-            
             end_time = time.time()
             total_time = end_time - start_time
             
@@ -497,11 +531,8 @@ class HyperparameterOptimizer:
             logger.info("OPTIMIZATION COMPLETE")
             logger.info("="*60)
             logger.info(f"Total optimization time: {total_time:.2f} seconds")
-            logger.info(f"Best overall fitness: {self.best_fitness:.4f}")
-            logger.info(f"Results saved to:")
             logger.info(f"  - Feature weights: {config.feature_weights_output_file}")
             logger.info(f"  - GA config: {config.ga_config_output_file}")
-            logger.info(f"  - Combined: {config.combined_config_output_file}")
             
             return best_weights, best_ga_config
             

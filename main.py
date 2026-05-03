@@ -1,5 +1,6 @@
 # main.py
 import os
+import sys
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import json
@@ -14,6 +15,10 @@ from model_architecture import ModelWrapper
 from visualization import Visualizer
 
 import global_config as config
+import optuna_config as opt_config
+
+# Silence TensorFlow spam
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
 logger = logging.getLogger('ai_detector_main')
 logger.setLevel(logging.INFO)
@@ -33,6 +38,9 @@ def setup_environment():
     # Configure root logger to capture all module logs
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
+    
+    # Silence detailed GA logs unless explicitly requested via global_config.verbose
+    logging.getLogger('genetic_algorithm').setLevel(logging.INFO if not config.verbose else logging.DEBUG)
     
     # Clear existing handlers
     if root_logger.handlers:
@@ -80,8 +88,48 @@ def setup_environment():
     return model_base_path
 
 
+def load_optimized_config():
+    """
+    Load feature weights and GA parameters from JSON files.
+    This is the STRICT source of truth. Fails if files are missing.
+    """
+    weights_path = opt_config.feature_weights_output_file
+    ga_path = opt_config.ga_config_output_file
+    
+    if not os.path.exists(weights_path) or not os.path.exists(ga_path):
+        logger.error("="*60)
+        logger.error("FATAL ERROR: CONFIGURATION FILES MISSING")
+        logger.error(f"Required: {weights_path} and {ga_path}")
+        logger.error("Please run 'python run_optimization.py' to generate them or provide them manually.")
+        logger.error("="*60)
+        sys.exit(1)
+
+    try:
+        # Load weights
+        with open(weights_path, 'r') as f:
+            config.feature_weights = json.load(f)
+        logger.info(f"Successfully loaded feature weights from {weights_path}")
+        
+        # Load GA config
+        with open(ga_path, 'r') as f:
+            optimized_ga = json.load(f)
+        
+        # Apply all parameters from JSON to the global config
+        for key, value in optimized_ga.items():
+            setattr(config, key, value)
+            
+        logger.info(f"Successfully loaded GA parameters from {ga_path}")
+        
+    except Exception as e:
+        logger.error(f"FATAL: Error parsing configuration files: {e}")
+        sys.exit(1)
+
+
 def train_ai_detector(model_base_path):
     """Train an AI-generated content detector using genetic optimization and CNN"""
+    # Load any optimized parameters before starting
+    load_optimized_config()
+    
     logger.info("=== Step 1: Loading and preparing datasets ===")
 
     # Initialize the data loader
@@ -104,24 +152,26 @@ def train_ai_detector(model_base_path):
             config=config,
         )
 
-        # Run the genetic algorithm optimization
-        results = genetic_optimizer.run()
+        # Run the genetic algorithm optimization with a trace
+        with tf.profiler.experimental.Trace('genetic_optimization_phase'):
+            results = genetic_optimizer.run()
     else:
         logger.info("=== Step 2: Skipping genetic algorithm ===")
 
     logger.info("=== Step 3: Building and training the model ===")
 
-    # Initialize model wrapper with optimized genetic rules (or None if not using features)
+    # Initialize model wrapper with optimized genetic rules
     model_wrapper = ModelWrapper(
         genetic_rules=results['best_individual'].rules_tensor if config.use_feature_extraction else None,
     )
 
-    # Train the model with the optimized features
-    history = model_wrapper.train(
-        train_dataset=train_ds,
-        validation_dataset=test_ds,
-        model_path=os.path.join(config.output_dir, config.model_path)
-    )
+    # Train the model with a trace
+    with tf.profiler.experimental.Trace('model_training_phase'):
+        history = model_wrapper.train(
+            train_dataset=train_ds,
+            validation_dataset=test_ds,
+            model_path=os.path.join(config.output_dir, config.model_path)
+        )
 
     # Save the model state (NN model + genetic rules)
     model_wrapper.save(model_base_path)
@@ -169,12 +219,15 @@ def evaluate_model(model_wrapper, test_ds):
     # Collect predictions
     try:
         y_true_list, y_pred_list = [], []
-        for batch in prepared_ds:
-            inputs, labels = batch
-            pred = model_wrapper.model.model.predict_on_batch(inputs)
-            pred_classes = (pred > 0.5).astype(int).flatten()
-            y_true_list.extend(labels.numpy())
-            y_pred_list.extend(pred_classes)
+        
+        # Profile the prediction loop
+        with tf.profiler.experimental.Trace('model_evaluation_predictions'):
+            for batch in prepared_ds:
+                inputs, labels = batch
+                pred = model_wrapper.model.model.predict_on_batch(inputs)
+                pred_classes = (pred > 0.5).astype(int).flatten()
+                y_true_list.extend(labels.numpy())
+                y_pred_list.extend(pred_classes)
 
         y_true = tf.cast(y_true_list, tf.int64)
         y_pred = tf.cast(y_pred_list, tf.int64)

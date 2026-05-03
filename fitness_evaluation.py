@@ -302,6 +302,33 @@ def compute_fitness_score(image_size,
     return fitness
 
 
+@tf.function(reduce_retracing=True)
+def evaluate_ga_population(rules_tensors, num_active_rules_tensors,
+                            image_size_tf, weight_bal_acc, weight_f1, weight_eff, weight_conn, weight_simp,
+                            verbose_tf, precomputed_features, labels, n_patches_h, n_patches_w,
+                            feature_weights, n_patches, max_possible_rules):
+    """
+    Evaluate an entire population of individuals in parallel on the GPU.
+    Uses nested vectorization to score all individuals across all images in one shot.
+    """
+    def eval_individual(args):
+        rules, num_active = args
+        return compute_fitness_score(
+            image_size_tf, weight_bal_acc, weight_f1, weight_eff, weight_conn, weight_simp, verbose_tf,
+            precomputed_features, labels, n_patches_h, n_patches_w, feature_weights, n_patches,
+            num_active, max_possible_rules, rules
+        )
+    
+    # Use map_fn to keep the GPU saturated while avoiding OOM.
+    fitnesses = tf.map_fn(
+        eval_individual, 
+        (rules_tensors, num_active_rules_tensors),
+        fn_output_signature=tf.float32,
+        parallel_iterations=10
+    )
+    return fitnesses
+
+
 def evaluate_ga_individual(individual, config, precomputed_features, labels, 
                                 n_patches_h, n_patches_w,
                                 feature_weights, n_patches, max_possible_rules):

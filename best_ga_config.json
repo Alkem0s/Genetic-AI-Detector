@@ -1,0 +1,10 @@
+{
+  "population_size": 50,
+  "n_generations": 50,
+  "rules_per_individual": 8,
+  "max_possible_rules": 20,
+  "crossover_prob": 0.7,
+  "mutation_prob": 0.2,
+  "tournament_size": 3,
+  "num_elites": 2
+}

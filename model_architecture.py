@@ -177,6 +177,16 @@ class AIDetectorModel:
             callbacks.ReduceLROnPlateau(factor=0.5, patience=5),
             callbacks.ModelCheckpoint(output_model_path, save_best_only=True)
         ]
+        
+        if config.profile:
+            tb_callback = callbacks.TensorBoard(
+                log_dir=os.path.join(config.profile_log_dir, 'training'),
+                profile_batch=(2, 12),  # Profile from batch 2 to 12
+                update_freq='epoch'
+            )
+            callbacks_list.append(tb_callback)
+            logger.info("TensorBoard profiling callback added for training.")
+
         logger.debug("Callbacks set up for training.")
         
         # Train the model
