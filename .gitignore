@@ -3,12 +3,11 @@ test_data_v2/
 train_data/
 __pycache__/
 output/
+data/
+dataset_sampled/
 logs/
 profiler_logs/
 paper/
-train.csv
-test.csv
-test.py
 *.png
 *.pdf
 *.docx
@@ -16,4 +15,3 @@ test.py
 *.prof
 *.txt
 *.db
-smoke_test.py

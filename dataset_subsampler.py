@@ -1,122 +1,140 @@
 import random
-import zipfile
-from pathlib import Path
-from collections import defaultdict
+import shutil
 import json
-import os
+from pathlib import Path
+import concurrent.futures
+import time
 
-def is_image(name, exts=(".jpg", ".jpeg", ".png", ".webp")):
-    return name.lower().endswith(exts)
 
-
-def extract_balanced_from_zip(
-    zip_path,
-    dst_root,
-    x_train,
-    y_val,
-    seed=42,
-    log_dict=None
+def subsample_generator(
+    data_root: str,
+    generator_name: str,
+    dst_root: str,
+    n_train: int = 20000,
+    n_val: int = 5000,
+    seed: int = 42,
 ):
+    """
+    Subsamples from an already-extracted GenImage generator directory.
+    
+    Expects:
+        data_root/generator_name/train/fake/
+        data_root/generator_name/train/nature/  (or real/)
+        data_root/generator_name/val/fake/
+        data_root/generator_name/val/nature/
+    """
+    import PIL.Image
     random.seed(seed)
-    zip_path = Path(zip_path)
+    is_image = lambda p: p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+
+    data_root = Path(data_root)
     dst_root = Path(dst_root)
+    generator_dir = data_root / generator_name
+    if not generator_dir.exists():
+        print(f"\n[!] Generator directory '{generator_dir}' not found. Skipping.")
+        return None
+    
+    log = {}
+    from global_config import image_size as min_dim
 
-    arch_name = zip_path.stem
+    for split, n_total in [("train", n_train), ("val", n_val)]:
+        target_each = n_total // 2
+        split_valid_images = {}
 
-    stats = {
-        "train_ai": 0,
-        "train_nature": 0,
-        "val_ai": 0,
-        "val_nature": 0
-    }
+        for cls, possible_folders in [("ai", ["ai", "fake"]), ("real", ["nature", "real", "human"])]:
+            src_dir = None
+            for folder in possible_folders:
+                candidate = generator_dir / split / folder
+                if candidate.exists():
+                    src_dir = candidate
+                    break
 
-    with zipfile.ZipFile(zip_path, 'r') as z:
-        all_files = [f for f in z.namelist() if is_image(f)]
+            if src_dir is None:
+                print(f"  [!] Skipping {generator_name} {split}/{cls}: folder not found.")
+                continue
 
-        def split(files, split_tag):
-            ai = [f for f in files if f"/{split_tag}/ai/" in f]
-            nat = [f for f in files if f"/{split_tag}/nature/" in f]
+            print(f"  [{generator_name}] {split}/{cls}: scanning and filtering (min {min_dim}px)...", flush=True)
+            scan_start = time.time()
+            valid_images = []
+            
+            import os
+            try:
+                with os.scandir(src_dir) as it:
+                    for entry in it:
+                        if entry.is_file() and entry.name.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                            p = Path(entry.path)
+                            try:
+                                # Fast header peek
+                                with PIL.Image.open(p) as img:
+                                    w, h = img.size
+                                    if w >= min_dim and h >= min_dim:
+                                        valid_images.append(p)
+                            except:
+                                continue # Skip corrupted
+                        
+                        if (len(valid_images) + 1) % 50000 == 0:
+                            print(f"    ...found {len(valid_images)} valid images so far...", end='\r', flush=True)
+            except Exception as e:
+                print(f"Error scanning {src_dir}: {e}")
+            
+            # Fallback to rglob if empty (rare)
+            if not valid_images:
+                print(f"    No images in root, trying recursive scan...", flush=True)
+                for p in src_dir.rglob("*"):
+                    if is_image(p):
+                        try:
+                            with PIL.Image.open(p) as img:
+                                if all(dim >= min_dim for dim in img.size):
+                                    valid_images.append(p)
+                        except: continue
 
-            random.shuffle(ai)
-            random.shuffle(nat)
+            print(f"  [{generator_name}] {split}/{cls}: {len(valid_images)} valid images found in {time.time()-scan_start:.1f}s")
+            split_valid_images[cls] = valid_images
 
-            return ai, nat
+        # Balanced sampling logic
+        if len(split_valid_images) < 2:
+            continue
+            
+        available_ai = len(split_valid_images.get("ai", []))
+        available_real = len(split_valid_images.get("real", []))
+        
+        # The bottleneck is the smaller of the two, capped by target_each
+        actual_n = min(target_each, available_ai, available_real)
+        print(f"  [{generator_name}] {split}: Sampling {actual_n} images from each class for 50/50 balance.")
 
-        def extract(files, split, cls, n):
-            selected = files[:n]
-            out_dir = dst_root / arch_name / split / cls
-            out_dir.mkdir(parents=True, exist_ok=True)
+        for cls in ["ai", "real"]:
+            selected = random.sample(split_valid_images[cls], actual_n)
+            dst_dir = dst_root / generator_name / split / cls
+            dst_dir.mkdir(parents=True, exist_ok=True)
 
-            for f in selected:
-                dst_path = out_dir / Path(f).name
+            print(f"    Copying {cls}...")
+            start_time = time.time()
+            def copy_one(img_path):
+                try:
+                    shutil.copy(img_path, dst_dir / img_path.name)
+                except: return 1
+                return 0
 
-                # avoid overwrite
-                if dst_path.exists():
-                    base = dst_path.stem
-                    ext = dst_path.suffix
-                    i = 1
-                    while dst_path.exists():
-                        dst_path = out_dir / f"{base}_{i}{ext}"
-                        i += 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:
+                futures = [executor.submit(copy_one, img) for img in selected]
+                for i, f in enumerate(concurrent.futures.as_completed(futures)):
+                    if (i + 1) % 1000 == 0 or (i + 1) == actual_n:
+                        print(f"      Progress: {i+1}/{actual_n}", end='\r', flush=True)
+            
+            print(f"\n    {cls} done in {time.time()-start_time:.1f}s")
+            log[f"{split}_{cls}"] = actual_n
 
-                with z.open(f) as src, open(dst_path, "wb") as out:
-                    out.write(src.read())
-
-            return len(selected)
-
-        # ---- TRAIN ----
-        train_files = [f for f in all_files if "/train/" in f]
-        train_ai, train_nat = split(train_files, "train")
-
-        half_train = x_train // 2
-
-        stats["train_ai"] = extract(train_ai, "train", "ai", half_train)
-        stats["train_nature"] = extract(train_nat, "train", "nature", x_train - half_train)
-
-        # ---- VAL ----
-        val_files = [f for f in all_files if "/val/" in f]
-        val_ai, val_nat = split(val_files, "val")
-
-        half_val = y_val // 2
-
-        stats["val_ai"] = extract(val_ai, "val", "ai", half_val)
-        stats["val_nature"] = extract(val_nat, "val", "nature", y_val - half_val)
-
-        print(f"[{arch_name}] {stats}")
-
-        if log_dict is not None:
-            log_dict[arch_name] = stats
-
-
-def process_all_zips(src_folder, dst_root, x_train=20000, y_val=5000):
-    src_folder = Path(src_folder)
-    dst_root = Path(dst_root)
-
-    zip_files = list(src_folder.rglob("*.zip"))
-
-    all_logs = {}
-
-    for zf in zip_files:
-        extract_balanced_from_zip(
-            zip_path=zf,
-            dst_root=dst_root,
-            x_train=x_train,
-            y_val=y_val,
-            log_dict=all_logs
-        )
-
-    # save logs for paper
-    log_path = dst_root / "sampling_log.json"
-    with open(log_path, "w") as f:
-        json.dump(all_logs, f, indent=2)
-
-    print(f"\nSaved log to: {log_path}")
+    print(f"\n[{generator_name}] Done.")
+    return log
 
 
 if __name__ == "__main__":
-    process_all_zips(
-        src_folder="PATH_TO_ZIP_ROOT",
-        dst_root="OUTPUT_DATASET",
-        x_train=20000,
-        y_val=5000
-    )
+    for generator in ["ADM", "BigGAN", "glide", "Midjourney", "sdv4", "sdv5", "vqdm", "wukong"]:
+        subsample_generator(
+            data_root="data",
+            generator_name=generator,
+            dst_root="dataset_sampled",
+            n_train=20000,
+            n_val=5000,
+            seed=42,
+        )

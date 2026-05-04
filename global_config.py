@@ -1,7 +1,6 @@
 # global_config.py
 
 # --- Detector Configuration ---
-data = "train.csv"
 output_dir = "output"
 cnn_batch_size = 64
 extraction_batch_size = 64
@@ -25,8 +24,17 @@ visualize = False
 profile = False  # Enable performance profiling
 profile_log_dir = "profiler_logs" # Directory for profiling data
 
+# --- Cross-Generator Matrix ---
+# Leave empty to use the CSV-based approach, or specify folder names under dataset_sampled/
+# Example: train_generators = ["wukong", "glide", "adm"]
+train_generators = [] 
+val_generators = []
+dataset_sampled_dir = "dataset_sampled"
+max_train_per_gen = 10000  # Max AI/Real images to take from each train generator
+max_val_per_gen = 2500     # Max AI/Real images to take from each val generator
+
 # --- Unified Patch and Image Sizes ---
-image_size = 224
+image_size = 256
 patch_size = 16
 scale_factor = 1.0
 

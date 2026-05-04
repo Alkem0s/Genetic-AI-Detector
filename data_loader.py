@@ -2,7 +2,10 @@ import os
 import tensorflow as tf
 import pandas as pd
 import numpy as np
+import PIL.Image
+import time
 from sklearn.model_selection import train_test_split
+from pathlib import Path
 import global_config as config
 
 class DataLoader:
@@ -19,84 +22,86 @@ class DataLoader:
         self.batch_size = config.cnn_batch_size
         self.random_seed = config.random_seed
         self.test_size = config.test_size
-        self.max_images = config.max_images 
         
-    def _parse_csv(self, csv_path):
+    def _crawl_generators(self, generator_list, split_type=None, limit_per_cls=None):
         """
-        Parse the CSV file containing image paths and labels.
+        Crawl the dataset_sampled directory for specific generators.
         
         Args:
-            csv_path: Path to the CSV file
+            generator_list: List of generator names to include
+            split_type: Optional filter for 'train' or 'val' folders
             
         Returns:
             DataFrame with file paths and labels
         """
-        df = pd.read_csv(csv_path)
+        data = []
+        base_dir = Path(config.dataset_sampled_dir)
         
-        # Check that required columns exist
-        required_cols = ['file_name', 'label']
-        missing = [col for col in required_cols if col not in df.columns]
-        if missing:
-            raise ValueError(f"CSV is missing required columns: {missing}")
-        
-        # Check for missing files efficiently using ThreadPoolExecutor
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
-            exists_mask = list(executor.map(os.path.exists, df['file_name']))
-            
-        missing_files = df[~np.array(exists_mask)]['file_name'].tolist()
-        if missing_files:
-            print(f"Warning: {len(missing_files)} image files not found")
-            print(f"First few missing: {missing_files[:5] if len(missing_files) > 5 else missing_files}")
-            
-        # Remove missing files from dataframe
-        df = df[exists_mask]
-        
-        # Print original label distribution
-        print("Original label distribution:")
-        label_counts = df['label'].value_counts().sort_index()
-        for label, count in label_counts.items():
-            percentage = (count / len(df)) * 100
-            print(f"  Label {label}: {count} images ({percentage:.1f}%)")
-            
-        if self.max_images is not None and self.max_images > 0:
-            max_samples = min(self.max_images, len(df))
-            
-            # Use stratified sampling to maintain label balance
-            try:
-                df = self._stratified_subsample(df, max_samples)
-                print(f"Subsampled to {max_samples} images using stratified sampling")
+        for gen in generator_list:
+            gen_path = base_dir / gen
+            if not gen_path.exists():
+                print(f"Warning: Generator folder '{gen}' not found in {base_dir}")
+                continue
                 
-                # Print subsampled label distribution
-                print("Subsampled label distribution:")
-                label_counts = df['label'].value_counts().sort_index()
-                for label, count in label_counts.items():
-                    percentage = (count / len(df)) * 100
-                    print(f"  Label {label}: {count} images ({percentage:.1f}%)")
+            # If split_type is specified (e.g. 'train'), only look in that subfolder
+            splits = [split_type] if split_type else ["train", "val"]
+            
+            for split in splits:
+                split_path = gen_path / split
+                if not split_path.exists():
+                    continue
+                
+                cls_data = {}
+                for cls_name, label in [("ai", 1), ("real", 0)]:
+                    cls_path = split_path / cls_name
+                    if not cls_path.exists():
+                        continue
+                        
+                    # Get all image files
+                    all_imgs = [f for f in cls_path.iterdir() if f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
                     
-            except Exception as e:
-                print(f"Warning: Stratified sampling failed ({e}), using random sampling")
-                df = df.sample(n=max_samples, random_state=self.random_seed)
-                print(f"Subsampled to {max_samples} images using random sampling")
+                    # Randomly shuffle before checking to ensure variety if we hit the limit
+                    import random
+                    random.shuffle(all_imgs)
+                    
+                    valid_imgs = []
+                    for img_file in all_imgs:
+                        try:
+                            with PIL.Image.open(img_file) as im:
+                                w, h = im.size
+                                if w >= self.image_size and h >= self.image_size:
+                                    valid_imgs.append(img_file)
+                        except:
+                            continue 
+                            
+                        if limit_per_cls and len(valid_imgs) >= limit_per_cls:
+                            break
+                    
+                    cls_data[cls_name] = valid_imgs
 
-        print(f"Loaded CSV with {len(df)} valid image entries")
+                # --- PER-GENERATOR BALANCING ---
+                n_ai = len(cls_data.get("ai", []))
+                n_real = len(cls_data.get("real", []))
+                n_match = min(n_ai, n_real)
+                
+                if n_match > 0:
+                    for cls_name in ["ai", "real"]:
+                        if cls_name in cls_data:
+                            selected = cls_data[cls_name][:n_match]
+                            label = 1 if cls_name == "ai" else 0
+                            for img_file in selected:
+                                data.append({
+                                    'file_name': str(img_file),
+                                    'label': label,
+                                    'generator': gen,
+                                    'split': split
+                                })
+                            
+        df = pd.DataFrame(data)
+        if not df.empty:
+            print(f"Crawled {len(df)} images from {len(generator_list)} generators (balanced per-generator).")
         return df
 
-    def _stratified_subsample(self, df, max_samples):
-        """
-        Perform stratified subsampling to maintain label proportions.
-        
-        Args:
-            df: Original DataFrame
-            max_samples: Maximum number of samples to keep
-            
-        Returns:
-            Subsampled DataFrame with balanced labels
-        """
-        # Get label counts and proportions
-        label_counts = df['label'].value_counts()
-        total_samples = len(df)
-        
         # Calculate target samples per label based on original proportions
         target_samples_per_label = {}
         allocated_samples = 0
@@ -207,42 +212,44 @@ class DataLoader:
             except:
                 img = tf.image.decode_image(img, channels=3, expand_animations=False)
 
+        # Get actual dimensions
+        img_shape = tf.shape(img)
+        h, w = tf.cast(img_shape[0], tf.float32), tf.cast(img_shape[1], tf.float32)
+
+        # 1. Skip if image is too small (avoid upscaling artifacts)
+        if tf.reduce_min([h, w]) < self.image_size:
+            # Return a zero-sized tensor to signal "skip"
+            return tf.zeros([0, 0, 3], dtype=tf.float32), label
+
+        # 2. Check for exact match to bypass heavy processing
+        is_exact_match = tf.logical_and(
+            tf.equal(h, self.image_size),
+            tf.equal(w, self.image_size)
+        )
+
+        if is_exact_match:
+            # Already perfect
+            img = tf.cast(img, tf.float32) / 255.0
+            return img, label
+
+        # 3. Process non-square or larger images
         if use_center_crop:
-            # Resize to slightly larger than target size to allow for crop
-            resize_size = int(self.image_size * 1.15)
-            img = tf.image.resize(img, [resize_size, resize_size])
-            img = tf.image.central_crop(img, central_fraction=self.image_size / resize_size)
-            img = tf.image.resize(img, [self.image_size, self.image_size])
+            # PREVENT BIAS: Proportional resize instead of stretching
+            # We resize so the shorter side is exactly self.image_size
+            scale = self.image_size / tf.reduce_min([h, w])
+            new_h = tf.cast(h * scale, tf.int32)
+            new_w = tf.cast(w * scale, tf.int32)
+            
+            # Proportional resize (no squishing)
+            img = tf.image.resize(img, [new_h, new_w], method=tf.image.ResizeMethod.BILINEAR)
+            
+            # Center crop to target size
+            img = tf.image.resize_with_crop_or_pad(img, self.image_size, self.image_size)
         else:
-            # Get original dimensions
-            original_height = tf.shape(img)[0]
-            original_width = tf.shape(img)[1]
-
-            # Calculate scaling factor to preserve aspect ratio
-            height_ratio = tf.cast(self.image_size, tf.float32) / tf.cast(original_height, tf.float32)
-            width_ratio = tf.cast(self.image_size, tf.float32) / tf.cast(original_width, tf.float32)
-            scale_ratio = tf.minimum(height_ratio, width_ratio)
-
-            # Calculate new dimensions
-            new_height = tf.cast(tf.cast(original_height, tf.float32) * scale_ratio, tf.int32)
-            new_width = tf.cast(tf.cast(original_width, tf.float32) * scale_ratio, tf.int32)
-
-            # Resize image while maintaining aspect ratio
-            img = tf.image.resize(img, [new_height, new_width], preserve_aspect_ratio=True)
-
-            # Use actual resized shape (in case resize rounds)
-            resized_shape = tf.shape(img)
-            pad_top = (self.image_size - resized_shape[0]) // 2
-            pad_left = (self.image_size - resized_shape[1]) // 2
-
-            # Pad image to fit target size
-            img = tf.image.pad_to_bounding_box(
-                img,
-                offset_height=pad_top,
-                offset_width=pad_left,
-                target_height=self.image_size,
-                target_width=self.image_size
-            )
+            # Letterbox approach (preserve full content but add black bars)
+            # This can introduce "padding bias", so center_crop is generally preferred for AI detection
+            img = tf.image.resize(img, [self.image_size, self.image_size], preserve_aspect_ratio=True)
+            img = tf.image.resize_with_crop_or_pad(img, self.image_size, self.image_size)
 
         # Normalize to [0, 1]
         img = tf.cast(img, tf.float32) / 255.0
@@ -309,25 +316,67 @@ class DataLoader:
         
         return image
     
+    def _balance_generators(self, df, stage_name):
+        """
+        Ensure all generators contribute an equal number of samples.
+        """
+        if df.empty:
+            return df
+            
+        # Find min count across all (generator, label) pairs
+        counts = df.groupby(['generator', 'label']).size()
+        min_count = counts.min()
+        
+        print(f"  [{stage_name}] Balancing generators to {min_count} images per class/model...")
+        
+        balanced_dfs = []
+        for (gen, label), group in df.groupby(['generator', 'label']):
+            balanced_dfs.append(group.sample(n=min_count, random_state=self.random_seed))
+            
+        return pd.concat(balanced_dfs).sample(frac=1, random_state=self.random_seed).reset_index(drop=True)
+
     def create_datasets(self):
         """
-        Create train and test datasets from CSV file.
+        Create train and test datasets from folder structure.
         
         Returns:
             Tuple of (train_ds, val_ds)
         """
-        # Parse CSV
-        df = self._parse_csv(config.data)
+        print("Using folder-based dataset discovery...")
         
-        # Split into train and test
-        train_df, test_df = train_test_split(
-            df, 
-            test_size=self.test_size, 
-            random_state=self.random_seed, 
-            stratify=df['label'] 
-        )
+        train_gens = config.train_generators
+        val_gens = config.val_generators
         
-        print(f"Split data into {len(train_df)} training and {len(test_df)} testing samples")
+        # If no generators specified, discover all folders in dataset_sampled
+        if not train_gens:
+            base_dir = Path(config.dataset_sampled_dir)
+            if base_dir.exists():
+                train_gens = [d.name for d in base_dir.iterdir() if d.is_dir()]
+                print(f"Auto-discovered generators: {train_gens}")
+            else:
+                raise FileNotFoundError(f"Dataset directory {config.dataset_sampled_dir} not found.")
+        
+        if not val_gens:
+            val_gens = train_gens # Use same generators for validation by default
+            
+        train_df = self._crawl_generators(train_gens, split_type="train", limit_per_cls=config.max_train_per_gen)
+        test_df = self._crawl_generators(val_gens, split_type="val", limit_per_cls=config.max_val_per_gen)
+        
+        # --- GLOBAL GENERATOR BALANCING ---
+        # Ensure every generator contributes the same amount to prevent bias
+        train_df = self._balance_generators(train_df, "Training")
+        test_df = self._balance_generators(test_df, "Validation/Test")
+        
+        if train_df.empty:
+            raise ValueError(f"No training data found in {config.dataset_sampled_dir}")
+        
+        if test_df.empty:
+            print("Warning: No validation data found in specified generators. Splitting from training.")
+            train_df, test_df = train_test_split(
+                train_df, test_size=self.test_size, random_state=self.random_seed, stratify=train_df['label']
+            )
+        
+        print(f"Final setup: {len(train_df)} training and {len(test_df)} testing samples")
         
         # Create TensorFlow datasets
         train_ds = tf.data.Dataset.from_tensor_slices(
@@ -342,11 +391,14 @@ class DataLoader:
             lambda path, label: self._process_path(path, label),
             num_parallel_calls=tf.data.AUTOTUNE
         )
+        # Filter out skipped images (redundant now but safe)
+        train_ds = train_ds.filter(lambda img, label: tf.shape(img)[0] > 0)
         
         test_ds = test_ds.map(
             lambda path, label: self._process_path(path, label),
             num_parallel_calls=tf.data.AUTOTUNE
         )
+        test_ds = test_ds.filter(lambda img, label: tf.shape(img)[0] > 0)
         
         # Configure for performance
         train_ds = self._configure_for_performance(train_ds, is_training=True)
@@ -377,7 +429,12 @@ class DataLoader:
             for path, label in zip(sample_df['file_name'], sample_df['label']):
                 try:
                     # Use the internal _process_path method for consistent preprocessing
-                    img_tensor, lbl = self._process_path(path, label, use_center_crop=False)
+                    img_tensor, lbl = self._process_path(path, label, use_center_crop=True)
+                    
+                    # Skip if image was too small (returns empty tensor)
+                    if img_tensor.shape[0] == 0:
+                        continue
+                        
                     # Convert TensorFlow tensor to numpy array
                     img_array = img_tensor.numpy()
                     sample_images.append(img_array)
