@@ -114,3 +114,105 @@ def remove_black_bars(img, threshold=10):
                              [y1 - y0, x1 - x0, img.shape[-1]] if len(img.shape) == 3 else [y1 - y0, x1 - x0])
     
     return tf.cast(cropped, original_dtype)
+
+
+# ---------------------------------------------------------------------------
+# JPEG Robustness Utilities
+# ---------------------------------------------------------------------------
+
+def apply_jpeg_compression(image_tensor: tf.Tensor, quality: int) -> tf.Tensor:
+    """
+    Encode and decode a float32 image tensor through JPEG at a given quality level.
+
+    Args:
+        image_tensor: Float32 tensor in [0, 1] of shape (H, W, 3).
+        quality:      JPEG quality level (0–100).  Lower = more compression loss.
+
+    Returns:
+        Float32 tensor in [0, 1] of the same shape after JPEG round-trip.
+    """
+    # Convert [0, 1] → uint8 for JPEG codec
+    uint8_img = tf.cast(tf.clip_by_value(image_tensor * 255.0, 0, 255), tf.uint8)
+    # Encode as JPEG bytes
+    jpeg_bytes = tf.image.encode_jpeg(uint8_img, quality=quality)
+    # Decode back to uint8 tensor
+    decoded = tf.image.decode_jpeg(jpeg_bytes, channels=3)
+    # Restore [0, 1] float32
+    return tf.cast(decoded, tf.float32) / 255.0
+
+
+def evaluate_robustness(model_wrapper, test_ds, quality_levels=None, logger=None):
+    """
+    Evaluate model accuracy after JPEG compression at several quality levels.
+
+    Runs *test_ds* through ``apply_jpeg_compression`` at each quality level,
+    evaluates on the compressed images, and returns accuracy drop relative to
+    the clean baseline.
+
+    Args:
+        model_wrapper:  A ModelWrapper instance (must already have features
+                        prepared if use_features is True).
+        test_ds:        Raw tf.data.Dataset yielding (images, labels) batches.
+        quality_levels: List of JPEG quality ints to test (default: from config).
+        logger:         Optional Python logger; falls back to print().
+
+    Returns:
+        dict: {quality_level: {'accuracy': float, 'accuracy_drop': float}}
+    """
+    import logging as _logging
+    import global_config as _cfg
+
+    if quality_levels is None:
+        quality_levels = getattr(_cfg, 'jpeg_quality_levels', [50, 75])
+
+    _log = logger or _logging.getLogger(__name__)
+
+    def _log_info(msg):
+        if logger:
+            logger.info(msg)
+        else:
+            _log.info(msg)
+
+    # ---- Baseline accuracy on clean images ----------------------------------------
+    if model_wrapper.use_features:
+        model_wrapper.precompute_features(test_ds, "robustness_clean")
+        clean_prepared = model_wrapper.prepare_dataset(test_ds, "robustness_clean")
+    else:
+        clean_prepared = test_ds
+
+    clean_results = model_wrapper.model.model.evaluate(clean_prepared, verbose=0)
+    baseline_acc = clean_results[1] if len(clean_results) > 1 else float('nan')
+    _log_info(f"[Robustness] Baseline accuracy (no JPEG): {baseline_acc:.4f}")
+
+    results = {}
+
+    for q in quality_levels:
+        # Apply JPEG compression to every image in the dataset
+        def compress_batch(images, labels, _q=q):
+            compressed = tf.map_fn(
+                lambda img: apply_jpeg_compression(img, _q),
+                images,
+                fn_output_signature=tf.float32,
+            )
+            return compressed, labels
+
+        compressed_ds = test_ds.map(compress_batch, num_parallel_calls=tf.data.AUTOTUNE)
+
+        if model_wrapper.use_features:
+            cache_name = f"robustness_q{q}"
+            model_wrapper.precompute_features(compressed_ds, cache_name)
+            prepared = model_wrapper.prepare_dataset(compressed_ds, cache_name)
+        else:
+            prepared = compressed_ds
+
+        eval_results = model_wrapper.model.model.evaluate(prepared, verbose=0)
+        acc = eval_results[1] if len(eval_results) > 1 else float('nan')
+        drop = baseline_acc - acc
+
+        _log_info(
+            f"[Robustness] JPEG quality={q}: accuracy={acc:.4f}, "
+            f"drop={drop:+.4f}"
+        )
+        results[q] = {'accuracy': acc, 'accuracy_drop': drop}
+
+    return results

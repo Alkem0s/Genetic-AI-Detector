@@ -11,6 +11,83 @@ from feature_extractor import FeaturePipeline
 import logging
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Random Mask Generator
+# ---------------------------------------------------------------------------
+
+class RandomMaskGenerator:
+    """
+    Generates patch-level binary masks with the same sparsity distribution
+    as the GA-optimised masks — the critical experimental control.
+
+    Args:
+        target_sparsity: Mean fraction of patches to select (e.g. 0.30 for 30 %).
+                         Must be retrieved from an actual GA run
+                         (``run_results['mask_sparsity_mean']``) and passed here;
+                         it is **not** hardcoded.
+        random_seed:     Optional integer seed for reproducible masks.
+    """
+
+    def __init__(self, target_sparsity: float, random_seed: int | None = None):
+        if not 0.0 <= target_sparsity <= 1.0:
+            raise ValueError(
+                f"target_sparsity must be in [0, 1], got {target_sparsity}"
+            )
+        self.target_sparsity = tf.constant(target_sparsity, dtype=tf.float32)
+        self.random_seed = random_seed
+
+    def generate(self, n_patches_h, n_patches_w) -> tf.Tensor:
+        """
+        Produce a single random binary mask of shape (n_patches_h, n_patches_w).
+
+        The expected fraction of 1-entries equals ``target_sparsity``.
+        Each call is independently random (different per image).
+
+        Returns:
+            int8 tensor of shape (n_patches_h, n_patches_w).
+        """
+        shape = tf.stack([n_patches_h, n_patches_w])
+        flat = tf.random.uniform(shape, seed=self.random_seed, dtype=tf.float32)
+        binary = tf.cast(flat < self.target_sparsity, tf.int8)
+        return binary
+
+
+# ---------------------------------------------------------------------------
+# Random Mask Pipeline  (FeaturePipeline subclass for mask_mode='random')
+# ---------------------------------------------------------------------------
+
+class _RandomMaskPipeline(FeaturePipeline):
+    """
+    A FeaturePipeline variant that replaces GA dynamic masks with per-image
+    random masks produced by a RandomMaskGenerator.  All other FeaturePipeline
+    infrastructure (feature extraction, caching, dataset preparation) is reused
+    unchanged so that the three model modes produce identical downstream output.
+    """
+
+    def __init__(
+        self,
+        random_generator: RandomMaskGenerator,
+        n_patches_h,
+        n_patches_w,
+        feature_cache_dir: str,
+        feature_channels: int = 8,
+    ):
+        # Pass genetic_rules=None; it will never be used because we override _generate_mask.
+        super().__init__(
+            genetic_rules=None,
+            n_patches_h=n_patches_h,
+            n_patches_w=n_patches_w,
+            feature_cache_dir=feature_cache_dir,
+            feature_channels=feature_channels,
+        )
+        self._random_generator = random_generator
+
+    def _generate_mask(self, patch_features: tf.Tensor) -> tf.Tensor:
+        """Override: produce a random binary mask instead of a GA-driven one."""
+        return self._random_generator.generate(self.n_patches_h, self.n_patches_w)
+
+
 # Check if mixed precision is available and supported
 try:
     # Test if mixed precision works on this hardware
@@ -28,13 +105,15 @@ class AIDetectorModel:
     Class containing model architecture and training functionality for detecting AI-generated images.
     Can be configured to use image inputs only or combined with feature maps from feature extraction.
     """
-    def __init__(self, feature_channels=len(config.feature_weights)):
+    def __init__(self, feature_channels=None):
         """
         Initialize the model architecture.
         
         Args:
             feature_channels (int): Number of feature channels from feature extraction
         """
+        if feature_channels is None:
+            feature_channels = len(config.feature_weights)
         logger.info("Initializing AIDetectorModel...")
         self.input_shape = (config.image_size, config.image_size, 3)
         self.feature_channels = feature_channels
@@ -262,20 +341,52 @@ class ModelWrapper:
     """
     Wrapper class that integrates genetic algorithm dynamic masks with the CNN model.
     Feature extraction, caching, and dataset preparation are delegated to FeaturePipeline.
+
+    Three mask modes are supported:
+        ``"none"``   – Baseline CNN (no feature extraction / masking).
+        ``"ga"``     – GA-generated dynamic masks (existing implementation).
+        ``"random"`` – Random masks matching the GA sparsity distribution.
     """
 
-    def __init__(self, feature_channels: int = len(config.feature_weights), genetic_rules: tf.Tensor = None):
+    def __init__(
+        self,
+        feature_channels: int = None,
+        genetic_rules: tf.Tensor = None,
+        mask_mode: str | None = None,
+        random_mask_sparsity: float | None = None,
+    ):
         """
         Args:
-            feature_channels: Number of feature channels produced by the feature extractor.
-            genetic_rules:    Evolved rules from the genetic algorithm as a TensorFlow tensor.
+            feature_channels:     Number of feature channels produced by the feature extractor.
+            genetic_rules:        Evolved rules from the genetic algorithm (only used when
+                                  ``mask_mode == 'ga'``).
+            mask_mode:            One of ``"none"``, ``"ga"``, or ``"random"``.
+                                  Defaults to ``config.mask_mode`` (or ``"ga"`` if unset).
+            random_mask_sparsity: Fraction of patches to select when ``mask_mode == 'random'``.
+                                  Must be provided (or be available on the config object) when
+                                  ``mask_mode == 'random'``.
         """
         logger.info("Initializing ModelWrapper...")
-        self.input_shape     = (config.image_size, config.image_size, 3)
-        self.use_features    = config.use_feature_extraction
+
+        # Resolve feature_channels lazily so we don't hit AttributeError at import time
+        if feature_channels is None:
+            feature_channels = len(config.feature_weights)
+
+        # Resolve mask mode from argument > config > default
+        if mask_mode is None:
+            mask_mode = getattr(config, 'mask_mode', 'ga')
+        self.mask_mode = mask_mode
+
+        self.input_shape      = (config.image_size, config.image_size, 3)
         self.feature_channels = feature_channels
-        self.patch_size      = config.patch_size
-        self.genetic_rules   = (
+        self.patch_size       = config.patch_size
+
+        # use_features is True for both "ga" and "random" modes
+        self.use_features = self.mask_mode in ('ga', 'random')
+        # Keep a copy on config so AIDetectorModel picks it up correctly
+        config.use_feature_extraction = self.use_features
+
+        self.genetic_rules = (
             tf.convert_to_tensor(genetic_rules, dtype=tf.float32)
             if genetic_rules is not None else None
         )
@@ -285,16 +396,40 @@ class ModelWrapper:
 
         self.feature_cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
 
-        self.pipeline = FeaturePipeline(
-            genetic_rules     = self.genetic_rules,
-            n_patches_h       = self.n_patches_h,
-            n_patches_w       = self.n_patches_w,
-            feature_cache_dir = self.feature_cache_dir,
-            feature_channels  = feature_channels,
-        )
+        # --- Build the appropriate feature pipeline ---
+        if self.mask_mode == 'random':
+            # Resolve sparsity: argument takes precedence, then config attribute
+            if random_mask_sparsity is None:
+                random_mask_sparsity = getattr(config, '_random_mask_sparsity', None)
+            if random_mask_sparsity is None:
+                raise ValueError(
+                    "mask_mode='random' requires random_mask_sparsity to be provided. "
+                    "Pass it explicitly or store it in config._random_mask_sparsity."
+                )
+            self._random_generator = RandomMaskGenerator(
+                target_sparsity=random_mask_sparsity,
+                random_seed=config.random_seed,
+            )
+            self.pipeline = _RandomMaskPipeline(
+                random_generator=self._random_generator,
+                n_patches_h=self.n_patches_h,
+                n_patches_w=self.n_patches_w,
+                feature_cache_dir=self.feature_cache_dir,
+                feature_channels=feature_channels,
+            )
+        else:
+            self._random_generator = None
+            self.pipeline = FeaturePipeline(
+                genetic_rules=self.genetic_rules,
+                n_patches_h=self.n_patches_h,
+                n_patches_w=self.n_patches_w,
+                feature_cache_dir=self.feature_cache_dir,
+                feature_channels=feature_channels,
+            )
 
         self.model = AIDetectorModel(feature_channels=feature_channels)
-        logger.info("ModelWrapper initialized.")
+        logger.info(f"ModelWrapper initialized. mask_mode='{self.mask_mode}'")
+
 
     def set_genetic_rules(self, genetic_rules: tf.Tensor) -> None:
         """Update genetic rules in both the wrapper and the pipeline."""
@@ -426,7 +561,12 @@ class ModelWrapper:
         config_data = {
             'use_features': self.use_features,
             'feature_channels': self.feature_channels,
-            'genetic_rules': self.genetic_rules.numpy().tolist() if self.genetic_rules is not None else None
+            'mask_mode': self.mask_mode,
+            'genetic_rules': self.genetic_rules.numpy().tolist() if self.genetic_rules is not None else None,
+            'random_mask_sparsity': (
+                self._random_generator.target_sparsity
+                if self._random_generator is not None else None
+            ),
         }
         
         config_path = f"{base_path}_config.json"
@@ -434,6 +574,7 @@ class ModelWrapper:
             json.dump(config_data, f)
         
         logger.info(f"Model state saved: {model_path}, {config_path}")
+
 
     @classmethod
     def load(cls, base_path):
@@ -455,13 +596,15 @@ class ModelWrapper:
         
         # Create genetic rules tensor
         genetic_rules = None
-        if config_data['genetic_rules'] is not None:
+        if config_data.get('genetic_rules') is not None:
             genetic_rules = tf.convert_to_tensor(config_data['genetic_rules'], dtype=tf.float32)
         
         # Create new ModelWrapper instance via the class (respects subclassing)
         model_wrapper = cls(
             feature_channels=config_data['feature_channels'],
-            genetic_rules=genetic_rules
+            genetic_rules=genetic_rules,
+            mask_mode=config_data.get('mask_mode', 'ga'),
+            random_mask_sparsity=config_data.get('random_mask_sparsity'),
         )
         
         # Load the neural network model
@@ -471,4 +614,4 @@ class ModelWrapper:
         model_wrapper.use_features = config_data.get('use_features', model_wrapper.model.use_features)
         
         logger.info(f"Model state loaded from: {model_path}, {config_path}")
-        return model_wrapper
+        return model_wrapper

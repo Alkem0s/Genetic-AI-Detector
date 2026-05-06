@@ -10,10 +10,6 @@ import logging
 import json
 import tensorflow as tf
 
-logging.basicConfig(level=logging.DEBUG, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    stream=sys.stdout)
-
 logger = logging.getLogger(__name__)
 
 class GeneticFeatureOptimizer:
@@ -126,7 +122,7 @@ class GeneticFeatureOptimizer:
         logger.info("Precomputing patch features for evaluation dataset...")
         start_time = time.time()
         
-        num_images_in_input = tf.shape(self.images)[0].numpy()
+        num_images_in_input = self.images.shape[0] if hasattr(self.images, 'shape') else len(self.images)
         
         # Determine the actual sample to use for evaluation
         if self.eval_sample_size < num_images_in_input:
@@ -135,13 +131,16 @@ class GeneticFeatureOptimizer:
                 np.random.seed(self.random_seed)
             indices = np.random.choice(num_images_in_input, self.eval_sample_size, replace=False)
             indices_tensor = tf.convert_to_tensor(indices, dtype=tf.int32)
-            sample_images = tf.gather(self.images, indices_tensor)
+            if hasattr(self.images, 'shape'):
+                sample_images = self.images[indices]
+            else:
+                sample_images = [self.images[i] for i in indices]
             self.eval_labels = tf.gather(self.labels, indices_tensor)
         else:
             sample_images = self.images
             self.eval_labels = self.labels
 
-        num_samples = tf.shape(sample_images)[0].numpy()
+        num_samples = sample_images.shape[0] if hasattr(sample_images, 'shape') else len(sample_images)
         logger.info(f"Extracting features for {num_samples} evaluation images...")
 
         # Extract features for all images in batches
@@ -744,6 +743,34 @@ class GeneticFeatureOptimizer:
         avg_active = total_active / tf.cast(sample_size, tf.float32)
         avg_percentage = avg_active / (tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)) * 100
 
+        # --- Mask sparsity statistics over the *full* evaluation sample ---
+        # (patch selection ratio = fraction of patches selected per image)
+        total_patches_per_image = tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)
+        full_sample_size = min(
+            tf.shape(self.precomputed_features)[0].numpy(),
+            self.eval_sample_size,
+        )
+        full_sample_features = self.precomputed_features[:full_sample_size]
+        sparsity_ratios = []
+        for j in range(full_sample_size):
+            patch_features_j = full_sample_features[j]
+            mask_j = generate_dynamic_mask(
+                patch_features_j, self.n_patches_h, self.n_patches_w, best_ind.rules_tensor
+            )
+            ratio = float(
+                tf.reduce_sum(tf.cast(mask_j, tf.float32)).numpy() / total_patches_per_image.numpy()
+            )
+            sparsity_ratios.append(ratio)
+
+        sparsity_ratios_np = np.array(sparsity_ratios, dtype=np.float32)
+        mask_sparsity_mean = float(np.mean(sparsity_ratios_np))
+        mask_sparsity_std  = float(np.std(sparsity_ratios_np))
+
+        logger.info(
+            f"[{run_id}] Mask sparsity: mean={mask_sparsity_mean:.4f}, "
+            f"std={mask_sparsity_std:.4f} (over {full_sample_size} images)"
+        )
+
         logger.debug(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
         logger.debug(f"Rules: {best_ind.num_active_rules}")
         logger.debug(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
@@ -761,6 +788,9 @@ class GeneticFeatureOptimizer:
             'rule_count': best_ind.num_active_rules,
             'avg_active_patches': avg_active.numpy(),
             'avg_active_percentage': avg_percentage.numpy(),
+            # Sparsity fields used by RandomMaskGenerator
+            'mask_sparsity_mean': mask_sparsity_mean,
+            'mask_sparsity_std':  mask_sparsity_std,
             'history': self.history,
             'total_run_time': total_run_time
         }
@@ -791,6 +821,7 @@ class GeneticFeatureOptimizer:
         
         self.images = images
         self.labels = tf.convert_to_tensor(labels, dtype=tf.float32)
+        self.features_computed = False  # Force recomputation for validation set
         self._precompute_features()
         
         # 2. Evaluate the individual on these features

@@ -7,6 +7,9 @@ import time
 from sklearn.model_selection import train_test_split
 from pathlib import Path
 import global_config as config
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DataLoader:
     """
@@ -40,7 +43,7 @@ class DataLoader:
         for gen in generator_list:
             gen_path = base_dir / gen
             if not gen_path.exists():
-                print(f"Warning: Generator folder '{gen}' not found in {base_dir}")
+                logger.warning(f"Warning: Generator folder '{gen}' not found in {base_dir}")
                 continue
                 
             # If split_type is specified (e.g. 'train'), only look in that subfolder
@@ -64,18 +67,12 @@ class DataLoader:
                     import random
                     random.shuffle(all_imgs)
                     
-                    valid_imgs = []
-                    for img_file in all_imgs:
-                        try:
-                            with PIL.Image.open(img_file) as im:
-                                w, h = im.size
-                                if w >= self.image_size and h >= self.image_size:
-                                    valid_imgs.append(img_file)
-                        except:
-                            continue 
-                            
-                        if limit_per_cls and len(valid_imgs) >= limit_per_cls:
-                            break
+                    if limit_per_cls:
+                        valid_imgs = all_imgs[:limit_per_cls]
+                    else:
+                        valid_imgs = all_imgs
+                        
+                    logger.info(f"    Found {len(valid_imgs)} valid images in {cls_path.parent.name}/{cls_name}")
                     
                     cls_data[cls_name] = valid_imgs
 
@@ -99,8 +96,19 @@ class DataLoader:
                             
         df = pd.DataFrame(data)
         if not df.empty:
-            print(f"Crawled {len(df)} images from {len(generator_list)} generators (balanced per-generator).")
+            logger.info(f"Crawled {len(df)} images from {len(generator_list)} generators (balanced per-generator).")
         return df
+
+    def _stratified_subsample(self, df, max_samples):
+        """
+        Subsample the dataframe to a maximum number of samples while preserving
+        label proportions.
+        """
+        if df.empty or len(df) <= max_samples:
+            return df
+            
+        label_counts = df['label'].value_counts()
+        total_samples = len(df)
 
         # Calculate target samples per label based on original proportions
         target_samples_per_label = {}
@@ -176,7 +184,7 @@ class DataLoader:
         result_df = result_df.sample(frac=1, random_state=self.random_seed).reset_index(drop=True)
         
         # Print allocation summary
-        print(f"Stratified sampling allocated {len(result_df)} samples:")
+        logger.info(f"Stratified sampling allocated {len(result_df)} samples:")
         actual_counts = result_df['label'].value_counts().sort_index()
         for label in sorted(target_samples_per_label.keys()):
             original = label_counts[label]
@@ -184,7 +192,7 @@ class DataLoader:
             actual = actual_counts.get(label, 0)
             original_pct = (original / total_samples) * 100
             actual_pct = (actual / len(result_df)) * 100 if len(result_df) > 0 else 0
-            print(f"  Label {label}: {actual}/{original} samples ({original_pct:.1f}% → {actual_pct:.1f}%)")
+            logger.info(f"  Label {label}: {actual}/{original} samples ({original_pct:.1f}% → {actual_pct:.1f}%)")
         
         return result_df
 
@@ -216,12 +224,7 @@ class DataLoader:
         img_shape = tf.shape(img)
         h, w = tf.cast(img_shape[0], tf.float32), tf.cast(img_shape[1], tf.float32)
 
-        # 1. Skip if image is too small (avoid upscaling artifacts)
-        if tf.reduce_min([h, w]) < self.image_size:
-            # Return a zero-sized tensor to signal "skip"
-            return tf.zeros([0, 0, 3], dtype=tf.float32), label
-
-        # 2. Check for exact match to bypass heavy processing
+        # 1. Check for exact match to bypass heavy processing
         is_exact_match = tf.logical_and(
             tf.equal(h, self.image_size),
             tf.equal(w, self.image_size)
@@ -327,7 +330,7 @@ class DataLoader:
         counts = df.groupby(['generator', 'label']).size()
         min_count = counts.min()
         
-        print(f"  [{stage_name}] Balancing generators to {min_count} images per class/model...")
+        logger.info(f"  [{stage_name}] Balancing generators to {min_count} images per class/model...")
         
         balanced_dfs = []
         for (gen, label), group in df.groupby(['generator', 'label']):
@@ -342,7 +345,7 @@ class DataLoader:
         Returns:
             Tuple of (train_ds, val_ds)
         """
-        print("Using folder-based dataset discovery...")
+        logger.info("Using folder-based dataset discovery...")
         
         train_gens = config.train_generators
         val_gens = config.val_generators
@@ -352,7 +355,7 @@ class DataLoader:
             base_dir = Path(config.dataset_sampled_dir)
             if base_dir.exists():
                 train_gens = [d.name for d in base_dir.iterdir() if d.is_dir()]
-                print(f"Auto-discovered generators: {train_gens}")
+                logger.info(f"Auto-discovered generators: {train_gens}")
             else:
                 raise FileNotFoundError(f"Dataset directory {config.dataset_sampled_dir} not found.")
         
@@ -371,12 +374,12 @@ class DataLoader:
             raise ValueError(f"No training data found in {config.dataset_sampled_dir}")
         
         if test_df.empty:
-            print("Warning: No validation data found in specified generators. Splitting from training.")
+            logger.warning("Warning: No validation data found in specified generators. Splitting from training.")
             train_df, test_df = train_test_split(
                 train_df, test_size=self.test_size, random_state=self.random_seed, stratify=train_df['label']
             )
         
-        print(f"Final setup: {len(train_df)} training and {len(test_df)} testing samples")
+        logger.info(f"Final setup: {len(train_df)} training and {len(test_df)} testing samples")
         
         # Create TensorFlow datasets
         train_ds = tf.data.Dataset.from_tensor_slices(
@@ -391,14 +394,11 @@ class DataLoader:
             lambda path, label: self._process_path(path, label),
             num_parallel_calls=tf.data.AUTOTUNE
         )
-        # Filter out skipped images (redundant now but safe)
-        train_ds = train_ds.filter(lambda img, label: tf.shape(img)[0] > 0)
         
         test_ds = test_ds.map(
             lambda path, label: self._process_path(path, label),
             num_parallel_calls=tf.data.AUTOTUNE
         )
-        test_ds = test_ds.filter(lambda img, label: tf.shape(img)[0] > 0)
         
         # Configure for performance
         train_ds = self._configure_for_performance(train_ds, is_training=True)
@@ -407,42 +407,115 @@ class DataLoader:
         # Create a small sample dataset for feature extractor/genetic algorithm
         # to avoid loading all images for those steps
         sample_size = config.sample_size
-        print(f"Creating sample dataset of {sample_size} images for feature extraction")
+        logger.info(f"Creating sample dataset of {sample_size} images for feature extraction")
         
         # Use stratified sampling for the sample dataset too
         try:
             sample_df = self._stratified_subsample(train_df, sample_size)
-            print("Sample dataset label distribution:")
+            logger.info("Sample dataset label distribution:")
             sample_label_counts = sample_df['label'].value_counts().sort_index()
             for label, count in sample_label_counts.items():
                 percentage = (count / len(sample_df)) * 100
-                print(f"  Label {label}: {count} images ({percentage:.1f}%)")
+                logger.info(f"  Label {label}: {count} images ({percentage:.1f}%)")
         except:
-            print("Using random sampling for sample dataset")
+            logger.info("Using random sampling for sample dataset")
             sample_df = train_df.sample(sample_size, random_state=self.random_seed)
         
         sample_images = []
         sample_labels = []
         
         if config.use_feature_extraction:
-            # Load a small batch for feature extraction/genetic algorithm
-            for path, label in zip(sample_df['file_name'], sample_df['label']):
-                try:
-                    # Use the internal _process_path method for consistent preprocessing
-                    img_tensor, lbl = self._process_path(path, label, use_center_crop=True)
-                    
-                    # Skip if image was too small (returns empty tensor)
-                    if img_tensor.shape[0] == 0:
-                        continue
-                        
-                    # Convert TensorFlow tensor to numpy array
-                    img_array = img_tensor.numpy()
-                    sample_images.append(img_array)
-                    sample_labels.append(lbl)
-                except Exception as e:
-                    print(f"Error loading sample image {path}: {e}")
-
-            sample_images = np.array(sample_images)
-            sample_labels = np.array(sample_labels)
+            # Use tf.data pipeline for fast parallel loading
+            sample_ds = tf.data.Dataset.from_tensor_slices(
+                (sample_df['file_name'].values, sample_df['label'].values)
+            )
+            sample_ds = sample_ds.map(
+                lambda path, label: self._process_path(path, label, use_center_crop=True),
+                num_parallel_calls=tf.data.AUTOTUNE
+            ).batch(256).prefetch(tf.data.AUTOTUNE)
+            
+            for img_batch, lbl_batch in sample_ds:
+                sample_images.append(img_batch.numpy())
+                sample_labels.append(lbl_batch.numpy())
+                
+            if sample_images:
+                sample_images = np.concatenate(sample_images, axis=0)
+                sample_labels = np.concatenate(sample_labels, axis=0)
+            else:
+                sample_images = np.array([])
+                sample_labels = np.array([])
             
         return train_ds, test_ds, sample_images, sample_labels
+
+    def create_val_sample(
+        self,
+        sample_size: int = None,
+        generators: list = None,
+    ):
+        """
+        Load a fixed-size, balanced image sample from the *validation* generators
+        (``config.val_generators``) using the ``val`` split of the dataset.
+
+        This is the cross-generator held-out set — it must NEVER be used during
+        optimisation, only for the final "Honest Validation" step.
+
+        Args:
+            sample_size: Number of images to return.  Defaults to
+                         ``config.max_val_per_gen * len(val_generators)``.
+            generators:  Override the generator list (defaults to
+                         ``config.val_generators``).
+
+        Returns:
+            Tuple of (images np.ndarray [N, H, W, 3], labels np.ndarray [N]).
+        """
+        import numpy as np
+
+        gens = generators if generators is not None else config.val_generators
+        if not gens:
+            raise ValueError(
+                "config.val_generators is empty — cannot create validation sample."
+            )
+
+        # Crawl the val split for the requested generators
+        val_df = self._crawl_generators(
+            gens,
+            split_type="val",
+            limit_per_cls=config.max_val_per_gen,
+        )
+
+        if val_df.empty:
+            raise ValueError(
+                f"No validation images found for generators: {gens}.  "
+                f"Check that '{config.dataset_sampled_dir}/<gen>/val/' exists."
+            )
+
+        # Generator-level balancing (same logic as create_datasets)
+        val_df = self._balance_generators(val_df, "ValSample")
+
+        # Cap to requested sample size while preserving label balance
+        default_size = config.max_val_per_gen * len(gens) * 2  # *2 for ai+real
+        n = sample_size if sample_size is not None else default_size
+        val_df = self._stratified_subsample(val_df, n)
+
+        logger.info(
+            f"Val sample: {len(val_df)} images from generators {gens} "
+            f"(split=val, limit_per_cls={config.max_val_per_gen})"
+        )
+
+        # Load images using the same tf.data pipeline as the training sample
+        val_ds = tf.data.Dataset.from_tensor_slices(
+            (val_df["file_name"].values, val_df["label"].values)
+        ).map(
+            lambda path, label: self._process_path(path, label, use_center_crop=True),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        ).batch(256).prefetch(tf.data.AUTOTUNE)
+
+        images_list, labels_list = [], []
+        for img_batch, lbl_batch in val_ds:
+            images_list.append(img_batch.numpy())
+            labels_list.append(lbl_batch.numpy())
+
+        if not images_list:
+            raise RuntimeError("Val sample pipeline produced no images.")
+
+        return np.concatenate(images_list, axis=0), np.concatenate(labels_list, axis=0)

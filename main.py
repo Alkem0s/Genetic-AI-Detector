@@ -13,6 +13,7 @@ from data_loader import DataLoader
 from genetic_algorithm import GeneticFeatureOptimizer
 from model_architecture import ModelWrapper
 from visualization import Visualizer
+from fitness_evaluation import generate_dynamic_mask
 
 import global_config as config
 import optuna_config as opt_config
@@ -125,79 +126,319 @@ def load_optimized_config():
         sys.exit(1)
 
 
-def train_ai_detector(model_base_path):
-    """Train an AI-generated content detector using genetic optimization and CNN"""
-    # Load any optimized parameters before starting
+# ---------------------------------------------------------------------------
+# Core experiment runner
+# ---------------------------------------------------------------------------
+
+def run_experiment(mask_mode: str, generator_train: list, generator_test: list) -> dict:
+    """
+    Train and evaluate one model configuration.
+
+    Args:
+        mask_mode:       ``"none"``, ``"ga"``, or ``"random"``.
+        generator_train: List of generator names used as the training set.
+        generator_test:  List of generator names used as the test set.
+
+    Returns:
+        dict with keys: mask_mode, generator_train, generator_test, metrics,
+        robustness, mask_sparsity (if applicable), training_history.
+    """
+    logger.info(
+        f"\n{'='*70}\n"
+        f"  run_experiment  mask_mode={mask_mode!r}\n"
+        f"  train={generator_train}  test={generator_test}\n"
+        f"{'='*70}"
+    )
+
     load_optimized_config()
-    
+
+    # --- Step 1: Data loading --------------------------------------------------
     logger.info("=== Step 1: Loading and preparing datasets ===")
+    config.train_generators = generator_train
+    config.val_generators   = generator_test
 
-    # Initialize the data loader
     data_loader = DataLoader()
-
-    # Create the datasets
     train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets()
-    logger.info(f"Created TensorFlow dataset pipeline for training and testing")
+    logger.info("Created TensorFlow dataset pipeline for training and testing")
 
-    best_rules = None
-    ga_stats = None
+    # --- Step 2: GA (only for "ga" mode) --------------------------------------
+    results = None
+    mask_sparsity_mean = None
+    mask_sparsity_std  = None
 
-    if config.use_feature_extraction:
-        logger.info("=== Step 2: Running genetic algorithm for feature optimization ===")
-
-        # Initialize the genetic feature optimizer
+    if mask_mode == 'ga':
+        logger.info("=== Step 2: Running genetic algorithm for feature optimisation ===")
         genetic_optimizer = GeneticFeatureOptimizer(
             images=sample_images,
             labels=sample_labels,
             config=config,
         )
-
-        # Run the genetic algorithm optimization with a trace
         with tf.profiler.experimental.Trace('genetic_optimization_phase'):
             results = genetic_optimizer.run()
-    else:
-        logger.info("=== Step 2: Skipping genetic algorithm ===")
 
+        mask_sparsity_mean = results.get('mask_sparsity_mean')
+        mask_sparsity_std  = results.get('mask_sparsity_std')
+        logger.info(
+            f"GA complete – sparsity mean={mask_sparsity_mean:.4f}, "
+            f"std={mask_sparsity_std:.4f}"
+        )
+
+    elif mask_mode == 'random':
+        logger.info(
+            "=== Step 2: Running GA first to obtain sparsity target "
+            "for random mask control ==="
+        )
+        genetic_optimizer = GeneticFeatureOptimizer(
+            images=sample_images,
+            labels=sample_labels,
+            config=config,
+        )
+        with tf.profiler.experimental.Trace('genetic_optimization_phase'):
+            results = genetic_optimizer.run()
+
+        mask_sparsity_mean = results['mask_sparsity_mean']
+        mask_sparsity_std  = results['mask_sparsity_std']
+        logger.info(
+            f"GA sparsity target for random masks: mean={mask_sparsity_mean:.4f}, "
+            f"std={mask_sparsity_std:.4f}"
+        )
+        # Store on config so ModelWrapper can pick it up
+        config._random_mask_sparsity = mask_sparsity_mean
+
+    else:  # mask_mode == 'none'
+        logger.info("=== Step 2: Skipping genetic algorithm (baseline mode) ===")
+
+    # --- Step 3: Build & train model ------------------------------------------
     logger.info("=== Step 3: Building and training the model ===")
 
-    # Initialize model wrapper with optimized genetic rules
+    genetic_rules = None
+    if mask_mode == 'ga' and results is not None:
+        genetic_rules = results['best_individual'].rules_tensor
+
     model_wrapper = ModelWrapper(
-        genetic_rules=results['best_individual'].rules_tensor if config.use_feature_extraction else None,
+        genetic_rules=genetic_rules,
+        mask_mode=mask_mode,
+        random_mask_sparsity=mask_sparsity_mean,
     )
 
-    # Train the model with a trace
+    # Unique model base path per experiment
+    gen_train_tag = "_".join(generator_train)
+    gen_test_tag  = "_".join(generator_test)
+    experiment_tag = f"{mask_mode}__train_{gen_train_tag}__test_{gen_test_tag}"
+    model_base_path = os.path.join(
+        config.output_dir, f"model_{experiment_tag}"
+    )
+
     with tf.profiler.experimental.Trace('model_training_phase'):
         history = model_wrapper.train(
             train_dataset=train_ds,
             validation_dataset=test_ds,
-            model_path=os.path.join(config.output_dir, config.model_path)
+            model_path=f"{model_base_path}.h5",
         )
 
-    # Save the model state (NN model + genetic rules)
     model_wrapper.save(model_base_path)
-    logger.info(f"Saved model state (NN model and genetic rules) to {model_base_path}.*")
+    logger.info(f"Model state saved to {model_base_path}.*")
 
+    # --- Step 4: Evaluate -----------------------------------------------------
     logger.info("=== Step 4: Evaluating the model ===")
     metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
+    logger.info(f"Test accuracy: {metrics['accuracy']:.4f}  loss: {metrics['loss']:.4f}")
 
-    # Print evaluation results
-    logger.info(f"Test accuracy: {metrics['accuracy']:.4f}")
-    logger.info(f"Test loss: {metrics['loss']:.4f}")
+    # --- Step 4b: JPEG robustness evaluation ----------------------------------
+    logger.info("=== Step 4b: JPEG robustness evaluation ===")
+    from utils import evaluate_robustness
+    robustness = evaluate_robustness(
+        model_wrapper, test_ds,
+        quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
+        logger=logger,
+    )
 
-    # Visualize training results if requested
-    if config.visualize: # Check visualize for general plots
-        visualizer = Visualizer()
-        visualizer.plot_training_history(history)
+    # --- Step 5: Mask visualisation (10 sample images per model) --------------
+    if mask_mode in ('ga', 'random') and len(sample_images) > 0:
+        logger.info("=== Step 5: Generating mask visualisations ===")
+        _visualize_masks_for_experiment(
+            model_wrapper=model_wrapper,
+            sample_images=sample_images,
+            mask_mode=mask_mode,
+            experiment_tag=experiment_tag,
+            n_samples=10,
+            ga_results=results,
+        )
 
+    # --- Step 6: Plot training curves -----------------------------------------
+    if config.visualize:
+        vis = Visualizer()
+        vis.plot_training_history(history, filename=f"training_history_{experiment_tag}.png")
         if y_true is not None and y_pred is not None:
-            visualizer.plot_confusion_matrix(y_true, y_pred)
+            vis.plot_confusion_matrix(y_true, y_pred, filename=f"confusion_matrix_{experiment_tag}.png")
 
-    # Save metrics summary
-    save_metrics(metrics, history)
+    # --- Step 7: Save metrics to JSON -----------------------------------------
+    out_json = _save_experiment_results(
+        mask_mode=mask_mode,
+        generator_train=generator_train,
+        generator_test=generator_test,
+        metrics=metrics,
+        robustness=robustness,
+        history=history,
+        mask_sparsity_mean=mask_sparsity_mean,
+        mask_sparsity_std=mask_sparsity_std,
+        experiment_tag=experiment_tag,
+    )
+    logger.info(f"Results saved → {out_json}")
 
-    logger.info(f"Model training complete. Model state saved to {model_base_path}.*")
-    return model_wrapper, best_rules, {"ga_stats": ga_stats, "training_history": history}
+    return {
+        'mask_mode': mask_mode,
+        'generator_train': generator_train,
+        'generator_test': generator_test,
+        'metrics': metrics,
+        'robustness': robustness,
+        'mask_sparsity_mean': mask_sparsity_mean,
+        'mask_sparsity_std':  mask_sparsity_std,
+        'training_history': history.history if hasattr(history, 'history') else {},
+        'results_json': out_json,
+    }
 
+
+def _visualize_masks_for_experiment(
+    model_wrapper, sample_images, mask_mode, experiment_tag, n_samples, ga_results
+):
+    """Generate mask overlay PNGs for *n_samples* images from sample_images."""
+    from fitness_evaluation import generate_dynamic_mask
+
+    vis = Visualizer()
+    n = min(n_samples, len(sample_images))
+    n_patches_h = int(model_wrapper.n_patches_h.numpy())
+    n_patches_w = int(model_wrapper.n_patches_w.numpy())
+
+    for i in range(n):
+        img = sample_images[i]  # float32, (H, W, 3)
+
+        if mask_mode == 'ga' and ga_results is not None:
+            # Extract patch features for this image
+            img_tensor = tf.convert_to_tensor(img[np.newaxis], dtype=tf.float32)
+            model_wrapper.pipeline._ensure_feature_extractor()
+            patch_features = (
+                model_wrapper.pipeline._feature_extractor
+                .extract_patch_features(img_tensor[0])
+            )
+            patch_mask = generate_dynamic_mask(
+                patch_features,
+                model_wrapper.n_patches_h,
+                model_wrapper.n_patches_w,
+                ga_results['best_individual'].rules_tensor,
+            )
+        elif mask_mode == 'random':
+            patch_mask = model_wrapper._random_generator.generate(
+                n_patches_h, n_patches_w
+            )
+        else:
+            continue  # 'none' has no mask to visualise
+
+        filename = f"mask_{experiment_tag}_sample{i:03d}.png"
+        vis.visualize_mask(
+            image_tensor=img,
+            patch_mask=patch_mask,
+            filename=filename,
+            mask_mode=mask_mode,
+        )
+
+
+def _save_experiment_results(
+    mask_mode, generator_train, generator_test,
+    metrics, robustness, history,
+    mask_sparsity_mean, mask_sparsity_std,
+    experiment_tag,
+):
+    """Persist structured experiment results to output/ as JSON."""
+    # Build a JSON-serialisable payload
+    history_dict = {}
+    if history and hasattr(history, 'history'):
+        history_dict = {k: [float(v) for v in vs] for k, vs in history.history.items()}
+
+    def _safe_float(v):
+        try:
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+
+    payload = {
+        'mask_mode': mask_mode,
+        'generator_train': generator_train,
+        'generator_test':  generator_test,
+        'mask_sparsity_mean': _safe_float(mask_sparsity_mean),
+        'mask_sparsity_std':  _safe_float(mask_sparsity_std),
+        'metrics': {
+            'accuracy':          _safe_float(metrics.get('accuracy')),
+            'loss':              _safe_float(metrics.get('loss')),
+            'f1':                _safe_float(metrics.get('f1')),
+            'balanced_accuracy': _safe_float(metrics.get('balanced_accuracy')),
+            'precision':         _safe_float(metrics.get('precision')),
+            'recall':            _safe_float(metrics.get('recall')),
+            'confusion_matrix':  metrics.get('confusion_matrix'),
+        },
+        'robustness': {
+            str(q): {'accuracy': _safe_float(v['accuracy']), 'accuracy_drop': _safe_float(v['accuracy_drop'])}
+            for q, v in (robustness or {}).items()
+        },
+        'training_history': history_dict,
+    }
+
+    os.makedirs(config.output_dir, exist_ok=True)
+    out_path = os.path.join(config.output_dir, f"results_{experiment_tag}.json")
+    with open(out_path, 'w') as f:
+        json.dump(payload, f, indent=2)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Top-level orchestration
+# ---------------------------------------------------------------------------
+
+def run_all_experiments():
+    """
+    Run the full 4-experiment comparison matrix:
+
+    1. In-distribution  GA masks
+    2. In-distribution  random masks (matched sparsity)
+    3. Cross-generator  GA masks
+    4. Cross-generator  random masks (matched sparsity)
+
+    Results are saved as individual JSON files in output/.
+    """
+    gen_train = list(getattr(config, 'generator_train', config.train_generators))
+    gen_test  = list(getattr(config, 'generator_test',  config.val_generators))
+
+    experiments = [
+        # (mask_mode, train_gens,  test_gens)
+        ('ga',     gen_train, gen_train),   # in-distribution GA
+        ('random', gen_train, gen_train),   # in-distribution random
+        ('ga',     gen_train, gen_test),    # cross-generator GA
+        ('random', gen_train, gen_test),    # cross-generator random
+    ]
+
+    all_results = []
+    for mask_mode, g_train, g_test in experiments:
+        res = run_experiment(
+            mask_mode=mask_mode,
+            generator_train=g_train,
+            generator_test=g_test,
+        )
+        all_results.append(res)
+
+    logger.info("="*60)
+    logger.info("All experiments complete.  Summary:")
+    for r in all_results:
+        tag = f"{r['mask_mode']:8s}  train={r['generator_train']}  test={r['generator_test']}"
+        acc = r['metrics'].get('accuracy')
+        logger.info(f"  {tag}  →  accuracy={acc:.4f}" if acc is not None else f"  {tag}  →  N/A")
+    logger.info("="*60)
+
+    return all_results
+
+
+# ---------------------------------------------------------------------------
+# Legacy helpers (kept for backward compatibility / predict mode)
+# ---------------------------------------------------------------------------
 
 def evaluate_model(model_wrapper, test_ds):
     from metrics import calculate_precision_recall_f1, calculate_balanced_accuracy
@@ -379,29 +620,41 @@ def main():
     # Setup environment and get base path for model and rules
     model_base_path = setup_environment()
 
-    # Print configuration mode
-    if config.use_feature_extraction:
-        logger.info("=== Running in FULL MODE (with genetic algorithm and feature extraction) ===")
-    else:
-        logger.info("=== Running in BASELINE MODE (without feature extraction) ===")
+    mask_mode = getattr(config, 'mask_mode', 'ga')
+    logger.info(f"=== Running in mask_mode='{mask_mode}' ===")
 
     model_wrapper = None
     best_rules = None
 
     # Load or train model
-    # Check for the existence of the combined model state
     model_state_exists = os.path.exists(f"{model_base_path}_config.json")
 
     if config.skip_training and model_state_exists:
         model_wrapper, best_rules = load_model_and_rules(model_base_path)
     else:
-        model_wrapper, best_rules, stats = train_ai_detector(model_base_path)
+        gen_train = list(getattr(config, 'generator_train', config.train_generators))
+        gen_test  = list(getattr(config, 'generator_test',  config.val_generators))
+        result = run_experiment(
+            mask_mode=mask_mode,
+            generator_train=gen_train,
+            generator_test=gen_test,
+        )
+        # For predict mode we need a loaded wrapper; reload from saved state
+        model_base_path_exp = result.get('results_json', '').replace(
+            os.path.join(config.output_dir, 'results_'), ''
+        ).replace('.json', '')
+        try:
+            model_wrapper, best_rules = load_model_and_rules(
+                os.path.join(config.output_dir, f"model_{model_base_path_exp}")
+            )
+        except Exception:
+            pass  # predict mode won't work but training is complete
 
     # Make prediction if requested
     if config.predict:
         if not config.predict_path:
             logger.error("Prediction path is not specified in config. Cannot make prediction.")
-        else:
+        elif model_wrapper is not None:
             predict_image(config.predict_path, model_wrapper)
 
     logger.info("AI detector pipeline completed successfully")

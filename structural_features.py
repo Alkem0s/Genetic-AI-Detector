@@ -217,6 +217,75 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
+    def _extract_noise_spectrum_feature(self, image: tf.Tensor) -> tf.Tensor:
+        """
+        Spectral Peak Detection: Detects periodic upsampling artifacts (checkerboard patterns)
+        that AI generators leave in the Fourier domain due to transposed convolution operations.
+
+        Method:
+            1. Compute the log-magnitude of the FFT and suppress the DC region.
+            2. Identify local spectral peaks via max-pooling and compare to the local mean.
+            3. A high peak-to-average ratio is a strong indicator of artificial periodicity.
+        """
+        with tf.name_scope('noise_spectrum_feature'):
+            gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)
+            f_transform = tf.signal.fft2d(tf.cast(gray, tf.complex64))
+            f_shift     = tf.signal.fftshift(f_transform)
+
+            magnitude_spectrum = tf.math.log(tf.abs(f_shift) + self.EPSILON_TF)
+
+            # --- Suppress the DC component (center region) ---
+            h, w = tf.shape(magnitude_spectrum)[-2], tf.shape(magnitude_spectrum)[-1]
+            center_h, center_w = h // 2, w // 2
+            yy, xx = tf.meshgrid(
+                tf.range(h, dtype=tf.float32),
+                tf.range(w, dtype=tf.float32),
+                indexing='ij'
+            )
+            dc_radius  = tf.cast(tf.minimum(h, w), tf.float32) * 0.1
+            dc_mask    = tf.cast(
+                tf.sqrt((yy - tf.cast(center_h, tf.float32))**2 +
+                        (xx - tf.cast(center_w, tf.float32))**2) > dc_radius,
+                tf.float32
+            )
+            # dc_mask shape: [H, W]; broadcast over batch
+            mag_no_dc = magnitude_spectrum * dc_mask
+
+            # --- Detect local spectral peaks ---
+            # Expand to 4D for max_pool2d: [batch, H, W, 1]
+            rank = tf.rank(mag_no_dc)
+            mag_4d = tf.cond(
+                tf.equal(rank, 2),
+                lambda: tf.expand_dims(tf.expand_dims(mag_no_dc, 0), -1),
+                lambda: tf.expand_dims(mag_no_dc, -1)
+            )
+            # Local max over 5x5 neighbourhood
+            local_max  = tf.nn.max_pool2d(mag_4d,  ksize=5, strides=1, padding='SAME')
+            # Local mean via avg_pool2d
+            local_mean = tf.nn.avg_pool2d(mag_4d,  ksize=5, strides=1, padding='SAME')
+
+            # A pixel is a peak if it equals the local max and is above the local mean
+            is_peak = tf.logical_and(
+                tf.abs(mag_4d - local_max) < self.EPSILON_TF,
+                mag_4d > local_mean + self.EPSILON_TF
+            )
+            peak_heights  = tf.where(is_peak, mag_4d - local_mean, tf.zeros_like(mag_4d))
+
+            # peak-to-average ratio: how much the peaks stand out
+            sum_peak_height = tf.reduce_sum(peak_heights,     axis=[1, 2, 3])
+            mean_spectrum   = tf.reduce_mean(tf.abs(mag_4d),  axis=[1, 2, 3])
+            par_score       = sum_peak_height / (mean_spectrum * tf.cast(h * w, tf.float32) + self.EPSILON_TF)
+
+            # Normalise: empirically PAR up to ~0.05 covers real images; clip to [0,1]
+            score = tf.clip_by_value(par_score / 0.05, 0.0, 1.0)
+            score = tf.reshape(score, [-1, 1, 1])
+
+            feature_map = tf.ones_like(gray) * score
+            return self._apply_mask(feature_map, image)
+
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
+    ])
     def _extract_edge_feature(self, image: tf.Tensor) -> tf.Tensor:
         with tf.name_scope('edge_feature'):
             gray = tf.cast(self._rgb_to_grayscale(image), tf.float32) * 255.0
@@ -259,10 +328,15 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
     ])
     def _extract_dct_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
-        Step 23: DCT block artifact feature.
-        Divides the patch into 8x8 blocks (matching JPEG boundaries), applies DCT
-        to each block, and computes the AC/DC energy ratio.
-        AI images have smoother (lower) AC energy relative to DC energy.
+        Frequency Decay Analysis: Natural images follow a 1/f energy decay in DCT space.
+        AI generators violate this law by leaving excess energy in mid-to-high frequency
+        coefficient bands relative to the low-frequency band.
+
+        Method:
+            1. Apply 2D DCT to 8x8 blocks.
+            2. Measure energy in Low (top-left 3x3), Mid, and High (bottom-right 3x3) bands.
+            3. Score = deviation from the expected natural-image decay: Low >> Mid > High.
+               A high score means the mid/high bands have *more* relative energy than expected.
         """
         with tf.name_scope('dct_feature'):
             gray = tf.cast(self._rgb_to_grayscale(image), tf.float32)
@@ -282,25 +356,52 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
                 padding='VALID'
             )
             n_batch = tf.shape(blocks)[0]
-            n_bh = tf.shape(blocks)[1]
-            n_bw = tf.shape(blocks)[2]
-            blocks = tf.reshape(blocks, [n_batch * n_bh * n_bw, block_size, block_size])
+            n_bh    = tf.shape(blocks)[1]
+            n_bw    = tf.shape(blocks)[2]
+            blocks  = tf.reshape(blocks, [n_batch * n_bh * n_bw, block_size, block_size])
 
             dct_rows = tf.signal.dct(blocks, type=2, norm='ortho')
-            dct_2d   = tf.signal.dct(tf.transpose(dct_rows, [0, 2, 1]),
-                                     type=2, norm='ortho')
-            dct_2d   = tf.transpose(dct_2d, [0, 2, 1])
+            dct_2d   = tf.signal.dct(tf.transpose(dct_rows, [0, 2, 1]), type=2, norm='ortho')
+            dct_2d   = tf.transpose(dct_2d, [0, 2, 1])  # [n_blocks, 8, 8]
 
-            dc_energy = tf.square(dct_2d[:, 0, 0])
-            ac_energy = tf.reduce_sum(tf.square(dct_2d), axis=[1, 2]) - dc_energy
+            coef_sq  = tf.square(dct_2d)  # squared DCT coefficients
 
-            ac_dc_ratio = ac_energy / (dc_energy + self.EPSILON_TF)
-            ac_dc_ratio = tf.reshape(ac_dc_ratio, [n_batch, n_bh * n_bw])
-            mean_ratio  = tf.reduce_mean(ac_dc_ratio, axis=1)
-            
-            dct_score = 1.0 - tf.clip_by_value(mean_ratio / 50.0, 0.0, 1.0)
-            
-            dct_score = tf.reshape(dct_score, [-1, 1, 1])
+            # Band masks over the 8x8 DCT coefficient grid:
+            #   Low  : 3x3 top-left  (low frequencies, dominant in natural images)
+            #   High : 3x3 bottom-right (high frequencies, prone to AI artifacts)
+            #   Mid  : everything in between
+            rows = tf.cast(tf.range(block_size), tf.float32)
+            cols = tf.cast(tf.range(block_size), tf.float32)
+            rr, cc = tf.meshgrid(rows, cols, indexing='ij')  # [8, 8]
+
+            low_mask  = tf.cast(tf.logical_and(rr < 3.0, cc < 3.0), tf.float32)  # 9 coeffs
+            high_mask = tf.cast(tf.logical_and(rr > 4.0, cc > 4.0), tf.float32)  # 9 coeffs
+            mid_mask  = 1.0 - low_mask - high_mask
+
+            low_e  = tf.reduce_sum(coef_sq * low_mask,  axis=[1, 2])
+            mid_e  = tf.reduce_sum(coef_sq * mid_mask,  axis=[1, 2])
+            high_e = tf.reduce_sum(coef_sq * high_mask, axis=[1, 2])
+            total_e = low_e + mid_e + high_e + self.EPSILON_TF
+
+            mid_frac  = mid_e  / total_e
+            high_frac = high_e / total_e
+
+            # Natural images: mid_frac ~ 0.35, high_frac ~ 0.05.
+            # AI-generated:   excess mid/high → higher score.
+            # Clip & normalise so that the expected natural baseline maps to ~0
+            # and strong AI artifacts map to ~1.
+            expected_mid  = tf.constant(0.35, dtype=tf.float32)
+            expected_high = tf.constant(0.05, dtype=tf.float32)
+
+            decay_violation = (
+                tf.nn.relu(mid_frac  - expected_mid)  * 1.5 +
+                tf.nn.relu(high_frac - expected_high) * 3.0
+            )
+            dct_score = tf.clip_by_value(decay_violation, 0.0, 1.0)
+
+            dct_score   = tf.reshape(
+                tf.reduce_mean(tf.reshape(dct_score, [n_batch, n_bh * n_bw]), axis=1),
+                [-1, 1, 1]
+            )
             feature_map = tf.ones_like(gray) * dct_score
-
             return self._apply_mask(feature_map, image)

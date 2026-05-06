@@ -172,13 +172,23 @@ def compute_image_scores(precomputed_features, feature_weights_sliced,
 
 @tf.function
 def calculate_honest_threshold(scores):
-    """    
-    Honestly calculate threshold without peeking at labels.
-    Uses a fixed 0.5 threshold on normalized scores.
     """
-    # In a real-world scenario, we don't know the positive ratio.
-    # We use a fixed 0.5 threshold on the normalized detection scores.
-    return tf.constant(0.5, dtype=tf.float32)
+    Compute an honest decision threshold without peeking at labels.
+
+    Uses the MEDIAN of the score distribution.  For a balanced dataset this
+    is equivalent to minimising balanced-accuracy error without needing labels:
+    exactly half the samples fall above and half below, so the GA is forced to
+    actually RANK AI above Real (or vice-versa) rather than trivially predicting
+    a constant class.
+
+    A fixed 0.5 threshold was previously used, but it fails whenever the score
+    distribution is far from 0.5 (e.g. when mask sparsity is low and scores
+    cluster near 0).
+    """
+    sorted_scores = tf.sort(scores)           # ascending
+    n = tf.shape(sorted_scores)[0]
+    median = sorted_scores[n // 2]            # 50th-percentile
+    return median
 
 
 @tf.function(reduce_retracing=True)
@@ -204,8 +214,16 @@ def compute_fitness_score(image_size,
         n_patches_h, n_patches_w
     )
     
-    # Normalize scores by image size
-    normalized_scores = scores / (image_size * image_size)
+    # Normalize by ACTIVE PATCHES per image (not image_size^2).
+    # Each feature value is already in [0, 1] and weights sum to 1, so
+    # score / active_patches gives the mean weighted feature value per
+    # selected patch — a true [0, 1] signal regardless of mask sparsity.
+    # When no patches are selected the score is 0 (handled by epsilon).
+    active_f = tf.cast(active_patches_per_image, tf.float32)
+    normalized_scores = scores / (active_f + 1e-8)
+    # Clamp to [0, 1] as a safety net (weights are normalised but numerical
+    # drift can occasionally push the value slightly above 1).
+    normalized_scores = tf.clip_by_value(normalized_scores, 0.0, 1.0)
     
     # Calculate stats for debug (honestly, from the scores themselves)
     score_mean = tf.reduce_mean(normalized_scores)

@@ -39,7 +39,9 @@ feature_weight_ranges = {
     'hash': (0.0, 1.0),        # Perceptual hash similarity to known AI patterns
     'dct': (0.0, 1.0),         # Analyzes DCT AC/DC energy ratios
     'channel_correlation': (0.0, 1.0), # Detects chromatic aberration vs AI alignment
-    'glcm': (0.0, 1.0)         # GLCM contrast/homogeneity
+    'glcm': (0.0, 1.0),        # GLCM contrast/homogeneity
+    'noise_spectrum': (0.0, 1.0), # High frequency noise signature analysis
+    'ycbcr_correlation': (0.0, 1.0) # Chrominance and Luminance correlation 
 }
 
 
@@ -68,7 +70,7 @@ num_elites_range = (1, 5)
 
 # Enable pruning for faster optimization
 enable_pruning = True
-pruning_warmup_steps = 10  # Number of generations before pruning can occur
+pruning_warmup_steps = 25  # Number of generations before pruning can occur
 pruning_interval = 5      # Check for pruning every N generations
 
 # Minimum fitness threshold for early stopping

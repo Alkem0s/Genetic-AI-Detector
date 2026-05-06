@@ -2,6 +2,12 @@
 
 # --- Detector Configuration ---
 output_dir = "output"
+
+# --- Experiment Control ---
+# Mask mode: "none" (baseline CNN), "ga" (GA-generated masks), "random" (random masks)
+mask_mode = "ga"
+# JPEG robustness test quality levels
+jpeg_quality_levels = [50, 75]
 cnn_batch_size = 64
 extraction_batch_size = 64
 max_images = 10000
@@ -19,19 +25,23 @@ skip_training = False
 use_feature_extraction = True
 use_augmentation = True
 
-verbose = False  # Enable detailed debugging output
+verbose = False 
 visualize = False
-profile = False  # Enable performance profiling
-profile_log_dir = "profiler_logs" # Directory for profiling data
+profile = False 
+profile_log_dir = "profiler_logs" 
 
 # --- Cross-Generator Matrix ---
-# Leave empty to use the CSV-based approach, or specify folder names under dataset_sampled/
-# Example: train_generators = ["wukong", "glide", "adm"]
-train_generators = [] 
-val_generators = []
+# Generators used as training set (in-distribution experiment)
+train_generators = ["ADM", "glide", "wukong"]
+# Generators used as validation/test set (cross-generator experiment)
+val_generators = ["sdv4", "vqdm"]
 dataset_sampled_dir = "dataset_sampled"
 max_train_per_gen = 10000  # Max AI/Real images to take from each train generator
 max_val_per_gen = 2500     # Max AI/Real images to take from each val generator
+
+# Explicit generator splits for run_experiment() calls (mirrors train/val by default)
+generator_train = ["ADM", "glide", "wukong"]
+generator_test  = ["sdv4", "vqdm"]
 
 # --- Unified Patch and Image Sizes ---
 image_size = 256
@@ -39,7 +49,7 @@ patch_size = 16
 scale_factor = 1.0
 
 # --- Genetic Algorithm Environment ---
-sample_size = 8000
+sample_size = 10000
 use_multiprocessing = True
 
 # --- Fitness Weights (Fixed for now) ---

@@ -40,17 +40,11 @@ class BaseFeatureExtractor:
         Returns:
             tf.Tensor: A 2D binary mask (H, W, dtype=tf.float32).
         """
-        # Sum absolute values across channels to detect any non-zero pixel
-        # This handles both grayscale (no channel dim or 1 channel) and color images.
-        # tf.abs ensures it works even if images have negative values or are centered around 0.
-        if image.shape[-1] == 3:
-            # For color images, sum across the channel dimension
-            pixel_intensity_sum = tf.reduce_sum(tf.abs(image), axis=-1)
-        else:
-            # For grayscale images, just take the absolute value
-            pixel_intensity_sum = tf.abs(image)
-            
-        # Create a binary mask: 1 where sum > 0 (non-black), 0 where sum == 0 (black)
+        # Sum absolute values across all channels (last axis). Works for any channel
+        # count (1, 3, N) inside @tf.function without Python-level branching.
+        pixel_intensity_sum = tf.reduce_sum(tf.abs(image), axis=-1)
+
+        # Create a binary mask: 1 where sum > 0 (content), 0 where sum == 0 (black border)
         content_mask = tf.cast(pixel_intensity_sum > 0, tf.float32)
         
         return content_mask

@@ -1,12 +1,16 @@
 import argparse
 import sys
+import os
 import logging
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 from hyperparameter_optimizer import HyperparameterOptimizer
 import optuna_config as config
 import global_config
 
-# Silence TensorFlow spam
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
+logging.getLogger('PIL').setLevel(logging.WARNING)
 
 def main():
     """Run the hyperparameter optimization process."""

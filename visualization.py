@@ -29,6 +29,111 @@ class Visualizer:
             os.makedirs(config.output_dir)
             logger.info(f"Created output directory: {config.output_dir}")
 
+    # ------------------------------------------------------------------
+    # Mask Overlay Visualisation  (Task 6)
+    # ------------------------------------------------------------------
+
+    def visualize_mask(
+        self,
+        image_tensor,
+        patch_mask,
+        filename: str,
+        mask_mode: str = "ga",
+        alpha: float = 0.45,
+    ):
+        """
+        Overlay selected patches as a semi-transparent highlight and save to disk.
+
+        Args:
+            image_tensor: Float32 numpy array or tf.Tensor of shape (H, W, 3), values in [0, 1].
+            patch_mask:   2-D int/bool numpy array or tf.Tensor of shape (n_patches_h, n_patches_w).
+                          1 = selected, 0 = not selected.
+            filename:     Output PNG filename (will be placed inside ``config.output_dir``).
+            mask_mode:    ``"ga"`` (cyan highlight) or ``"random"`` (orange highlight) or ``"none"``.
+                          Controls the highlight colour for easy side-by-side comparison.
+            alpha:        Transparency of the highlight overlay (0 = invisible, 1 = opaque).
+
+        Returns:
+            str: Absolute path of the saved PNG.
+        """
+        # --- Normalise inputs to numpy float32 -------------------------
+        if isinstance(image_tensor, tf.Tensor):
+            image_np = image_tensor.numpy()
+        else:
+            image_np = np.asarray(image_tensor, dtype=np.float32)
+
+        if isinstance(patch_mask, tf.Tensor):
+            mask_np = patch_mask.numpy().astype(np.float32)
+        else:
+            mask_np = np.asarray(patch_mask, dtype=np.float32)
+
+        image_np = np.clip(image_np, 0.0, 1.0)
+
+        h, w = image_np.shape[:2]
+        n_patches_h, n_patches_w = mask_np.shape
+        patch_size_h = h // n_patches_h
+        patch_size_w = w // n_patches_w
+
+        # Expand patch mask to pixel mask (nearest-neighbour)
+        pixel_mask = np.zeros((h, w), dtype=np.float32)
+        for i in range(n_patches_h):
+            for j in range(n_patches_w):
+                if mask_np[i, j] > 0:
+                    y1 = i * patch_size_h
+                    y2 = min((i + 1) * patch_size_h, h)
+                    x1 = j * patch_size_w
+                    x2 = min((j + 1) * patch_size_w, w)
+                    pixel_mask[y1:y2, x1:x2] = 1.0
+
+        # Colour per mode  (RGB)
+        colour_map = {
+            "ga":     (0.0, 0.9, 0.9),   # cyan
+            "random": (1.0, 0.5, 0.0),   # orange
+            "none":   (0.5, 0.5, 0.5),   # grey fallback
+        }
+        r, g, b = colour_map.get(mask_mode, colour_map["ga"])
+
+        # Build RGBA overlay
+        overlay = np.zeros((h, w, 4), dtype=np.float32)
+        overlay[..., 0] = r
+        overlay[..., 1] = g
+        overlay[..., 2] = b
+        overlay[..., 3] = pixel_mask * alpha
+
+        # Sparsity annotation
+        sparsity = float(mask_np.mean())
+        n_selected = int(mask_np.sum())
+        n_total = int(mask_np.size)
+
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        titles = ["Original", f"Patch Mask ({mask_mode.upper()})", "Overlay"]
+
+        # Panel 1: original image
+        axes[0].imshow(image_np)
+        axes[0].set_title(titles[0])
+        axes[0].axis("off")
+
+        # Panel 2: patch-level mask (up-sampled for readability)
+        mask_display = np.kron(mask_np, np.ones((patch_size_h, patch_size_w)))
+        axes[1].imshow(mask_display, cmap="viridis", vmin=0, vmax=1)
+        axes[1].set_title(f"{titles[1]}\n{n_selected}/{n_total} patches  ({sparsity:.1%})")
+        axes[1].axis("off")
+
+        # Panel 3: overlay
+        axes[2].imshow(image_np)
+        axes[2].imshow(overlay)
+        axes[2].set_title(titles[2])
+        axes[2].axis("off")
+
+        plt.tight_layout()
+        save_path = os.path.join(config.output_dir, filename)
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
+        plt.close(fig)
+        logger.info(f"Mask visualisation saved → {save_path}")
+        return save_path
+
+
+
     def _save_figure(self, fig, filename):
         """Helper method to save figures if output directory is set"""
         if config.output_dir:
@@ -199,13 +304,14 @@ class Visualizer:
 
         return fig
 
-    def plot_training_history(self, history, figsize=(12, 5)):
+    def plot_training_history(self, history, figsize=(12, 5), filename="training_history.png"):
         """
         Plot training history metrics.
 
         Args:
             history: Keras history object or dictionary with history data
             figsize (tuple): Figure size
+            filename (str): Output filename
 
         Returns:
             matplotlib.figure.Figure: The created figure
@@ -237,7 +343,7 @@ class Visualizer:
         axes[1].grid(True, linestyle='--', alpha=0.7)
 
         plt.tight_layout()
-        self._save_figure(fig, "training_history.png")
+        self._save_figure(fig, filename)
 
         return fig
 
@@ -286,7 +392,7 @@ class Visualizer:
 
         return fig
 
-    def plot_confusion_matrix(self, y_true, y_pred, figsize=(8, 6)):
+    def plot_confusion_matrix(self, y_true, y_pred, figsize=(8, 6), filename="confusion_matrix.png"):
         """
         Plot confusion matrix for binary classification.
 
@@ -294,6 +400,7 @@ class Visualizer:
             y_true (np.ndarray): True labels
             y_pred (np.ndarray): Predicted labels
             figsize (tuple): Figure size
+            filename (str): Output filename
 
         Returns:
             matplotlib.figure.Figure: The created figure
@@ -323,7 +430,7 @@ class Visualizer:
         ax.set_yticklabels(['Human', 'AI'])
 
         plt.tight_layout()
-        self._save_figure(fig, "confusion_matrix.png")
+        self._save_figure(fig, filename)
 
         return fig
 

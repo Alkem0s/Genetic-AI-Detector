@@ -1,4 +1,5 @@
 import optuna # type: ignore
+from optuna.storages import JournalStorage, JournalFileStorage
 import json
 import logging
 import time
@@ -38,23 +39,24 @@ class HyperparameterOptimizer:
         self.data_loader = DataLoader()
         _, _, all_images, all_labels = self.data_loader.create_datasets()
         
-        # Implement 80/20 Train-Test Split for Honesty
-        num_samples = len(all_images)
-        split_idx = int(num_samples * 0.8)
+        # Use the FULL training sample for optimisation.
+        # The val_generators (sdv4, vqdm) form a completely separate held-out set
+        # loaded lazily by _get_val_sample() for the final Honest Validation only.
+        self.train_images = all_images
+        self.train_labels = all_labels
         
-        # Shuffle indices for a fair split
-        indices = np.arange(num_samples)
-        np.random.shuffle(indices)
+        # Placeholder — loaded on demand from global_config.val_generators
+        self._val_images = None
+        self._val_labels = None
         
-        train_indices = indices[:split_idx]
-        test_indices = indices[split_idx:]
-        
-        self.train_images = all_images[train_indices]
-        self.train_labels = all_labels[train_indices]
-        self.test_images = all_images[test_indices]
-        self.test_labels = all_labels[test_indices]
-        
-        logger.info(f"Dataset split: {len(self.train_images)} Training, {len(self.test_images)} Validation")
+        logger.info(
+            f"Training sample: {len(self.train_images)} images "
+            f"from train_generators={global_config.train_generators}"
+        )
+        logger.info(
+            f"Honest Validation will use val_generators={global_config.val_generators} "
+            f"(loaded lazily, never seen during optimisation)"
+        )
         
         # 1. Load Strict Source-of-Truth JSONs (Optimization Baseline)
         try:
@@ -86,6 +88,8 @@ class HyperparameterOptimizer:
         # Store best results
         self.best_fitness = -float('inf')
         self.best_individual = None
+        self.best_feature_weights = None
+        self.best_ga_config = None
         self.fw_study = None
         self.ga_study = None
         
@@ -93,6 +97,28 @@ class HyperparameterOptimizer:
         if config.optimization_seed is not None:
             optuna.samplers.RandomSampler(seed=config.optimization_seed)
             np.random.seed(config.optimization_seed)
+
+    def _get_val_sample(self):
+        """
+        Lazily load and cache the cross-generator validation sample.
+
+        Sourced exclusively from ``global_config.val_generators`` / ``val`` split,
+        respecting ``global_config.max_val_per_gen`` per class per generator.
+        This data is NEVER touched during optimisation.
+        """
+        if self._val_images is None:
+            logger.info(
+                "Loading cross-generator validation sample from "
+                f"val_generators={global_config.val_generators} ..."
+            )
+            self._val_images, self._val_labels = \
+                self.data_loader.create_val_sample()
+            logger.info(
+                f"Validation sample ready: {len(self._val_images)} images "
+                f"from {global_config.val_generators}"
+            )
+        return self._val_images, self._val_labels
+
     
     def create_base_config(self, feature_weights: Dict[str, float] = None, 
                           ga_params: Dict[str, Any] = None):
@@ -399,27 +425,9 @@ class HyperparameterOptimizer:
         logger.info("="*60)
         logger.info("Using precomputed features - no re-extraction needed!")
         
-        # Use robust RDBStorage with WAL mode and high timeout
-        storage_url = 'sqlite:///optuna_study.db'
+        # Use JournalStorage instead of RDBStorage to avoid SQLite locking issues on Windows/WSL
+        storage = JournalStorage(JournalFileStorage("optuna_journal.log"))
         
-        # Ensure we use WAL mode for better concurrency and reliability
-        storage = optuna.storages.RDBStorage(
-            url=storage_url,
-            engine_kwargs={
-                "connect_args": {"timeout": 60},
-                "pool_pre_ping": True
-            }
-        )
-        
-        # Set WAL mode manually via PRAGMA
-        import sqlite3
-        try:
-            conn = sqlite3.connect('optuna_study.db')
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.close()
-        except Exception as e:
-            logger.warning(f"Could not set WAL mode: {e}")
-
         self.fw_study = optuna.create_study(
             direction='maximize',
             study_name=config.feature_weight_study_name,
@@ -450,16 +458,21 @@ class HyperparameterOptimizer:
         self.best_feature_weights = best_weights
         self.save_json(best_weights, config.feature_weights_output_file)
         
-        # 3. Honest Validation
+        # 3. Honest Validation on CROSS-GENERATOR held-out set
         if self.best_individual is not None:
             logger.info("\n" + "="*60)
             logger.info("FINAL HONEST VALIDATION (PHASE 1)")
+            logger.info(f"  Source: val_generators = {global_config.val_generators}")
+            logger.info(f"  Split : val (never seen during optimisation)")
             logger.info("="*60)
+            val_images, val_labels = self._get_val_sample()
             val_fitness = self.genetic_optimizer.validate(
-                self.test_images, self.test_labels, self.best_individual
+                val_images, val_labels, self.best_individual
             )
-            logger.info(f"Phase 1 Train Fitness: {best_trial.value:.4f}")
-            logger.info(f"Phase 1 Test Fitness:  {val_fitness:.4f}")
+            logger.info(f"Phase 1 Train Fitness (in-dist):  {best_trial.value:.4f}")
+            logger.info(f"Phase 1 Val Fitness  (cross-gen): {val_fitness:.4f}")
+            gap = best_trial.value - val_fitness
+            logger.info(f"Generalisation gap: {gap:+.4f} ({'overfitting' if gap > 0.05 else 'good'})")
             logger.info("="*60 + "\n")
         
         return best_weights
@@ -480,15 +493,8 @@ class HyperparameterOptimizer:
         if self.best_feature_weights is None:
             self.best_feature_weights = self.json_weights
         
-        # Use robust RDBStorage with WAL mode and high timeout
-        storage_url = 'sqlite:///optuna_study.db'
-        storage = optuna.storages.RDBStorage(
-            url=storage_url,
-            engine_kwargs={
-                "connect_args": {"timeout": 60},
-                "pool_pre_ping": True
-            }
-        )
+        # Use JournalStorage instead of RDBStorage to avoid SQLite locking issues on Windows/WSL
+        storage = JournalStorage(JournalFileStorage("optuna_journal.log"))
         
         self.ga_study = optuna.create_study(
             direction='maximize',
@@ -521,16 +527,21 @@ class HyperparameterOptimizer:
         self.best_fitness = best_trial.value
         self.save_json(best_ga_config, config.ga_config_output_file)
         
-        # 3. Honest Validation
+        # 3. Honest Validation on CROSS-GENERATOR held-out set
         if self.best_individual is not None:
             logger.info("\n" + "="*60)
             logger.info("FINAL HONEST VALIDATION (PHASE 2)")
+            logger.info(f"  Source: val_generators = {global_config.val_generators}")
+            logger.info(f"  Split : val (never seen during optimisation)")
             logger.info("="*60)
+            val_images, val_labels = self._get_val_sample()
             val_fitness = self.genetic_optimizer.validate(
-                self.test_images, self.test_labels, self.best_individual
+                val_images, val_labels, self.best_individual
             )
-            logger.info(f"Phase 2 Train Fitness: {best_trial.value:.4f}")
-            logger.info(f"Phase 2 Test Fitness:  {val_fitness:.4f}")
+            logger.info(f"Phase 2 Train Fitness (in-dist):  {best_trial.value:.4f}")
+            logger.info(f"Phase 2 Val Fitness  (cross-gen): {val_fitness:.4f}")
+            gap = best_trial.value - val_fitness
+            logger.info(f"Generalisation gap: {gap:+.4f} ({'overfitting' if gap > 0.05 else 'good'})")
             logger.info("="*60 + "\n")
             
         return best_ga_config

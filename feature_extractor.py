@@ -82,27 +82,29 @@ class FeatureExtractor:
     ])
     def _extract_single_patch_features(self, patch: tf.Tensor) -> tf.Tensor:
         """
-        Extracts all 11 individual features from a single patch.
+        Extracts all 13 individual features from a single patch.
         Returns a 3D tensor: [patch_size, patch_size, num_features]
 
-        Feature order must match global_config.feature_weights key order:
+        Feature order must match global_config / optuna_config.feature_weight_ranges key order:
             gradient, pattern, noise, edge, symmetry, texture,
-            color, hash, dct, channel_correlation, glcm
+            color, hash, dct, channel_correlation, glcm,
+            noise_spectrum, ycbcr_correlation
         """
         gradient_feature   = self.structural_extractor._extract_gradient_feature(patch)
         pattern_feature    = self.structural_extractor._extract_pattern_feature(patch)
+        noise_feature      = self.texture_extractor._extract_noise_feature(patch)
         edge_feature       = self.structural_extractor._extract_edge_feature(patch)
         symmetry_feature   = self.structural_extractor._extract_symmetry_feature(patch)
+        texture_feature    = self.texture_extractor._extract_texture_feature(patch)
+        color_feature      = self.texture_extractor._extract_color_feature(patch)
+        hash_feature       = self.texture_extractor._extract_hash_feature(patch)
         dct_feature        = self.structural_extractor._extract_dct_feature(patch)
-
-        noise_feature               = self.texture_extractor._extract_noise_feature(patch)
-        texture_feature             = self.texture_extractor._extract_texture_feature(patch)
-        color_feature               = self.texture_extractor._extract_color_feature(patch)
-        hash_feature                = self.texture_extractor._extract_hash_feature(patch)
         channel_correlation_feature = self.texture_extractor._extract_channel_correlation_feature(patch)
-        glcm_feature                = self.texture_extractor._extract_glcm_feature(patch)
+        glcm_feature       = self.texture_extractor._extract_glcm_feature(patch)
+        noise_spectrum_feature = self.structural_extractor._extract_noise_spectrum_feature(patch)
+        ycbcr_correlation_feature = self.texture_extractor._extract_ycbcr_correlation_feature(patch)
 
-        # Stack in the same order as feature_weights in global_config.py
+        # Stack in the same order as feature_weights in global_config.py / optuna_config.py
         feature_stack = tf.stack([
             gradient_feature,
             pattern_feature,
@@ -115,7 +117,9 @@ class FeatureExtractor:
             dct_feature,
             channel_correlation_feature,
             glcm_feature,
-        ], axis=-1)  # [patch_size, patch_size, 11]
+            noise_spectrum_feature,
+            ycbcr_correlation_feature,
+        ], axis=-1)  # [patch_size, patch_size, 13]
 
         return feature_stack
     
@@ -192,13 +196,15 @@ class FeaturePipeline:
         patch_features = self._feature_extractor.extract_batch_patch_features(images)
 
         # Build one mask per image in the batch.
-        batch_masks = [
-            self._generate_mask(patch_features[i])
-            for i in range(images.shape[0])
-        ]
+        # Use tf.map_fn instead of a python list comprehension so it traces correctly in graph mode.
+        batch_masks = tf.map_fn(
+            self._generate_mask,
+            patch_features,
+            fn_output_signature=tf.int8
+        )
 
         # (batch, n_patches_h, n_patches_w) → pixel masks
-        pixel_mask = utils.convert_patch_mask_to_pixel_mask(tf.stack(batch_masks))
+        pixel_mask = utils.convert_patch_mask_to_pixel_mask(batch_masks)
 
         if pixel_mask.shape.rank == 3:       # (batch, H, W)
             pixel_mask = tf.expand_dims(pixel_mask, axis=-1)

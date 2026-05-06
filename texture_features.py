@@ -96,26 +96,53 @@ class TextureFeatureExtractor(BaseFeatureExtractor):
         tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
     def _extract_hash_feature(self, image: tf.Tensor) -> tf.Tensor:
+        """
+        Hash Complexity (Entropy): Measures the structural complexity of a pHash-style
+        bit string. AI images tend to produce more 'ordered' / repetitive bit patterns
+        compared to the high-entropy noise of natural images.
+
+        Method:
+            1. Compute a DCT-based perceptual hash (8x8 top-left coefficients).
+            2. Count bit transitions (0→1 or 1→0) along rows AND columns.
+            3. Normalise by the maximum possible transitions.
+            High score = many transitions = complex / natural.
+            Low score  = few transitions = ordered / AI-like.
+        """
         with tf.name_scope('hash_feature'):
             resized = tf.image.resize(image, [32, 32], method=tf.image.ResizeMethod.BILINEAR)
-            gray = self._rgb_to_grayscale(resized)
-            
+            gray    = self._rgb_to_grayscale(resized)
+
             dct_rows = tf.signal.dct(gray, type=2, norm='ortho')
-            
-            rank = tf.rank(gray)
-            trans_perm = tf.cond(tf.equal(rank, 2), lambda: tf.constant([1, 0]), lambda: tf.constant([0, 2, 1]))
-            
+            rank     = tf.rank(gray)
+            trans_perm = tf.cond(
+                tf.equal(rank, 2), lambda: tf.constant([1, 0]), lambda: tf.constant([0, 2, 1])
+            )
             dct_cols = tf.signal.dct(tf.transpose(dct_rows, trans_perm), type=2, norm='ortho')
-            dct_2d = tf.transpose(dct_cols, trans_perm)
-            
-            dct_8x8 = dct_2d[..., :8, :8]
-            mean_val = tf.reduce_mean(dct_8x8, axis=[-2, -1], keepdims=True)
-            hash_bits = tf.cast(dct_8x8 > mean_val, tf.float32)
-            hash_score = tf.reduce_mean(hash_bits, axis=[-2, -1])
-            
+            dct_2d   = tf.transpose(dct_cols, trans_perm)
+
+            dct_8x8   = dct_2d[..., :8, :8]           # [..., 8, 8]
+            mean_val  = tf.reduce_mean(dct_8x8, axis=[-2, -1], keepdims=True)
+            hash_bits = tf.cast(dct_8x8 > mean_val, tf.float32)  # 0/1 grid
+
+            # Bit transitions along rows: |bit[i,j] - bit[i,j+1]|
+            row_transitions = tf.reduce_sum(
+                tf.abs(hash_bits[..., :, 1:] - hash_bits[..., :, :-1]),
+                axis=[-2, -1]
+            )
+            # Bit transitions along columns: |bit[i,j] - bit[i+1,j]|
+            col_transitions = tf.reduce_sum(
+                tf.abs(hash_bits[..., 1:, :] - hash_bits[..., :-1, :]),
+                axis=[-2, -1]
+            )
+            total_transitions = row_transitions + col_transitions
+            # Maximum possible transitions in an 8x8 grid:
+            #   rows: 8 rows × 7 transitions = 56
+            #   cols: 7 transitions × 8 cols = 56  → max = 112
+            max_transitions = tf.constant(112.0, dtype=tf.float32)
+            hash_score = tf.clip_by_value(total_transitions / max_transitions, 0.0, 1.0)
+
             score = tf.reshape(hash_score, [-1, 1, 1])
             feature_map = tf.ones_like(self._rgb_to_grayscale(image)) * score
-
             return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
@@ -146,6 +173,61 @@ class TextureFeatureExtractor(BaseFeatureExtractor):
 
             score = tf.reshape(score, [-1, 1, 1])
             feature_map = tf.ones_like(r_channel) * score
+            return self._apply_mask(feature_map, image)
+
+    @tf.function(input_signature=[
+        tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
+    ])
+    def _extract_ycbcr_correlation_feature(self, image: tf.Tensor) -> tf.Tensor:
+        """
+        Saturation-Weighted YCbCr Correlation: Measures how tightly brightness and
+        chroma are coupled, weighted by per-pixel saturation.
+
+        AI generators often produce flat, highly-saturated colour regions where
+        the luminance gradient is decoupled from the chroma — a physically unusual
+        condition.  Weighting by saturation focuses the metric on exactly those
+        regions where the decoupling is most diagnostic.
+
+        High score → strong coupling (possibly AI palette smoothing).
+        Low score  → decoupled chroma (possibly real noise).
+        The GA rules can learn either direction depending on the generator.
+        """
+        with tf.name_scope('ycbcr_correlation'):
+            image_rgb = tf.clip_by_value(image[..., ::-1], 0.0, 1.0)
+
+            yuv = tf.image.rgb_to_yuv(image_rgb)
+            y   = yuv[..., 0]
+            u   = yuv[..., 1]
+            v   = yuv[..., 2]
+
+            # Saturation from HSV (proxy for chroma importance per pixel)
+            hsv = tf.image.rgb_to_hsv(image_rgb)
+            sat = hsv[..., 1]  # [batch, H, W], in [0, 1]
+
+            # Saturation-weighted Pearson correlation between Y and U / Y and V
+            def weighted_pearson_corr(a, b, w):
+                """Pearson r with per-pixel weights w (same shape as a, b)."""
+                w_sum   = tf.reduce_sum(w, axis=[-2, -1], keepdims=True) + self.EPSILON_TF
+                mean_a  = tf.reduce_sum(w * a, axis=[-2, -1], keepdims=True) / w_sum
+                mean_b  = tf.reduce_sum(w * b, axis=[-2, -1], keepdims=True) / w_sum
+                a_dev   = a - mean_a
+                b_dev   = b - mean_b
+                covar   = tf.reduce_sum(w * a_dev * b_dev,   axis=[-2, -1])
+                var_a   = tf.reduce_sum(w * tf.square(a_dev), axis=[-2, -1])
+                var_b   = tf.reduce_sum(w * tf.square(b_dev), axis=[-2, -1])
+                std_a   = tf.sqrt(var_a / (tf.reduce_sum(w, axis=[-2, -1]) + self.EPSILON_TF) + self.EPSILON_TF)
+                std_b   = tf.sqrt(var_b / (tf.reduce_sum(w, axis=[-2, -1]) + self.EPSILON_TF) + self.EPSILON_TF)
+                return covar / (tf.reduce_sum(w, axis=[-2, -1]) * std_a * std_b + self.EPSILON_TF)
+
+            corr_yu = weighted_pearson_corr(y, u, sat)
+            corr_yv = weighted_pearson_corr(y, v, sat)
+
+            # Absolute magnitude of the average weighted correlation
+            avg_abs_corr = (tf.abs(corr_yu) + tf.abs(corr_yv)) / 2.0
+            score = tf.clip_by_value(avg_abs_corr, 0.0, 1.0)
+            score = tf.reshape(score, [-1, 1, 1])
+
+            feature_map = tf.ones_like(y) * score
             return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
