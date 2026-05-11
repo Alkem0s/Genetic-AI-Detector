@@ -50,16 +50,16 @@ feature_weight_ranges = {
 # =============================================================================
 
 # Population and generation settings
-population_size_range = (50, 150)
-n_generations_range = (50, 250)
+population_size_range = (120, 180)
+n_generations_range = (100, 350)
 
 # Rule configuration
-rules_per_individual_range = (3, 15)
-max_possible_rules_range = (10, 30)
+rules_per_individual_range = (5, 15)
+max_possible_rules_range = (15, 50)
 
 # Genetic operators
-crossover_prob_range = (0.5, 0.9)
-mutation_prob_range = (0.1, 0.5)
+crossover_prob_range = (0.6, 0.75)
+mutation_prob_range = (0.2, 0.45)
 tournament_size_range = (2, 8)
 num_elites_range = (1, 5)
 
@@ -70,7 +70,7 @@ num_elites_range = (1, 5)
 
 # Enable pruning for faster optimization
 enable_pruning = True
-pruning_warmup_steps = 25  # Number of generations before pruning can occur
+pruning_warmup_steps = 50  # Number of generations before pruning can occur
 pruning_interval = 5      # Check for pruning every N generations
 
 # Minimum fitness threshold for early stopping

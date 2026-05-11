@@ -200,7 +200,7 @@ class GeneticFeatureOptimizer:
         end_time = time.time()
         logger.info(f"Feature precomputation and auto-calibration complete in {end_time - start_time:.2f} seconds")
         logger.info(f"Final normalized features shape: {self.precomputed_features.shape}")
-        logger.debug(f"Calculated feature scales: {dict(zip(self.feature_names, scales))}")
+        logger.debug(f"Applied feature scales: {dict(zip(self.feature_names, self.feature_scales.numpy().tolist()))}")
 
     def recompute_features(self, force=False):
         """
@@ -217,6 +217,76 @@ class GeneticFeatureOptimizer:
             self._precompute_features()
         else:
             logger.info("Features already computed. Use force=True to recompute.")
+
+    def precompute_probe_features(self, images, labels):
+        """
+        Precompute and cache features for a cross-generator probe set.
+
+        Uses the EXISTING self.feature_scales (calibrated on training data) so that
+        probe features are on exactly the same scale as training features — ensuring
+        a fair, apples-to-apples fitness comparison.
+
+        Call this ONCE after the main feature precomputation.  The results are stored
+        in self.probe_features / self.probe_labels and reused across all Optuna trials.
+
+        Args:
+            images: Numpy array  [N, H, W, 3]
+            labels: Numpy array  [N] int labels (0=real, 1=ai)
+        """
+        if self.feature_scales is None:
+            raise RuntimeError(
+                "Cannot precompute probe features before training feature scales are calibrated. "
+                "Call _precompute_features() first."
+            )
+
+        logger.info(f"Precomputing probe features for {len(images)} cross-generator images ...")
+        start = time.time()
+
+        all_batch_features = []
+        num_samples = len(images)
+        for i in range(0, num_samples, self.batch_size):
+            batch_images = images[i : i + self.batch_size]
+            batch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
+            all_batch_features.append(batch_features)
+
+        raw_features = tf.concat(all_batch_features, axis=0)
+
+        # Normalise with TRAINING scales (no re-calibration)
+        self.probe_features = raw_features / self.feature_scales
+        self.probe_labels   = tf.convert_to_tensor(labels, dtype=tf.float32)
+
+        logger.info(
+            f"Probe features precomputed in {time.time() - start:.2f}s  "
+            f"shape={self.probe_features.shape}"
+        )
+
+    def eval_on_probe(self, individual):
+        """
+        Score one GA individual on the cached probe (cross-generator) feature set.
+
+        This is cheap — no image loading or feature extraction.  It just calls
+        compute_fitness_score() with probe_features / probe_labels.
+
+        Returns:
+            float: probe fitness (same scale as the training fitness)
+        """
+        if not hasattr(self, 'probe_features') or self.probe_features is None:
+            raise RuntimeError(
+                "Probe features not precomputed. Call precompute_probe_features() first."
+            )
+
+        fitness = compute_fitness_score(
+            self.image_size_tf,
+            self.weight_bal_acc, self.weight_f1,
+            self.weight_eff, self.weight_conn, self.weight_simp,
+            tf.constant(False),          # verbose=False — no debug spam per trial
+            self.probe_features, self.probe_labels,
+            self.n_patches_h, self.n_patches_w,
+            self.feature_weights, self.n_patches_tf,
+            individual.num_active_rules, self.max_rules_tf,
+            individual.rules_tensor,
+        )
+        return float(fitness)
 
     def _tensor_rules_similar(self, ind1, ind2):
         """
@@ -610,13 +680,15 @@ class GeneticFeatureOptimizer:
 
         return feature_scores
 
-    def run(self, run_id=None):
+    def run(self, run_id=None, on_generation_callback=None):
         """
         Execute the genetic algorithm optimization.
         Can be called multiple times, reusing precomputed features.
         
         Args:
             run_id (str, optional): Identifier for this run. If None, uses run number.
+            on_generation_callback (callable, optional): Function(gen_num, best_ind) 
+                                                        called after each generation.
         """
         run_number = len(self.all_run_histories) + 1
         if run_id is None:
@@ -675,6 +747,12 @@ class GeneticFeatureOptimizer:
                 'std_fitness': record['std'],
                 'generation_time': gen_end_time - gen_start_time
             })
+
+            # --- OPTUNA PRUNING HOOK ---
+            if on_generation_callback is not None:
+                # Passes the best individual found so far (HOF index 0)
+                on_generation_callback(gen + 1, hof[0])
+            # ---------------------------
             
             if gen < self.n_generations - 1:
                 # Select the next generation individuals
@@ -751,18 +829,14 @@ class GeneticFeatureOptimizer:
             self.eval_sample_size,
         )
         full_sample_features = self.precomputed_features[:full_sample_size]
-        sparsity_ratios = []
-        for j in range(full_sample_size):
-            patch_features_j = full_sample_features[j]
-            mask_j = generate_dynamic_mask(
-                patch_features_j, self.n_patches_h, self.n_patches_w, best_ind.rules_tensor
-            )
-            ratio = float(
-                tf.reduce_sum(tf.cast(mask_j, tf.float32)).numpy() / total_patches_per_image.numpy()
-            )
-            sparsity_ratios.append(ratio)
-
-        sparsity_ratios_np = np.array(sparsity_ratios, dtype=np.float32)
+        # Vectorized mask generation and sparsity calculation
+        def get_mask(feat):
+            return generate_dynamic_mask(feat, self.n_patches_h, self.n_patches_w, best_ind.rules_tensor)
+            
+        masks = tf.vectorized_map(get_mask, full_sample_features)
+        total_active_patches = tf.reduce_sum(tf.cast(masks, tf.float32), axis=[1, 2])
+        sparsity_ratios_tensor = total_active_patches / total_patches_per_image
+        sparsity_ratios_np = sparsity_ratios_tensor.numpy()
         mask_sparsity_mean = float(np.mean(sparsity_ratios_np))
         mask_sparsity_std  = float(np.std(sparsity_ratios_np))
 

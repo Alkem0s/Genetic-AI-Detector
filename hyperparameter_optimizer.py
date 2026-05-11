@@ -2,6 +2,7 @@ import optuna # type: ignore
 from optuna.storages import JournalStorage, JournalFileStorage
 import json
 import logging
+import argparse
 import time
 import numpy as np
 from pathlib import Path
@@ -83,6 +84,31 @@ class HyperparameterOptimizer:
         # Save the auto-calibrated scales for future use/inference
         self.genetic_optimizer.save_feature_scales("feature_scales.json")
         
+        # --- CRITICAL MEMORY OPTIMIZATION ---
+        # Once features are precomputed, we NO LONGER need the raw images (8GB+).
+        # We clear them from both the optimizer and the GA instance to free up RAM.
+        logger.info("Features precomputed. Clearing raw training images to free up RAM...")
+        self.train_images = None
+        self.genetic_optimizer.images = None
+        import gc
+        gc.collect()
+        # ------------------------------------
+
+        # --- CROSS-GENERATOR PROBE SET ---
+        # Load a small probe sample (500 images) from val_generators.
+        # Features are extracted ONCE here using the training-calibrated scales,
+        # then cached on self.genetic_optimizer for the lifetime of the optimizer.
+        # Each Optuna trial will score the best individual on this probe set and
+        # blend it into the objective: 0.7 * train + 0.3 * probe_val.
+        logger.info("Loading cross-generator probe set (500 images) for blended objective...")
+        probe_images, probe_labels = self.data_loader.create_val_sample(sample_size=500)
+        self.genetic_optimizer.precompute_probe_features(probe_images, probe_labels)
+        # Free probe images — features are now cached inside the GA
+        del probe_images, probe_labels
+        gc.collect()
+        logger.info("Probe features cached. Blended objective active (0.7 train + 0.3 cross-gen).")
+        # ----------------------------------
+        
         logger.info("GeneticFeatureOptimizer created with precomputed features - ready for optimization!")
         
         # Store best results
@@ -93,10 +119,12 @@ class HyperparameterOptimizer:
         self.fw_study = None
         self.ga_study = None
         
-        # Set random seed if specified
-        if config.optimization_seed is not None:
-            optuna.samplers.RandomSampler(seed=config.optimization_seed)
-            np.random.seed(config.optimization_seed)
+        # Set random seed if specified — must be passed to the sampler, not created and discarded
+        self._sampler = (
+            optuna.samplers.TPESampler(seed=config.optimization_seed)
+            if config.optimization_seed is not None
+            else optuna.samplers.TPESampler()
+        )
 
     def _get_val_sample(self):
         """
@@ -108,11 +136,13 @@ class HyperparameterOptimizer:
         """
         if self._val_images is None:
             logger.info(
-                "Loading cross-generator validation sample from "
+                "Loading cross-generator validation sample (limit=2000) from "
                 f"val_generators={global_config.val_generators} ..."
             )
+            # Cap at 2000 total images to avoid OOM. 
+            # 1000 AI / 1000 Real is plenty for a validation metric.
             self._val_images, self._val_labels = \
-                self.data_loader.create_val_sample()
+                self.data_loader.create_val_sample(sample_size=2000)
             logger.info(
                 f"Validation sample ready: {len(self._val_images)} images "
                 f"from {global_config.val_generators}"
@@ -248,11 +278,7 @@ class HyperparameterOptimizer:
             int(config.rules_per_individual_range[1])
         ))
         
-        ga_config['max_possible_rules'] = int(trial.suggest_int(
-            'max_possible_rules', 
-            int(config.max_possible_rules_range[0]), 
-            int(config.max_possible_rules_range[1])
-        ))
+        ga_config['max_possible_rules'] = int(config.max_possible_rules_range[1])
         
         ga_config['crossover_prob'] = float(trial.suggest_float(
             'crossover_prob', 
@@ -312,15 +338,45 @@ class HyperparameterOptimizer:
             if config.verbosity >= 2:
                 logger.info(f"Trial {trial.number}: Testing feature weights: {feature_weights}")
             
-            # Run GA with updated weights (features are already precomputed!)
-            results = self.genetic_optimizer.run(run_id=f"fw_trial_{trial.number}")
-            fitness = results['best_fitness']
-            
-            # Report intermediate result for pruning
-            if config.enable_pruning:
-                trial.report(fitness, 0)
+            # --- BLENDED PRUNING CALLBACK ---
+            def pruning_callback(gen_num, best_ind):
+                if not config.enable_pruning or gen_num < config.pruning_warmup_steps:
+                    return
+                if gen_num % config.pruning_interval != 0:
+                    return
+                
+                # Evaluate on probe and blend
+                t_fit = best_ind.fitness.values[0]
+                p_fit = self.genetic_optimizer.eval_on_probe(best_ind)
+                blended = 0.7 * t_fit + 0.3 * p_fit
+                
+                trial.report(blended, gen_num)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
+            # -------------------------------
+
+            # Clear history to avoid memory accumulation across trials
+            self.genetic_optimizer.all_run_histories.clear()
+            
+            # Run GA with updated weights (features are already precomputed!)
+            results = self.genetic_optimizer.run(
+                run_id=f"fw_trial_{trial.number}",
+                on_generation_callback=pruning_callback
+            )
+            
+            train_fitness = results['best_fitness']
+            best_ind      = results['best_individual']
+            
+            # Final blended objective calculation
+            probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind)
+            fitness = 0.7 * train_fitness + 0.3 * probe_fitness
+            
+            if config.verbosity >= 1:
+                logger.info(
+                    f"Trial {trial.number}: train={train_fitness:.4f}  "
+                    f"probe={probe_fitness:.4f}  blended={fitness:.4f}"
+                )
+            # -----------------------------------------------------------
             
             # Early stopping for very poor performance
             if fitness < config.min_fitness_threshold:
@@ -329,14 +385,20 @@ class HyperparameterOptimizer:
             # Sanitize fitness to avoid SQLite issues with NaN/Inf
             fitness = float(np.nan_to_num(fitness, nan=-1.0, posinf=-1.0, neginf=-1.0))
             
-            if config.verbosity >= 1:
-                logger.info(f"Trial {trial.number}: Fitness = {fitness:.4f}")
-            
             # Update internal best for tracking
             if fitness > self.best_fitness:
                 self.best_fitness = fitness
                 self.best_feature_weights = feature_weights
-                self.best_individual = results['best_individual']
+                self.best_individual = best_ind
+
+            # Force garbage collection to free memory
+            import gc
+            del results
+            gc.collect()
+            
+            # Clear TensorFlow session to free GPU/RAM
+            import tensorflow as tf
+            tf.keras.backend.clear_session()
 
             return fitness
             
@@ -377,15 +439,30 @@ class HyperparameterOptimizer:
             if config.verbosity >= 2:
                 logger.info(f"Trial {trial.number}: Testing GA config: {ga_params}")
             
+            # Clear history to avoid memory accumulation across trials
+            self.genetic_optimizer.all_run_histories.clear()
+            
             # Run GA with updated configuration (features are already precomputed!)
             results = self.genetic_optimizer.run(run_id=f"ga_trial_{trial.number}")
-            fitness = results['best_fitness']
+            train_fitness = results['best_fitness']
             
-            # Report intermediate results for pruning
+            # Calculate probe fitness and blend (same as Phase 1)
+            probe_fitness = self.genetic_optimizer.eval_on_probe(results['best_individual'])
+            fitness = 0.7 * train_fitness + 0.3 * probe_fitness
+            
+            if config.verbosity >= 1:
+                logger.info(
+                    f"Trial {trial.number}: train={train_fitness:.4f}  "
+                    f"probe={probe_fitness:.4f}  blended={fitness:.4f}"
+                )
+            
+            # Report blended intermediate results for pruning (same as Phase 1)
             if config.enable_pruning and 'history' in results:
+                best_probe_fit = self.genetic_optimizer.eval_on_probe(results['best_individual'])
                 for i, gen_data in enumerate(results['history']):
                     if i >= config.pruning_warmup_steps and i % config.pruning_interval == 0:
-                        trial.report(gen_data['max_fitness'], i)
+                        blended = 0.7 * gen_data['max_fitness'] + 0.3 * best_probe_fit
+                        trial.report(blended, i)
                         if trial.should_prune():
                             raise optuna.TrialPruned()
             
@@ -404,6 +481,15 @@ class HyperparameterOptimizer:
                 self.best_fitness = fitness
                 self.best_ga_config = ga_params
                 self.best_individual = results['best_individual']
+
+            # Force garbage collection to free memory
+            import gc
+            del results
+            gc.collect()
+            
+            # Clear TensorFlow session to free GPU/RAM
+            import tensorflow as tf
+            tf.keras.backend.clear_session()
 
             return fitness
             
@@ -433,6 +519,7 @@ class HyperparameterOptimizer:
             study_name=config.feature_weight_study_name,
             storage=storage,
             load_if_exists=True,
+            sampler=self._sampler,
             pruner=optuna.pruners.MedianPruner() if config.enable_pruning else None
         )
         study = self.fw_study
@@ -446,9 +533,11 @@ class HyperparameterOptimizer:
         )
         end_time = time.time()
         
-        # Get best results
+        # Reconstruct best weights from stored trial params (deterministic — no re-sampling)
         best_trial = study.best_trial
-        best_weights = self.suggest_feature_weights(best_trial)
+        raw_weights = {feat: best_trial.params[f"weight_{feat}"]
+                       for feat in config.feature_weight_ranges}
+        best_weights = self.normalize_weights(raw_weights)
         
         logger.info(f"Feature weight optimization completed in {end_time - start_time:.2f} seconds")
         logger.info(f"Best fitness: {best_trial.value:.4f}")
@@ -501,6 +590,7 @@ class HyperparameterOptimizer:
             study_name=config.ga_config_study_name,
             storage=storage,
             load_if_exists=True,
+            sampler=self._sampler,
             pruner=optuna.pruners.MedianPruner() if config.enable_pruning else None
         )
         study = self.ga_study
@@ -514,9 +604,19 @@ class HyperparameterOptimizer:
         )
         end_time = time.time()
         
-        # Get best results
+        # Reconstruct best GA config from stored trial params (deterministic — no re-sampling)
         best_trial = study.best_trial
-        best_ga_config = self.suggest_ga_config(best_trial)
+        best_ga_config = {
+            'population_size':      best_trial.params['population_size'],
+            'n_generations':        best_trial.params['n_generations'],
+            'rules_per_individual': best_trial.params['rules_per_individual'],
+            'max_possible_rules':   max(best_trial.params['max_possible_rules'],
+                                        best_trial.params['rules_per_individual']),
+            'crossover_prob':       best_trial.params['crossover_prob'],
+            'mutation_prob':        best_trial.params['mutation_prob'],
+            'tournament_size':      best_trial.params['tournament_size'],
+            'num_elites':           best_trial.params['num_elites'],
+        }
         
         logger.info(f"GA config optimization completed in {end_time - start_time:.2f} seconds")
         logger.info(f"Best fitness: {best_trial.value:.4f}")
@@ -562,25 +662,39 @@ class HyperparameterOptimizer:
             logger.error(f"Failed to save {filename}: {str(e)}")
     
     
-    def run_optimization(self) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    def run_optimization(self, phase: str = 'all') -> Tuple[Dict[str, float], Dict[str, Any]]:
         """
-        Run the complete optimization process.
+        Run the optimization process.
+        
+        Args:
+            phase: 'all', 'weights', or 'ga'
         
         Returns:
             Tuple of (best_feature_weights, best_ga_config)
         """
-        logger.info("Starting hyperparameter optimization...")
-        logger.info(f"Total trials: {config.feature_weight_trials + config.ga_config_trials}")
+        logger.info(f"Starting hyperparameter optimization (phase: {phase})...")
+        
+        trials_str = ""
+        if phase in ['all', 'weights']:
+            trials_str += f"Weights: {config.feature_weight_trials} "
+        if phase in ['all', 'ga']:
+            trials_str += f"GA: {config.ga_config_trials}"
+        logger.info(f"Total trials to run: {trials_str}")
         logger.info("EFFICIENCY BOOST: Using single GA instance with precomputed features!")
         
         start_time = time.time()
         
+        best_weights = None
+        best_ga_config = None
+        
         try:
             # Phase 1: Optimize feature weights
-            best_weights = self.optimize_feature_weights()
+            if phase in ['all', 'weights']:
+                best_weights = self.optimize_feature_weights()
             
             # Phase 2: Optimize GA configuration
-            best_ga_config = self.optimize_ga_config()
+            if phase in ['all', 'ga']:
+                best_ga_config = self.optimize_ga_config()
             
             end_time = time.time()
             total_time = end_time - start_time
@@ -608,15 +722,27 @@ class HyperparameterOptimizer:
 
 def main():
     """Main function to run the hyperparameter optimization."""
+    parser = argparse.ArgumentParser(description="Run hyperparameter optimization for the genetic algorithm.")
+    parser.add_argument(
+        '--phase', 
+        type=str, 
+        choices=['all', 'weights', 'ga'], 
+        default='all',
+        help="Optimization phase to run: 'weights' (Phase 1), 'ga' (Phase 2), or 'all' (both)."
+    )
+    args = parser.parse_args()
+    
     try:
         optimizer = HyperparameterOptimizer()
-        best_weights, best_ga_config = optimizer.run_optimization()
+        best_weights, best_ga_config = optimizer.run_optimization(phase=args.phase)
         
         print("\n" + "="*60)
         print("FINAL RESULTS")
         print("="*60)
-        print(f"Best Feature Weights: {best_weights}")
-        print(f"Best GA Configuration: {best_ga_config}")
+        if best_weights is not None:
+            print(f"Best Feature Weights: {best_weights}")
+        if best_ga_config is not None:
+            print(f"Best GA Configuration: {best_ga_config}")
         print(f"Best Fitness Achieved: {optimizer.best_fitness:.4f}")
         
     except KeyboardInterrupt:

@@ -1,10 +1,12 @@
 {
-  "population_size": 50,
-  "n_generations": 50,
-  "rules_per_individual": 8,
-  "max_possible_rules": 20,
-  "crossover_prob": 0.7,
-  "mutation_prob": 0.2,
+  "population_size": 142,
+  "n_generations": 241,
+  "rules_per_individual": 10,
+  "max_possible_rules": 50,
+  "crossover_prob": 0.6897987726295555,
+  "mutation_prob": 0.32340279606636546,
   "tournament_size": 3,
-  "num_elites": 2
+  "num_elites": 1,
+  "random_seed": 42,
+  "verbose": false
 }

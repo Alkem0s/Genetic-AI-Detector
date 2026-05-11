@@ -2,7 +2,7 @@
 import tensorflow as tf
 import metrics
 
-@tf.function
+@tf.function(reduce_retracing=True)
 def generate_dynamic_mask(patch_features, n_patches_h, n_patches_w, rule_tensor):
     """
     Generate a binary mask for patches based on dynamic rules.
@@ -85,9 +85,6 @@ def calculate_connectivity(patch_mask):
     patch_mask = tf.cast(patch_mask, tf.float32)
     total_selected = tf.reduce_sum(patch_mask)
     
-    if tf.equal(total_selected, 0.0):
-        return 0.0
-    
     # Use convolution to count neighbors
     kernel = tf.constant([
         [0., 1., 0.],
@@ -103,19 +100,13 @@ def calculate_connectivity(patch_mask):
     valid_neighbor_count = patch_mask * neighbor_count
     total_connections = tf.reduce_sum(valid_neighbor_count)
     
-    # Get dimensions
-    shape = tf.shape(patch_mask)
-    n_patches_h = tf.cast(shape[0], tf.float32)
-    n_patches_w = tf.cast(shape[1], tf.float32)
-    
-    # Calculate maximum possible connections with boundary adjustment
-    max_connections = total_selected * 4.0 - 2.0 * (n_patches_h + n_patches_w - 2.0)
-    
-    # Ensure non-negative before division
-    max_connections = tf.maximum(max_connections, total_selected * 0.1)
+    # Each patch has max 4 neighbors; total_connections counts both directions.
+    # connectivity = total_connections / (total_selected * 4) is strictly in [0, 1].
+    # Use tf.cond (NOT Python if) so the guard executes at graph runtime.
+    max_connections = total_selected * 4.0
     
     connectivity = tf.cond(
-        max_connections > 0,
+        total_selected > 0,
         lambda: total_connections / max_connections,
         lambda: 0.0
     )
@@ -241,39 +232,63 @@ def compute_fitness_score(image_size,
     
     # Calculate efficiency and other scores
     total_active_patches = tf.reduce_sum(active_patches_per_image)
-    avg_patch_selection_ratio = tf.cast(total_active_patches, tf.float32) / tf.cast(num_samples * n_patches, tf.float32)
+    avg_active_ratio = tf.cast(total_active_patches, tf.float32) / tf.cast(num_samples * n_patches, tf.float32)
     
-    efficiency_score = tf.case([
-        (avg_patch_selection_ratio < 0.3, lambda: 1.0),
-        (avg_patch_selection_ratio < 0.5, lambda: 1.0 - (avg_patch_selection_ratio - 0.3) * 2)
-    ], default=lambda: 0.6 - (avg_patch_selection_ratio - 0.5) * 1.2)
+    # --- QUALITY METRICS (Efficiency, Simplicity, Connectivity) ---
     
-    simplicity_score = 1.0 - (tf.cast(individual_len, tf.float32) / tf.cast(max_possible_rules, tf.float32))
+    # Efficiency score (Targeted Coverage)
+    # We want around 10-30% of the image selected. 
+    # CRITICAL: We must penalise 0% coverage (Lazy GA) and 100% coverage (Greedy GA).
+    target_coverage = 0.2
+    # Use a Gaussian-like penalty centered at target_coverage
+    # Peak is 1.0 at 0.2, drops toward 0 at the extremes.
+    efficiency_score = tf.exp(-tf.square(avg_active_ratio - target_coverage) / 0.05)
+    
+    # Add a hard floor: if coverage is extremely low (<1%), kill the efficiency score.
+    efficiency_score = tf.where(avg_active_ratio < 0.01, 0.0, efficiency_score)
+    
+    # Connectivity score (measures how grouped the patches are)
     connectivity_score = tf.reduce_mean(connectivity_scores)
     
-    # Calculate final fitness
-    fitness = (
-        balanced_accuracy * weight_balanced_acc +
-        f1 * weight_f1 +
-        efficiency_score * weight_efficiency +
-        connectivity_score * weight_connectivity +
-        simplicity_score * weight_simplicity
-    )
+    # Simplicity score (penalty for having too many rules)
+    # We want to encourage simpler, more generalisable rule sets.
+    simplicity_score = 1.0 - (tf.cast(individual_len, tf.float32) / tf.cast(max_possible_rules, tf.float32))
+    
+    # --- TOTAL FITNESS CALCULATION ---
+    # Combine everything using config weights
+    fitness = (balanced_accuracy * weight_balanced_acc + 
+               f1 * weight_f1 + 
+               efficiency_score * weight_efficiency + 
+               connectivity_score * weight_connectivity + 
+               simplicity_score * weight_simplicity)
+    
+    # --- EMPTY MASK PENALTY ---
+    # If the GA fails to select ANY patches for an image, it's effectively "guessing".
+    # We penalise the fitness based on the % of images with empty masks.
+    empty_masks = tf.reduce_sum(tf.cast(tf.equal(active_patches_per_image, 0), tf.float32))
+    num_samples_f = tf.cast(num_samples, tf.float32)
+    empty_mask_ratio = empty_masks / num_samples_f
+    # Subtract up to 0.5 from fitness if all masks are empty
+    fitness = fitness - (empty_mask_ratio * 0.5)
+    
+    # Clip fitness to [0, 1] range as a final safety measure
+    fitness = tf.clip_by_value(fitness, 0.0, 1.0)
     
     # Debug information
     def print_debug():
         tf.print("=== Fitness Debug ===")
         tf.print("Scores mean/std:", score_mean, score_std)
         tf.print("Threshold:", threshold)
-        tf.print("Predictions:", tf.reduce_sum(tf.cast(predictions, tf.float32)), "/", num_samples)
+        tf.print("Predictions (AI/Total):", tf.reduce_sum(tf.cast(predictions, tf.float32)), "/", num_samples)
         tf.print("Balanced Acc:", balanced_accuracy)
-        tf.print("F1:", f1)
+        tf.print("F1 Score:    ", f1)
         tf.print("Efficiency score:", efficiency_score)
         tf.print("Simplicity score:", simplicity_score)
         tf.print("Connectivity score:", connectivity_score)
-        tf.print("Fitness:", fitness)
+        tf.print("TOTAL FITNESS:     ", fitness)
         tf.print("==================")
         return tf.constant(0)
+
 
     tf.cond(verbose, print_debug, lambda: tf.constant(0))
     
