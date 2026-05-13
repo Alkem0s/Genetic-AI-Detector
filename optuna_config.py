@@ -36,7 +36,7 @@ use_proxy_ga_config = True
 proxy_ga_config = {
     "population_size": 100,
     "n_generations": 120,
-    "rules_per_individual": 12,
+    "rules_per_individual": 18,
     "max_possible_rules": 50,
     "crossover_prob": 0.7,
     "mutation_prob": 0.25,
@@ -73,16 +73,16 @@ feature_weight_ranges = {
 # =============================================================================
 
 # Population and generation settings
-population_size_range = (120, 180)
+population_size_range = (100, 180)
 n_generations_range = (100, 350)
 
 # Rule configuration
-rules_per_individual_range = (5, 15)
+rules_per_individual_range = (10, 25)
 max_possible_rules_range = (15, 50)
 
 # Genetic operators
-crossover_prob_range = (0.6, 0.75)
-mutation_prob_range = (0.2, 0.45)
+crossover_prob_range = (0.5, 0.75)
+mutation_prob_range = (0.2, 0.5)
 tournament_size_range = (2, 8)
 num_elites_range = (1, 5)
 inactive_weight_penalty_range = (0.0, 0.5)
@@ -98,7 +98,9 @@ pruning_warmup_steps = 50  # Number of generations before pruning can occur
 pruning_interval = 5      # Check for pruning every N generations
 
 # Minimum fitness threshold for early stopping
-min_fitness_threshold = 0.1  # Stop trial if fitness is too low
+# Set to 0 initially — the divergence score starts near 0 for random rule sets
+# and the scale differs from the old balanced_accuracy + f1 scheme.
+min_fitness_threshold = 0.0
 
 # =============================================================================
 # OUTPUT CONFIGURATION  

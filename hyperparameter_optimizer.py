@@ -62,7 +62,9 @@ class HyperparameterOptimizer:
         # 1. Load Strict Source-of-Truth JSONs (Optimization Baseline)
         try:
             with open(config.feature_weights_output_file, 'r') as f:
-                self.json_weights = json.load(f)
+                raw_weights = json.load(f)
+                # Filter out metadata fields like '__fitness__'
+                self.json_weights = {k: v for k, v in raw_weights.items() if not k.startswith("__")}
             with open(config.ga_config_output_file, 'r') as f:
                 self.json_ga_config = json.load(f)
                 

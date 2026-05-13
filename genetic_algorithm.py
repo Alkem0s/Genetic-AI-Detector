@@ -5,7 +5,8 @@ import random
 import time
 from deap import base, creator, tools
 from feature_extractor import FeatureExtractor
-from fitness_evaluation import generate_dynamic_mask, evaluate_ga_individual, compute_fitness_score
+from fitness_evaluation import (generate_dynamic_mask, evaluate_ga_individual,
+                               evaluate_ga_population)
 import logging
 import json
 import tensorflow as tf
@@ -68,11 +69,10 @@ class GeneticFeatureOptimizer:
 
         # Pre-calculate constants for evaluation
         self.image_size_tf = tf.constant(config.image_size, dtype=tf.float32)
-        self.weight_f1 = tf.constant(config.fitness_weights.get('f1', 0.35), dtype=tf.float32)
-        self.weight_bal_acc = tf.constant(config.fitness_weights.get('balanced_accuracy', 0.35), dtype=tf.float32)
-        self.weight_eff = tf.constant(config.fitness_weights.get('efficiency_score', 0.1), dtype=tf.float32)
-        self.weight_conn = tf.constant(config.fitness_weights.get('connectivity_score', 0.1), dtype=tf.float32)
-        self.weight_simp = tf.constant(config.fitness_weights.get('simplicity_score', 0.1), dtype=tf.float32)
+        self.weight_div  = tf.constant(config.fitness_weights.get('divergence_score', 0.70), dtype=tf.float32)
+        self.weight_eff  = tf.constant(config.fitness_weights.get('efficiency_score', 0.15), dtype=tf.float32)
+        self.weight_conn = tf.constant(config.fitness_weights.get('connectivity_score', 0.10), dtype=tf.float32)
+        self.weight_simp = tf.constant(config.fitness_weights.get('simplicity_score', 0.05), dtype=tf.float32)
         self.verbose_tf = tf.constant(bool(config.verbose), dtype=tf.bool)
         penalty_val = getattr(config, 'inactive_weight_penalty', 0.0)
         self.inactive_penalty_tf = tf.constant(float(penalty_val), dtype=tf.float32)
@@ -288,36 +288,34 @@ class GeneticFeatureOptimizer:
                 "Probe features not precomputed. Call precompute_probe_features() first."
             )
 
-        fitness = compute_fitness_score(
-            self.image_size_tf,
-            self.weight_bal_acc, self.weight_f1,
-            self.weight_eff, self.weight_conn, self.weight_simp,
-            tf.constant(False),          # verbose=False — no debug spam per trial
-            self.probe_features, self.probe_labels,
-            self.n_patches_h, self.n_patches_w,
-            self.feature_weights, self.n_patches_tf,
-            individual.num_active_rules, self.max_rules_tf,
-            individual.rules_tensor,
+        fitness = evaluate_ga_individual(
+            self.probe_features, self.probe_labels, self.feature_weights,
+            individual.rules_tensor, self.n_patches_h, self.n_patches_w,
+            self.config.fitness_weights, self.max_rules_tf
         )
-        return float(fitness)
+        return float(fitness[0])
 
     def get_unpenalized_fitness(self, individual):
         """
         Calculate the true (unpenalized) fitness of an individual on the training set.
         """
-        fitness = compute_fitness_score(
-            self.image_size_tf,
-            self.weight_bal_acc, self.weight_f1,
-            self.weight_eff, self.weight_conn, self.weight_simp,
-            tf.constant(False),
-            self.precomputed_features, self.eval_labels,
-            self.n_patches_h, self.n_patches_w,
-            self.feature_weights, self.n_patches_tf,
-            individual.num_active_rules, self.max_rules_tf,
-            individual.rules_tensor,
-            tf.constant(0.0, dtype=tf.float32)
+        fitness = evaluate_ga_individual(
+            self.precomputed_features, self.eval_labels, self.feature_weights,
+            individual.rules_tensor, self.n_patches_h, self.n_patches_w,
+            self.config.fitness_weights, self.max_rules_tf
         )
-        return float(fitness)
+        return float(fitness[0])
+
+    def get_fitness_breakdown(self, individual):
+        """
+        Calculate the fitness components of an individual on the training set.
+        """
+        fitness, div, eff, conn, simp = evaluate_ga_individual(
+            self.precomputed_features, self.eval_labels, self.feature_weights,
+            individual.rules_tensor, self.n_patches_h, self.n_patches_w,
+            self.config.fitness_weights, self.max_rules_tf
+        )
+        return float(fitness), float(div), float(eff), float(conn), float(simp)
 
     def _tensor_rules_similar(self, ind1, ind2):
         """
@@ -478,13 +476,15 @@ class GeneticFeatureOptimizer:
         from fitness_evaluation import evaluate_ga_population
         
         # Call the batch evaluation function
-        batch_fitnesses = evaluate_ga_population(
+        fitness_tuples = evaluate_ga_population(
+            self.precomputed_features, self.eval_labels, self.feature_weights,
             rules_tensors, num_active_rules_tensors,
-            self.image_size_tf, self.weight_bal_acc, self.weight_f1, self.weight_eff, self.weight_conn, self.weight_simp,
-            self.verbose_tf, self.precomputed_features, self.eval_labels,
-            self.n_patches_h, self.n_patches_w, self.feature_weights,
-            self.n_patches_tf, self.max_rules_tf, self.inactive_penalty_tf
+            self.n_patches_h, self.n_patches_w, self.config.fitness_weights,
+            self.max_rules_tf
         )
+        
+        # We only need the total fitness (first element of tuple) for the GA loop
+        batch_fitnesses = fitness_tuples[0]
         
         # Convert to list of tuples for DEAP
         batch_fitness_list = [(float(f),) for f in batch_fitnesses.numpy()]
@@ -769,19 +769,26 @@ class GeneticFeatureOptimizer:
             hof.update(pop)
             record = stats.compile(pop)
             
+            # Calculate breakdown for the best individual (HOF[0])
+            best_true_fit, div, eff, conn, simp = self.get_fitness_breakdown(hof[0])
+            
             # Update progress bar description with stats
-            pbar.set_postfix({'max': f"{record['max']:.4f}", 'avg': f"{record['avg']:.4f}"})
+            pbar.set_postfix({'max': f"{record['max']:.4f}", 'div': f"{div:.4f}"})
             
             # Only log generation stats at DEBUG level to keep the console clean during HPO
             logger.debug(f"  [{run_id}] Gen {gen + 1}/{self.n_generations}: Max={record['max']:.4f}, Avg={record['avg']:.4f}")
+            logger.debug(f"  [{run_id}] Gen {gen + 1}: Best True Fit={best_true_fit:.4f} (Div={div:.4f}, Eff={eff:.4f}, Conn={conn:.4f}, Simp={simp:.4f})")
             
-            best_true_fit = self.get_unpenalized_fitness(hof[0])
             self.current_run_history.append({
                 'generation': gen + 1,
                 'max_fitness': record['max'],
                 'avg_fitness': record['avg'],
                 'std_fitness': record['std'],
                 'max_true_fitness': best_true_fit,
+                'div_score': div,
+                'eff_score': eff,
+                'conn_score': conn,
+                'simp_score': simp,
                 'generation_time': gen_end_time - gen_start_time
             })
 
@@ -836,53 +843,35 @@ class GeneticFeatureOptimizer:
             feature_name = self.feature_names[feature_idx.numpy()]
             logger.info(f"Rule {i+1}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
 
-        # Calculate final statistics using precomputed features
-        sample_size = min(20, tf.shape(self.precomputed_features)[0].numpy())
-        sample_features = self.precomputed_features[:sample_size]
-        logger.debug(f"Calculating average mask statistics on {sample_size} sample images.")
-
-        total_active = tf.constant(0, dtype=tf.float32)
-
-        mask_gen_start_time = time.time()
-        for j in range(sample_size):
-            patch_features = sample_features[j]
-            mask = generate_dynamic_mask(patch_features, self.n_patches_h, self.n_patches_w, best_ind.rules_tensor)
-            if not isinstance(mask, tf.Tensor):
-                mask = tf.convert_to_tensor(mask, dtype=tf.float32)
-            else:
-                mask = tf.cast(mask, tf.float32)
-            total_active += tf.reduce_sum(mask)
-        mask_gen_end_time = time.time()
-        logger.debug(f"Mask generation for final statistics took {mask_gen_end_time - mask_gen_start_time:.4f} seconds.")
-
-        avg_active = total_active / tf.cast(sample_size, tf.float32)
-        avg_percentage = avg_active / (tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)) * 100
-
-        # --- Mask sparsity statistics over the *full* evaluation sample ---
-        # (patch selection ratio = fraction of patches selected per image)
-        total_patches_per_image = tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)
+        # Calculate final statistics using precomputed features (fully vectorized)
         full_sample_size = min(
             tf.shape(self.precomputed_features)[0].numpy(),
             self.eval_sample_size,
         )
         full_sample_features = self.precomputed_features[:full_sample_size]
+        
         # Vectorized mask generation and sparsity calculation
-        def get_mask(feat):
-            return generate_dynamic_mask(feat, self.n_patches_h, self.n_patches_w, best_ind.rules_tensor)
-            
-        masks = tf.vectorized_map(get_mask, full_sample_features)
+        masks = generate_dynamic_mask(full_sample_features, best_ind.rules_tensor)
         total_active_patches = tf.reduce_sum(tf.cast(masks, tf.float32), axis=[1, 2])
+        total_patches_per_image = tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)
         sparsity_ratios_tensor = total_active_patches / total_patches_per_image
         sparsity_ratios_np = sparsity_ratios_tensor.numpy()
+        
         mask_sparsity_mean = float(np.mean(sparsity_ratios_np))
         mask_sparsity_std  = float(np.std(sparsity_ratios_np))
+        avg_active = mask_sparsity_mean * total_patches_per_image.numpy()
+        avg_percentage = mask_sparsity_mean * 100.0
 
         logger.info(
             f"[{run_id}] Mask sparsity: mean={mask_sparsity_mean:.4f}, "
             f"std={mask_sparsity_std:.4f} (over {full_sample_size} images)"
         )
 
-        logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
+        # Get components for the final best individual
+        best_true_fit, div, eff, conn, simp = self.get_fitness_breakdown(best_ind)
+        
+        logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f} (True Fit={best_true_fit:.4f})")
+        logger.info(f"Best Ind Components: Div={div:.4f}, Eff={eff:.4f}, Conn={conn:.4f}, Simp={simp:.4f}")
         logger.info(f"Rules: {best_ind.num_active_rules}")
         logger.info(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
 
@@ -898,8 +887,8 @@ class GeneticFeatureOptimizer:
             'best_rules_tensor': best_ind.rules_tensor.numpy().tolist(),
             'best_feature_importance': self.get_feature_importance(best_ind),
             'rule_count': best_ind.num_active_rules,
-            'avg_active_patches': avg_active.numpy(),
-            'avg_active_percentage': avg_percentage.numpy(),
+            'avg_active_patches': float(avg_active),
+            'avg_active_percentage': float(avg_percentage),
             # Sparsity fields used by RandomMaskGenerator
             'mask_sparsity_mean': mask_sparsity_mean,
             'mask_sparsity_std':  mask_sparsity_std,
@@ -937,13 +926,12 @@ class GeneticFeatureOptimizer:
         self._precompute_features()
         
         # 2. Evaluate the individual on these features
-        fitness = compute_fitness_score(
-            self.image_size_tf, self.weight_bal_acc, self.weight_f1, self.weight_eff, self.weight_conn, self.weight_simp,
-            tf.constant(True), # Verbose for validation
-            self.precomputed_features, self.labels,
-            self.n_patches_h, self.n_patches_w, self.feature_weights, self.n_patches_tf,
-            individual.num_active_rules, self.max_rules_tf, individual.rules_tensor
+        fitness_vals = evaluate_ga_individual(
+            self.precomputed_features, self.labels, self.feature_weights,
+            individual.rules_tensor, self.n_patches_h, self.n_patches_w,
+            self.config.fitness_weights, self.max_rules_tf
         )
+        fitness = fitness_vals[0]
         
         # 3. Restore training data
         self.images = old_images

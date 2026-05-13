@@ -479,9 +479,13 @@ class ModelWrapper:
             return dataset
         return self.pipeline._prepare_dataset_on_the_fly(dataset)
 
-    def train(self, train_dataset, validation_dataset=None, model_path='ai_detector_model.h5', precompute_features=True):
+    def train(self, train_dataset, validation_dataset=None, model_path='ai_detector_model.h5', precompute_features=None):
         """Training method with index-based feature caching"""
         logger.info("Starting model wrapper training.")
+        
+        # Resolve precompute_features from argument > config > default
+        if precompute_features is None:
+            precompute_features = getattr(config, 'use_feature_cache', True)
         
         if self.use_features and precompute_features:
             # Precompute features
@@ -494,6 +498,7 @@ class ModelWrapper:
             prepared_val = self.prepare_dataset(validation_dataset, "val") if validation_dataset else None
         else:
             # Fallback to on-the-fly
+            logger.info("Using on-the-fly feature extraction (no disk cache).")
             prepared_train = self.prepare_dataset(train_dataset)
             prepared_val = self.prepare_dataset(validation_dataset) if validation_dataset else None
         
@@ -507,10 +512,16 @@ class ModelWrapper:
 
     def evaluate(self, test_dataset):
         logger.info("Evaluating model wrapper on test dataset.")
+        use_cache = getattr(config, 'use_feature_cache', True)
+        
         if self.use_features:
-            logger.info("Precomputing and preparing test dataset with genetic features.")
-            self.precompute_features(test_dataset, "test")
-            prepared_test_ds = self.prepare_dataset(test_dataset, "test")
+            if use_cache:
+                logger.info("Precomputing and preparing test dataset with genetic features.")
+                self.precompute_features(test_dataset, "test")
+                prepared_test_ds = self.prepare_dataset(test_dataset, "test")
+            else:
+                logger.info("Preparing test dataset with on-the-fly genetic features.")
+                prepared_test_ds = self.prepare_dataset(test_dataset)
         else:
             logger.info("Evaluating without genetic features.")
             prepared_test_ds = test_dataset
@@ -614,4 +625,4 @@ class ModelWrapper:
         model_wrapper.use_features = config_data.get('use_features', model_wrapper.model.use_features)
         
         logger.info(f"Model state loaded from: {model_path}, {config_path}")
-        return model_wrapper
+        return model_wrapper

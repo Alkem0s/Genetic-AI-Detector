@@ -259,10 +259,11 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
                 lambda: tf.expand_dims(tf.expand_dims(mag_no_dc, 0), -1),
                 lambda: tf.expand_dims(mag_no_dc, -1)
             )
-            # Local max over 5x5 neighbourhood
-            local_max  = tf.nn.max_pool2d(mag_4d,  ksize=5, strides=1, padding='SAME')
-            # Local mean via avg_pool2d
-            local_mean = tf.nn.avg_pool2d(mag_4d,  ksize=5, strides=1, padding='SAME')
+            # Local max over 3x3 neighbourhood
+            local_max  = tf.nn.max_pool2d(mag_4d,  ksize=3, strides=1, padding='SAME')
+            # Local mean via Conv2D (more robust than AvgPool2D on small tensors in some cuDNN versions)
+            mean_kernel = tf.ones((3, 3, 1, 1), dtype=tf.float32) / 9.0
+            local_mean  = tf.nn.conv2d(mag_4d, mean_kernel, strides=[1, 1, 1, 1], padding='SAME')
 
             # A pixel is a peak if it equals the local max and is above the local mean
             is_peak = tf.logical_and(

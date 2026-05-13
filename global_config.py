@@ -45,18 +45,23 @@ generator_test  = ["sdv4", "vqdm"]
 
 # --- Unified Patch and Image Sizes ---
 image_size = 256
-patch_size = 16
+patch_size = 8
 scale_factor = 1.0
 
 # --- Genetic Algorithm Environment ---
 sample_size = 5000
 use_multiprocessing = True
+use_feature_cache = False
 
 # --- Fitness Weights ---
+# divergence_score replaces the old balanced_accuracy + f1 components.
+# The GA now rewards rule sets that maximise the statistical separation between
+# AI and Human patch-feature distributions (FDR + Bhattacharyya composite)
+# rather than performing linear classification.
+# Efficiency weight is increased to prevent degenerate all-patch / no-patch masks.
 fitness_weights = {
-    'balanced_accuracy': 0.425,
-    'f1': 0.425,
-    'efficiency_score': 0.05,
+    'divergence_score':   0.80,
+    'efficiency_score':   0.10,
     'connectivity_score': 0.05,
-    'simplicity_score': 0.05
+    'simplicity_score':   0.05,
 }
