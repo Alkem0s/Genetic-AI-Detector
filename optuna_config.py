@@ -94,7 +94,7 @@ inactive_weight_penalty_range = (0.0, 0.5)
 
 # Enable pruning for faster optimization
 enable_pruning = True
-pruning_warmup_steps = 25  # Number of generations before pruning can occur
+pruning_warmup_steps = 50  # Number of generations before pruning can occur
 pruning_interval = 5      # Check for pruning every N generations
 
 # Minimum fitness threshold for early stopping

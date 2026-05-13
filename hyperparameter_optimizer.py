@@ -369,7 +369,7 @@ class HyperparameterOptimizer:
                     return
                 
                 # Evaluate on probe and blend
-                t_fit = best_ind.fitness.values[0]
+                t_fit = self.genetic_optimizer.get_unpenalized_fitness(best_ind)
                 p_fit = self.genetic_optimizer.eval_on_probe(best_ind)
                 blended = 0.7 * t_fit + 0.3 * p_fit
                 
@@ -403,7 +403,7 @@ class HyperparameterOptimizer:
                     on_generation_callback=pruning_callback if run_idx == 0 else None
                 )
                 
-                train_fitness = results['best_fitness']
+                train_fitness = results['best_true_fitness']
                 best_ind = results['best_individual']
                 probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind)
                 
@@ -427,7 +427,7 @@ class HyperparameterOptimizer:
                             logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} < {config.min_fitness_threshold})")
                         raise optuna.TrialPruned()
                     
-                    if self.best_fitness > 0 and probe_fitness < self.best_fitness * 0.85:
+                    if self.best_fitness > 0 and run_fit < self.best_fitness * 0.85:
                         if config.verbosity >= 1:
                             logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} << best {self.best_fitness:.4f})")
                         raise optuna.TrialPruned()
@@ -521,7 +521,7 @@ class HyperparameterOptimizer:
                         
                 # Run GA with updated configuration
                 results = self.genetic_optimizer.run(run_id=f"ga_trial_{trial.number}_run_{run_idx}")
-                train_fitness = results['best_fitness']
+                train_fitness = results['best_true_fitness']
                 best_ind = results['best_individual']
                 probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind)
                 
@@ -547,7 +547,7 @@ class HyperparameterOptimizer:
                             if getattr(config, 'optimize_weight_penalty', False):
                                 rep_val = best_probe_fit
                             else:
-                                rep_val = 0.7 * gen_data['max_fitness'] + 0.3 * best_probe_fit
+                                rep_val = 0.7 * gen_data['max_true_fitness'] + 0.3 * best_probe_fit
                             trial.report(rep_val, i)
                             if trial.should_prune():
                                 raise optuna.TrialPruned()
@@ -563,7 +563,7 @@ class HyperparameterOptimizer:
                             logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} < {config.min_fitness_threshold})")
                         raise optuna.TrialPruned()
                     
-                    if self.best_fitness > 0 and probe_fitness < self.best_fitness * 0.85:
+                    if self.best_fitness > 0 and run_fit < self.best_fitness * 0.85:
                         if config.verbosity >= 1:
                             logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} << best {self.best_fitness:.4f})")
                         raise optuna.TrialPruned()

@@ -301,6 +301,24 @@ class GeneticFeatureOptimizer:
         )
         return float(fitness)
 
+    def get_unpenalized_fitness(self, individual):
+        """
+        Calculate the true (unpenalized) fitness of an individual on the training set.
+        """
+        fitness = compute_fitness_score(
+            self.image_size_tf,
+            self.weight_bal_acc, self.weight_f1,
+            self.weight_eff, self.weight_conn, self.weight_simp,
+            tf.constant(False),
+            self.precomputed_features, self.eval_labels,
+            self.n_patches_h, self.n_patches_w,
+            self.feature_weights, self.n_patches_tf,
+            individual.num_active_rules, self.max_rules_tf,
+            individual.rules_tensor,
+            tf.constant(0.0, dtype=tf.float32)
+        )
+        return float(fitness)
+
     def _tensor_rules_similar(self, ind1, ind2):
         """
         Custom similarity function for comparing tensor-based individuals.
@@ -757,11 +775,13 @@ class GeneticFeatureOptimizer:
             # Only log generation stats at DEBUG level to keep the console clean during HPO
             logger.debug(f"  [{run_id}] Gen {gen + 1}/{self.n_generations}: Max={record['max']:.4f}, Avg={record['avg']:.4f}")
             
+            best_true_fit = self.get_unpenalized_fitness(hof[0])
             self.current_run_history.append({
                 'generation': gen + 1,
                 'max_fitness': record['max'],
                 'avg_fitness': record['avg'],
                 'std_fitness': record['std'],
+                'max_true_fitness': best_true_fit,
                 'generation_time': gen_end_time - gen_start_time
             })
 
@@ -874,6 +894,7 @@ class GeneticFeatureOptimizer:
             'run_number': run_number,
             'best_individual': best_ind,
             'best_fitness': best_ind.fitness.values[0],
+            'best_true_fitness': self.get_unpenalized_fitness(best_ind),
             'best_rules_tensor': best_ind.rules_tensor.numpy().tolist(),
             'best_feature_importance': self.get_feature_importance(best_ind),
             'rule_count': best_ind.num_active_rules,
