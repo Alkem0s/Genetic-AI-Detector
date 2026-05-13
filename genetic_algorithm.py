@@ -9,6 +9,7 @@ from fitness_evaluation import generate_dynamic_mask, evaluate_ga_individual, co
 import logging
 import json
 import tensorflow as tf
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ class GeneticFeatureOptimizer:
         self.weight_conn = tf.constant(config.fitness_weights.get('connectivity_score', 0.1), dtype=tf.float32)
         self.weight_simp = tf.constant(config.fitness_weights.get('simplicity_score', 0.1), dtype=tf.float32)
         self.verbose_tf = tf.constant(bool(config.verbose), dtype=tf.bool)
+        penalty_val = getattr(config, 'inactive_weight_penalty', 0.0)
+        self.inactive_penalty_tf = tf.constant(float(penalty_val), dtype=tf.float32)
         
         self.feature_weights = tf.convert_to_tensor(list(config.feature_weights.values()), dtype=tf.float32)
         self.feature_names = list(config.feature_weights.keys())
@@ -108,6 +111,17 @@ class GeneticFeatureOptimizer:
         self._precompute_features()
         
         logger.info("GeneticFeatureOptimizer initialization complete with precomputed features.")
+
+    def set_random_seed(self, seed):
+        """
+        Explicitly set random seeds for deterministic multi-run evaluations.
+        """
+        if seed is not None:
+            self.random_seed = seed
+            random.seed(seed)
+            np.random.seed(seed)
+            tf.random.set_seed(seed)
+            logger.info(f"Random seed set to {seed}")
 
     def _precompute_features(self):
         """
@@ -152,7 +166,8 @@ class GeneticFeatureOptimizer:
             logger.info(f"Feature extraction profiling started. Logging to {profile_dir}")
 
         all_batch_features = []
-        for i in range(0, num_samples, self.batch_size):
+        total_batches = (num_samples + self.batch_size - 1) // self.batch_size
+        for i in tqdm(range(0, num_samples, self.batch_size), desc="Extracting features", total=total_batches):
             batch_end = min(i + self.batch_size, num_samples)
             batch_images = sample_images[i:batch_end]
             
@@ -160,8 +175,6 @@ class GeneticFeatureOptimizer:
             with tf.profiler.experimental.Trace('batch_extraction', step_num=i):
                 batch_patch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
             all_batch_features.append(batch_patch_features)
-            
-            logger.info(f"Processed batch {i//self.batch_size + 1}/{(num_samples + self.batch_size - 1)//self.batch_size}")
             
         if started_profiler:
             tf.profiler.experimental.stop()
@@ -452,7 +465,7 @@ class GeneticFeatureOptimizer:
             self.image_size_tf, self.weight_bal_acc, self.weight_f1, self.weight_eff, self.weight_conn, self.weight_simp,
             self.verbose_tf, self.precomputed_features, self.eval_labels,
             self.n_patches_h, self.n_patches_w, self.feature_weights,
-            self.n_patches_tf, self.max_rules_tf
+            self.n_patches_tf, self.max_rules_tf, self.inactive_penalty_tf
         )
         
         # Convert to list of tuples for DEAP
@@ -721,7 +734,8 @@ class GeneticFeatureOptimizer:
 
         run_start_time = time.time()
 
-        for gen in range(self.n_generations):
+        pbar = tqdm(range(self.n_generations), desc=f"GA [{run_id}]")
+        for gen in pbar:
             gen_start_time = time.time()
             try:
                 fitnesses = self._evaluate_population(pop)
@@ -736,6 +750,9 @@ class GeneticFeatureOptimizer:
             
             hof.update(pop)
             record = stats.compile(pop)
+            
+            # Update progress bar description with stats
+            pbar.set_postfix({'max': f"{record['max']:.4f}", 'avg': f"{record['avg']:.4f}"})
             
             # Only log generation stats at DEBUG level to keep the console clean during HPO
             logger.debug(f"  [{run_id}] Gen {gen + 1}/{self.n_generations}: Max={record['max']:.4f}, Avg={record['avg']:.4f}")
@@ -788,7 +805,7 @@ class GeneticFeatureOptimizer:
 
         best_ind = hof[0]
 
-        logger.debug("Best rule set found:")
+        logger.info("Best rule set found:")
         active_rules = tf.boolean_mask(best_ind.rules_tensor, best_ind.rules_tensor[:, 0] >= 0)
         for i in range(tf.shape(active_rules)[0]):
             rule = active_rules[i]
@@ -797,7 +814,7 @@ class GeneticFeatureOptimizer:
             operator = ">" if tf.cast(rule[2], tf.int32) == 0 else "<"
             action = "include" if tf.cast(rule[3], tf.int32) == 1 else "exclude"
             feature_name = self.feature_names[feature_idx.numpy()]
-            logger.debug(f"Rule {i+1}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
+            logger.info(f"Rule {i+1}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
 
         # Calculate final statistics using precomputed features
         sample_size = min(20, tf.shape(self.precomputed_features)[0].numpy())
@@ -845,9 +862,9 @@ class GeneticFeatureOptimizer:
             f"std={mask_sparsity_std:.4f} (over {full_sample_size} images)"
         )
 
-        logger.debug(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
-        logger.debug(f"Rules: {best_ind.num_active_rules}")
-        logger.debug(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
+        logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f}")
+        logger.info(f"Rules: {best_ind.num_active_rules}")
+        logger.info(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
 
         self.history = self.current_run_history
 

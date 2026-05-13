@@ -49,14 +49,14 @@ patch_size = 16
 scale_factor = 1.0
 
 # --- Genetic Algorithm Environment ---
-sample_size = 10000
+sample_size = 5000
 use_multiprocessing = True
 
-# --- Fitness Weights (Fixed for now) ---
+# --- Fitness Weights ---
 fitness_weights = {
-    'balanced_accuracy': 0.35,
-    'f1': 0.35,
-    'efficiency_score': 0.1,
-    'connectivity_score': 0.1,
-    'simplicity_score': 0.1
+    'balanced_accuracy': 0.425,
+    'f1': 0.425,
+    'efficiency_score': 0.05,
+    'connectivity_score': 0.05,
+    'simplicity_score': 0.05
 }

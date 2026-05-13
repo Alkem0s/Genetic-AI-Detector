@@ -197,10 +197,9 @@ class FeaturePipeline:
 
         # Build one mask per image in the batch.
         # Use tf.map_fn instead of a python list comprehension so it traces correctly in graph mode.
-        batch_masks = tf.map_fn(
+        batch_masks = tf.vectorized_map(
             self._generate_mask,
-            patch_features,
-            fn_output_signature=tf.int8
+            patch_features
         )
 
         # (batch, n_patches_h, n_patches_w) → pixel masks

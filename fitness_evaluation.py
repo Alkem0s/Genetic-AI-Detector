@@ -189,7 +189,8 @@ def compute_fitness_score(image_size,
                           verbose,
                           precomputed_features, labels,
                           n_patches_h, n_patches_w, feature_weights, n_patches, 
-                          individual_len, max_possible_rules, individual_rule_tensor):
+                          individual_len, max_possible_rules, individual_rule_tensor,
+                          inactive_weight_penalty=tf.constant(0.0, dtype=tf.float32)):
     """
     Core fitness computation with batch processing.
     """
@@ -237,12 +238,16 @@ def compute_fitness_score(image_size,
     # --- QUALITY METRICS (Efficiency, Simplicity, Connectivity) ---
     
     # Efficiency score (Targeted Coverage)
-    # We want around 10-30% of the image selected. 
+    # We want around 10-40% of the image selected (plateau). 
     # CRITICAL: We must penalise 0% coverage (Lazy GA) and 100% coverage (Greedy GA).
-    target_coverage = 0.2
-    # Use a Gaussian-like penalty centered at target_coverage
-    # Peak is 1.0 at 0.2, drops toward 0 at the extremes.
-    efficiency_score = tf.exp(-tf.square(avg_active_ratio - target_coverage) / 0.05)
+    
+    # Distance to the plateau [0.1, 0.4]
+    dist_low = tf.maximum(0.1 - avg_active_ratio, 0.0)
+    dist_high = tf.maximum(avg_active_ratio - 0.4, 0.0)
+    dist = dist_low + dist_high
+    
+    # Gaussian penalty on the distance outside the plateau
+    efficiency_score = tf.exp(-tf.square(dist) / 0.02)
     
     # Add a hard floor: if coverage is extremely low (<1%), kill the efficiency score.
     efficiency_score = tf.where(avg_active_ratio < 0.01, 0.0, efficiency_score)
@@ -270,6 +275,21 @@ def compute_fitness_score(image_size,
     empty_mask_ratio = empty_masks / num_samples_f
     # Subtract up to 0.5 from fitness if all masks are empty
     fitness = fitness - (empty_mask_ratio * 0.5)
+    
+    # --- INACTIVE WEIGHT PENALTY ---
+    # Penalize assigning high weights to features that are not actively selected by rules
+    active_rule_mask = individual_rule_tensor[:, 0] >= 0
+    active_feature_indices = tf.boolean_mask(individual_rule_tensor[:, 0], active_rule_mask)
+    active_feature_indices = tf.cast(active_feature_indices, tf.int32)
+    
+    num_features_total = tf.shape(feature_weights_sliced)[0]
+    indices_col = tf.expand_dims(tf.range(num_features_total), axis=1)
+    active_features_mask = tf.reduce_any(tf.equal(indices_col, active_feature_indices), axis=1)
+        
+    inactive_features_mask = tf.logical_not(active_features_mask)
+    inactive_weights_sum = tf.reduce_sum(tf.boolean_mask(feature_weights_sliced, inactive_features_mask))
+    
+    fitness = fitness - (inactive_weights_sum * inactive_weight_penalty)
     
     # Clip fitness to [0, 1] range as a final safety measure
     fitness = tf.clip_by_value(fitness, 0.0, 1.0)
@@ -299,7 +319,8 @@ def compute_fitness_score(image_size,
 def evaluate_ga_population(rules_tensors, num_active_rules_tensors,
                             image_size_tf, weight_bal_acc, weight_f1, weight_eff, weight_conn, weight_simp,
                             verbose_tf, precomputed_features, labels, n_patches_h, n_patches_w,
-                            feature_weights, n_patches, max_possible_rules):
+                            feature_weights, n_patches, max_possible_rules,
+                            inactive_penalty_tf=tf.constant(0.0, dtype=tf.float32)):
     """
     Evaluate an entire population of individuals in parallel on the GPU.
     Uses nested vectorization to score all individuals across all images in one shot.
@@ -309,7 +330,7 @@ def evaluate_ga_population(rules_tensors, num_active_rules_tensors,
         return compute_fitness_score(
             image_size_tf, weight_bal_acc, weight_f1, weight_eff, weight_conn, weight_simp, verbose_tf,
             precomputed_features, labels, n_patches_h, n_patches_w, feature_weights, n_patches,
-            num_active, max_possible_rules, rules
+            num_active, max_possible_rules, rules, inactive_penalty_tf
         )
     
     # Use map_fn to keep the GPU saturated while avoiding OOM.
@@ -336,11 +357,13 @@ def evaluate_ga_individual(individual, config, precomputed_features, labels,
         weight_conn = tf.constant(config.fitness_weights['connectivity_score'], dtype=tf.float32)
         weight_simp = tf.constant(config.fitness_weights['simplicity_score'], dtype=tf.float32)
         verbose_tf = tf.constant(bool(config.verbose), dtype=tf.bool)
+        penalty_val = getattr(config, 'inactive_weight_penalty', 0.0)
+        inactive_penalty_tf = tf.constant(float(penalty_val), dtype=tf.float32)
         
         fitness = compute_fitness_score(
             image_size_tf, weight_bal_acc, weight_f1, weight_eff, weight_conn, weight_simp, verbose_tf,
             precomputed_features, labels, n_patches_h, n_patches_w, feature_weights, n_patches,
-            individual.num_active_rules, max_possible_rules, individual.rules_tensor
+            individual.num_active_rules, max_possible_rules, individual.rules_tensor, inactive_penalty_tf
         )
         
         return (fitness,)
