@@ -288,7 +288,7 @@ class GeneticFeatureOptimizer:
             from data_loader import DataLoader
             dl = DataLoader()
             logger.info("Loading probe images for precomputation...")
-            probe_images, probe_labels = dl.create_probe_sample(sample_size=self.config.probe_sample_size)
+            probe_images, probe_labels = dl.create_val_sample(sample_size=self.config.probe_sample_size)
             self.probe_labels = tf.convert_to_tensor(probe_labels, dtype=tf.float32)
             
             # Extract and cache features
