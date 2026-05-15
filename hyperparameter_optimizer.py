@@ -95,28 +95,22 @@ class HyperparameterOptimizer:
         
         # --- CRITICAL MEMORY OPTIMIZATION ---
         # Once features are precomputed, we NO LONGER need the raw images.
-        # We clear them from both the optimizer and the GA instance to free up RAM.
+        # We clear them NOW before starting the probe extraction to save RAM/VRAM.
         logger.info("Features precomputed. Clearing raw training images to free up RAM...")
         self.train_images = None
-        self.genetic_optimizer.images = None
+        if hasattr(self, 'genetic_optimizer'):
+            self.genetic_optimizer.images = None
         import gc
         gc.collect()
         # ------------------------------------
+        
+        # --- CRITICAL: PRECOMPUTE PROBE FEATURES ---
+        # We precompute probe features NOW to avoid OOM crashes later.
+        # This ensures heavy extraction happens when GPU memory is fresh.
+        logger.info("Precomputing probe features for HPO validation...")
+        self.genetic_optimizer.precompute_probe_features()
 
-        # --- CROSS-GENERATOR PROBE SET ---
-        # Load a small probe sample (500 images) from val_generators.
-        # Features are extracted ONCE here using the training-calibrated scales,
-        # then cached on self.genetic_optimizer for the lifetime of the optimizer.
-        # Each Optuna trial will score the best individual on this probe set and
-        # blend it into the objective: 0.7 * train + 0.3 * probe_val.
-        logger.info("Loading cross-generator probe set (500 images) for blended objective...")
-        probe_images, probe_labels = self.data_loader.create_val_sample(sample_size=500)
-        self.genetic_optimizer.precompute_probe_features(probe_images, probe_labels)
-        # Free probe images — features are now cached inside the GA
-        del probe_images, probe_labels
-        gc.collect()
-        logger.info("Probe features cached. Blended objective active (0.7 train + 0.3 cross-gen).")
-        # ----------------------------------
+
         
         # Store best results
         self.best_fitness = -float('inf')

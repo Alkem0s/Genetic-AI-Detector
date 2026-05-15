@@ -262,8 +262,8 @@ class GeneticFeatureOptimizer:
 
         all_batch_features = []
         num_samples = len(images)
-        for i in range(0, num_samples, self.batch_size):
-            batch_images = images[i : i + self.batch_size]
+        for i in range(0, num_samples, self.config.extraction_batch_size):
+            batch_images = images[i : i + self.config.extraction_batch_size]
             batch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
             all_batch_features.append(batch_features)
 
@@ -278,23 +278,54 @@ class GeneticFeatureOptimizer:
             f"shape={self.probe_features.shape}"
         )
 
+    def precompute_probe_features(self):
+        """
+        Precompute and cache features for the probe dataset once.
+        Processes in batches to avoid GPU OOM.
+        """
+        if hasattr(self, 'precomputed_probe_features') and self.precomputed_probe_features is not None:
+            return
+
+        from data_loader import DataLoader
+        dl = DataLoader()
+        logger.info("Loading probe images for precomputation...")
+        probe_images, probe_labels = dl.create_val_sample(sample_size=self.config.probe_sample_size)
+        self.probe_labels = tf.convert_to_tensor(probe_labels, dtype=tf.float32)
+        
+        # Extract and cache features in batches to avoid OOM
+        logger.info(f"Extracting features for {len(probe_images)} probe images...")
+        
+        batch_size = self.config.extraction_batch_size
+        all_probe_features = []
+        
+        # Reset session to ensure fresh workspace
+        tf.keras.backend.clear_session()
+        
+        for i in range(0, len(probe_images), batch_size):
+            batch_end = min(i + batch_size, len(probe_images))
+            batch_imgs = tf.convert_to_tensor(probe_images[i:batch_end], dtype=tf.float32)
+            
+            # Extract features for this batch
+            batch_features = self.feature_extractor.extract_batch_patch_features(batch_imgs)
+            all_probe_features.append(batch_features)
+            
+        # Concatenate and normalize using the training scales
+        raw_probe_features = tf.concat(all_probe_features, axis=0)
+        self.precomputed_probe_features = raw_probe_features / self.feature_scales
+        
+        # Clear images to free RAM
+        del probe_images
+        import gc
+        gc.collect()
+
     def eval_on_probe(self, individual, penalized=False):
         """
         Evaluate individual on the probe dataset.
-        Caches features for efficiency across multiple trials.
+        Uses cached features for efficiency.
         """
         # Ensure probe features are precomputed
         if not hasattr(self, 'precomputed_probe_features') or self.precomputed_probe_features is None:
-            from data_loader import DataLoader
-            dl = DataLoader()
-            logger.info("Loading probe images for precomputation...")
-            probe_images, probe_labels = dl.create_val_sample(sample_size=self.config.probe_sample_size)
-            self.probe_labels = tf.convert_to_tensor(probe_labels, dtype=tf.float32)
-            
-            # Extract and cache features
-            logger.info(f"Extracting features for {len(probe_images)} probe images (one-time)...")
-            self.precomputed_probe_features = self.feature_extractor.extract_batch_patch_features(probe_images)
-            logger.info("Probe features precomputed and cached.")
+            self.precompute_probe_features()
 
         if penalized:
             # Use the penalized breakdown logic
