@@ -46,12 +46,11 @@ def generate_dynamic_mask(patch_features, rule_tensor):
     final_mask = tf.logical_and(final_include, tf.logical_not(final_exclude))
     
     # --- Anti-Dummy Rule Check ---
-    # A rule is considered 'active' if it actually discriminates.
-    # It must be True for at least one patch AND False for at least one patch in the batch.
+    # A rule is considered 'active' if it actually discriminates with significant coverage.
+    # It must have between 1% and 99% mean activation across all patches in the batch.
     # rule_results shape: [Batch, H, W, Rules]
-    rule_has_true = tf.reduce_any(rule_results, axis=[0, 1, 2])
-    rule_has_false = tf.reduce_any(tf.logical_not(rule_results), axis=[0, 1, 2])
-    rule_activity_mask = tf.logical_and(rule_has_true, rule_has_false)
+    rule_means = tf.reduce_mean(tf.cast(rule_results, tf.float32), axis=[0, 1, 2])
+    rule_activity_mask = tf.logical_and(rule_means > 0.01, rule_means < 0.99)
     
     return tf.cast(final_mask, tf.int8), tf.cast(rule_activity_mask, tf.int8)
 
@@ -186,7 +185,8 @@ def compute_image_scores(precomputed_features, feature_weights, individual_rule_
 @tf.function(reduce_retracing=True)
 def evaluate_ga_individual(precomputed_features, labels, feature_weights, 
                            individual_rule_tensor, n_patches_h, n_patches_w,
-                           fitness_weights, max_possible_rules, inactive_penalty):
+                           fitness_weights, max_possible_rules, inactive_penalty,
+                           target_sparsity, sparsity_radius):
     """
     Vectorized evaluation of a single GA individual.
     """
@@ -208,10 +208,10 @@ def evaluate_ga_individual(precomputed_features, labels, feature_weights,
     divergence = divergence * sparsity_gate
 
     # 2. Efficiency (Non-linear penalty for sparse or dense masks)
-    # We want a 'sweet spot' between 20% and 60% coverage.
-    # We implement a plateau: any sparsity in [0.20, 0.60] gets a perfect 1.0 efficiency.
+    # We want a 'sweet spot' defined by target and radius.
+    # We implement a plateau: any sparsity in [target - radius, target + radius] gets a perfect 1.0 efficiency.
     # Outside this range, it drops off quadratically.
-    dist = tf.maximum(tf.abs(sparsity - 0.4) - 0.20, 0.0)
+    dist = tf.maximum(tf.abs(sparsity - target_sparsity) - sparsity_radius, 0.0)
     efficiency = 1.0 - tf.pow(dist / 0.4, 2.0)
     
     # Hard floor: if we have fewer than 5% patches, we crash the efficiency to near-zero
@@ -274,7 +274,8 @@ def evaluate_ga_individual(precomputed_features, labels, feature_weights,
 def evaluate_ga_population(precomputed_features, labels, feature_weights,
                            rules_tensors, num_active_rules_tensors,
                            n_patches_h, n_patches_w, fitness_weights,
-                           max_possible_rules, inactive_penalty):
+                           max_possible_rules, inactive_penalty,
+                           target_sparsity, sparsity_radius):
     """
     Map over the population to evaluate each individual.
     """
@@ -284,7 +285,7 @@ def evaluate_ga_population(precomputed_features, labels, feature_weights,
             precomputed_features, labels, feature_weights,
             rules, n_patches_h, n_patches_w,
             fitness_weights, max_possible_rules, 
-            inactive_penalty=inactive_penalty
+            inactive_penalty, target_sparsity, sparsity_radius
         )
 
     fitness_tuples = tf.map_fn(

@@ -77,6 +77,12 @@ class GeneticFeatureOptimizer:
         penalty_val = getattr(config, 'inactive_weight_penalty', 0.0)
         self.inactive_penalty_tf = tf.constant(float(penalty_val), dtype=tf.float32)
         
+        # Mask coverage targets
+        target_val = getattr(config, 'target_sparsity', 0.4)
+        radius_val = getattr(config, 'sparsity_radius', 0.2)
+        self.target_sparsity_tf = tf.constant(float(target_val), dtype=tf.float32)
+        self.sparsity_radius_tf = tf.constant(float(radius_val), dtype=tf.float32)
+        
         self.feature_weights = tf.convert_to_tensor(list(config.feature_weights.values()), dtype=tf.float32)
         self.feature_names = list(config.feature_weights.keys())
         self.num_features = len(self.feature_names)
@@ -272,28 +278,41 @@ class GeneticFeatureOptimizer:
             f"shape={self.probe_features.shape}"
         )
 
-    def eval_on_probe(self, individual):
+    def eval_on_probe(self, individual, penalized=False):
         """
-        Score one GA individual on the cached probe (cross-generator) feature set.
-
-        This is cheap — no image loading or feature extraction.  It just calls
-        compute_fitness_score() with probe_features / probe_labels.
-
-        Returns:
-            float: probe fitness (same scale as the training fitness)
+        Evaluate individual on the probe dataset.
+        Caches features for efficiency across multiple trials.
         """
-        if not hasattr(self, 'probe_features') or self.probe_features is None:
-            raise RuntimeError(
-                "Probe features not precomputed. Call precompute_probe_features() first."
+        # Ensure probe features are precomputed
+        if not hasattr(self, 'precomputed_probe_features') or self.precomputed_probe_features is None:
+            from data_loader import DataLoader
+            dl = DataLoader()
+            logger.info("Loading probe images for precomputation...")
+            probe_images, probe_labels = dl.create_probe_sample(sample_size=self.config.probe_sample_size)
+            self.probe_labels = tf.convert_to_tensor(probe_labels, dtype=tf.float32)
+            
+            # Extract and cache features
+            logger.info(f"Extracting features for {len(probe_images)} probe images (one-time)...")
+            self.precomputed_probe_features = self.feature_extractor.extract_batch_patch_features(probe_images)
+            logger.info("Probe features precomputed and cached.")
+
+        if penalized:
+            # Use the penalized breakdown logic
+            fitness, _, _, _, _, _, _, _ = self.get_fitness_breakdown(
+                individual, 
+                features=self.precomputed_probe_features, 
+                labels=self.probe_labels
             )
-
-        fitness = evaluate_ga_individual(
-            self.probe_features, self.probe_labels, self.feature_weights,
-            individual.rules_tensor, self.n_patches_h, self.n_patches_w,
-            self.config.fitness_weights, self.max_rules_tf,
-            self.inactive_penalty_tf
-        )
-        return float(fitness[0])
+            return fitness
+        else:
+            # Return unpenalized fitness
+            fitness_vals = evaluate_ga_individual(
+                self.precomputed_probe_features, self.probe_labels, self.feature_weights,
+                individual.rules_tensor, self.n_patches_h, self.n_patches_w,
+                self.config.fitness_weights, self.max_rules_tf,
+                self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
+            )
+            return float(fitness_vals[5]) # base_fitness (unpenalized)
 
     def get_unpenalized_fitness(self, individual):
         """
@@ -303,19 +322,23 @@ class GeneticFeatureOptimizer:
             self.precomputed_features, self.eval_labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
             self.config.fitness_weights, self.max_rules_tf,
-            self.inactive_penalty_tf
+            self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
         )
         return float(fitness[0])
 
-    def get_fitness_breakdown(self, individual):
+    def get_fitness_breakdown(self, individual, features=None, labels=None):
         """
-        Calculate the fitness components of an individual on the training set.
+        Calculate the fitness components of an individual on a specific dataset.
+        Defaults to the training set if features/labels are not provided.
         """
+        eval_features = features if features is not None else self.precomputed_features
+        eval_labels = labels if labels is not None else self.eval_labels
+        
         fitness, div, eff, conn, simp, base_fit = evaluate_ga_individual(
-            self.precomputed_features, self.eval_labels, self.feature_weights,
+            eval_features, eval_labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
             self.config.fitness_weights, self.max_rules_tf,
-            self.inactive_penalty_tf
+            self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
         )
         
         # Determine which features are inactive for logging
@@ -473,7 +496,7 @@ class GeneticFeatureOptimizer:
             self.precomputed_features, self.eval_labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
             self.config.fitness_weights, self.max_rules_tf,
-            self.inactive_penalty_tf
+            self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
         )
         # DEAP expects a tuple of floats
         fitness = (float(fitness_tuple[0]),)
@@ -505,7 +528,8 @@ class GeneticFeatureOptimizer:
             self.precomputed_features, self.eval_labels, self.feature_weights,
             rules_tensors, num_active_rules_tensors,
             self.n_patches_h, self.n_patches_w, self.config.fitness_weights,
-            self.max_rules_tf, self.inactive_penalty_tf
+            self.max_rules_tf, self.inactive_penalty_tf,
+            self.target_sparsity_tf, self.sparsity_radius_tf
         )
         
         # We only need the total fitness (first element of tuple) for the GA loop
@@ -858,25 +882,37 @@ class GeneticFeatureOptimizer:
         best_ind = hof[0]
 
         logger.info("Best rule set found:")
-        active_rules = tf.boolean_mask(best_ind.rules_tensor, best_ind.rules_tensor[:, 0] >= 0)
-        for i in range(tf.shape(active_rules)[0]):
-            rule = active_rules[i]
-            feature_idx = tf.cast(rule[0], tf.int32)
-            threshold = rule[1]
-            operator = ">" if tf.cast(rule[2], tf.int32) == 0 else "<"
-            action = "include" if tf.cast(rule[3], tf.int32) == 1 else "exclude"
-            feature_name = self.feature_names[feature_idx.numpy()]
-            logger.info(f"Rule {i+1}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
-
-        # Calculate final statistics using precomputed features (fully vectorized)
+        
+        # Get activity status for all rules using the full sample
         full_sample_size = min(
             tf.shape(self.precomputed_features)[0].numpy(),
             self.eval_sample_size,
         )
         full_sample_features = self.precomputed_features[:full_sample_size]
+        masks, rule_activity = generate_dynamic_mask(full_sample_features, best_ind.rules_tensor)
         
-        # Vectorized mask generation and sparsity calculation
-        masks, _ = generate_dynamic_mask(full_sample_features, best_ind.rules_tensor)
+        rule_count = 0
+        for i in range(tf.shape(best_ind.rules_tensor)[0]):
+            rule = best_ind.rules_tensor[i]
+            feature_idx_val = rule[0].numpy()
+            
+            if feature_idx_val < 0:
+                continue
+                
+            rule_count += 1
+            feature_idx = int(feature_idx_val)
+            threshold = rule[1].numpy()
+            operator = ">" if int(rule[2].numpy()) == 0 else "<"
+            action = "include" if int(rule[3].numpy()) == 1 else "exclude"
+            feature_name = self.feature_names[feature_idx]
+            
+            # Check if rule was active (functional)
+            is_active = rule_activity[i].numpy() > 0
+            status = "[ACTIVE]" if is_active else "[DUMMY]"
+            
+            logger.info(f"Rule {rule_count} {status}: if {feature_name} {operator} {threshold:.2f} → {action} patch")
+
+        # Calculate final statistics using precomputed features (already computed above)
         total_active_patches = tf.reduce_sum(tf.cast(masks, tf.float32), axis=[1, 2])
         total_patches_per_image = tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)
         sparsity_ratios_tensor = total_active_patches / total_patches_per_image

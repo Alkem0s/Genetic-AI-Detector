@@ -2,14 +2,14 @@
     "gradient": 0.984375,
     "pattern": 0.45306915044784546,
     "noise": 0.9999999403953552,
-    "edge": 0.1015625,
-    "symmetry": 0.4528801441192627,
-    "texture": 0.8999388217926025,
+    "edge": 0.09375,
+    "symmetry": 0.45281273126602173,
+    "texture": 0.8757966756820679,
     "color": 1.0,
-    "hash": 0.5020923018455505,
+    "hash": 0.5,
     "dct": 9.999999974752427e-07,
     "channel_correlation": 1.0,
     "glcm": 1.0,
     "noise_spectrum": 1.0,
-    "ycbcr_correlation": 0.9764443039894104
+    "ycbcr_correlation": 0.9763250946998596
 }

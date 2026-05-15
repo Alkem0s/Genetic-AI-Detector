@@ -211,6 +211,18 @@ class HyperparameterOptimizer:
                 self.genetic_optimizer.inactive_penalty_tf = tf.constant(
                     float(ga_params['inactive_weight_penalty']), dtype=tf.float32
                 )
+
+            if 'target_sparsity' in ga_params:
+                import tensorflow as tf
+                self.genetic_optimizer.target_sparsity_tf = tf.constant(
+                    float(ga_params['target_sparsity']), dtype=tf.float32
+                )
+            
+            if 'sparsity_radius' in ga_params:
+                import tensorflow as tf
+                self.genetic_optimizer.sparsity_radius_tf = tf.constant(
+                    float(ga_params['sparsity_radius']), dtype=tf.float32
+                )
             
             # Re-setup DEAP if population or selection parameters changed
             population_changed = any(key in ga_params for key in [
@@ -330,6 +342,19 @@ class HyperparameterOptimizer:
         if ga_config['max_possible_rules'] < ga_config['rules_per_individual']:
             ga_config['max_possible_rules'] = ga_config['rules_per_individual']
         
+        # Mask coverage (Sparsity) targets
+        ga_config['target_sparsity'] = float(trial.suggest_float(
+            'target_sparsity',
+            float(config.target_sparsity_range[0]),
+            float(config.target_sparsity_range[1])
+        ))
+        
+        ga_config['sparsity_radius'] = float(trial.suggest_float(
+            'sparsity_radius',
+            float(config.sparsity_radius_range[0]),
+            float(config.sparsity_radius_range[1])
+        ))
+        
         return ga_config
     
     def objective_feature_weights(self, trial: optuna.Trial) -> float:
@@ -364,8 +389,10 @@ class HyperparameterOptimizer:
                     return
                 
                 # Evaluate on probe and blend
-                t_fit = self.genetic_optimizer.get_unpenalized_fitness(best_ind)
-                p_fit = self.genetic_optimizer.eval_on_probe(best_ind)
+                # Evaluate with penalty to ensure pruning respects the "Honest Weights" policy
+                t_fit, _, _, _, _, _, _, _ = self.genetic_optimizer.get_fitness_breakdown(best_ind)
+                # p_fit (probe) - use penalized probe for pruning in Phase 1
+                p_fit = self.genetic_optimizer.eval_on_probe(best_ind, penalized=True)
                 blended = 0.7 * t_fit + 0.3 * p_fit
                 
                 trial.report(blended, gen_num)
@@ -398,9 +425,11 @@ class HyperparameterOptimizer:
                     on_generation_callback=pruning_callback if run_idx == 0 else None
                 )
                 
-                train_fitness = results['best_true_fitness']
+                train_fitness = results['best_fitness']
                 best_ind = results['best_individual']
-                probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind)
+                
+                # Penalize probe as well to maintain consistency in Phase 1
+                probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind, penalized=True)
                 
                 run_fit = 0.7 * train_fitness + 0.3 * probe_fitness
                 run_fitnesses.append(run_fit)
@@ -502,9 +531,9 @@ class HyperparameterOptimizer:
                 if gen_num % config.pruning_interval != 0:
                     return
                 
-                # Evaluate on probe and blend
+                # Evaluate on probe and blend (Unpenalized for Phase 2)
                 t_fit = self.genetic_optimizer.get_unpenalized_fitness(best_ind)
-                p_fit = self.genetic_optimizer.eval_on_probe(best_ind)
+                p_fit = self.genetic_optimizer.eval_on_probe(best_ind, penalized=False)
                 
                 if getattr(config, 'optimize_weight_penalty', False):
                     blended = p_fit
@@ -543,7 +572,8 @@ class HyperparameterOptimizer:
                 
                 train_fitness = results['best_true_fitness']
                 best_ind = results['best_individual']
-                probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind)
+                # Maximize raw signal on probe in Phase 2
+                probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind, penalized=False)
                 
                 # If optimizing the inactive weight penalty, use pure unpenalized target to avoid zero collapse
                 if getattr(config, 'optimize_weight_penalty', False):
@@ -578,19 +608,27 @@ class HyperparameterOptimizer:
             fitness = float(np.mean(run_fitnesses))
             best_ind = best_ind_overall
             
+            # Calculate compute effort penalty to discourage bloated runs
+            pop_size = ga_params.get('population_size', 100)
+            n_gens = ga_params.get('n_generations', 100)
+            compute_effort = pop_size * n_gens
+            compute_penalty = compute_effort * 1e-6  # 0.01 penalty per 10,000 extra evaluations
+            
+            final_score = fitness - compute_penalty
+            
             # Early stopping for very poor performance
-            if fitness < config.min_fitness_threshold:
+            if final_score < config.min_fitness_threshold:
                 raise optuna.TrialPruned()
             
             # Sanitize fitness to avoid SQLite issues with NaN/Inf
-            fitness = float(np.nan_to_num(fitness, nan=-1.0, posinf=-1.0, neginf=-1.0))
+            final_score = float(np.nan_to_num(final_score, nan=-1.0, posinf=-1.0, neginf=-1.0))
             
             if config.verbosity >= 1:
-                logger.info(f"Trial {trial.number}: Averaged Fitness = {fitness:.4f}")
+                logger.info(f"Trial {trial.number}: Raw Fit={fitness:.4f}, Effort={compute_effort}, Penalty=-{compute_penalty:.4f} -> Final={final_score:.4f}")
             
             # Update internal best
-            if fitness > self.best_fitness:
-                self.best_fitness = fitness
+            if final_score > self.best_fitness:
+                self.best_fitness = final_score
                 self.best_ga_config = ga_params
                 self.best_individual = best_ind
 
@@ -603,7 +641,7 @@ class HyperparameterOptimizer:
             import tensorflow as tf
             tf.keras.backend.clear_session()
 
-            return fitness
+            return final_score
             
         except optuna.TrialPruned:
             raise

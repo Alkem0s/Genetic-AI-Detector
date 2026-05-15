@@ -81,6 +81,13 @@ n_generations_range = (100, 350)
 rules_per_individual_range = (10, 25)
 max_possible_rules_range = (15, 50)
 
+# Mask coverage (Sparsity) targets
+# target_sparsity is the center of the efficiency plateau
+# sparsity_radius is the half-width of the plateau
+# These ranges ensure the plateau stays within [0.1, 0.9]
+target_sparsity_range = (0.3, 0.7)
+sparsity_radius_range = (0.05, 0.2)
+
 # Genetic operators
 crossover_prob_range = (0.5, 0.75)
 mutation_prob_range = (0.2, 0.5)

@@ -66,3 +66,10 @@ fitness_weights = {
     'connectivity_score': 0.05,
     'simplicity_score':   0.10,
 }
+
+# --- Mask Coverage Targets ---
+# Any sparsity within [target_sparsity - radius, target_sparsity + radius] 
+# will receive a perfect 1.0 efficiency score. 
+# Defaults to [0.2, 0.6] range.
+target_sparsity = 0.4
+sparsity_radius = 0.2
