@@ -876,7 +876,7 @@ class GeneticFeatureOptimizer:
         full_sample_features = self.precomputed_features[:full_sample_size]
         
         # Vectorized mask generation and sparsity calculation
-        masks = generate_dynamic_mask(full_sample_features, best_ind.rules_tensor)
+        masks, _ = generate_dynamic_mask(full_sample_features, best_ind.rules_tensor)
         total_active_patches = tf.reduce_sum(tf.cast(masks, tf.float32), axis=[1, 2])
         total_patches_per_image = tf.cast(self.n_patches_h, tf.float32) * tf.cast(self.n_patches_w, tf.float32)
         sparsity_ratios_tensor = total_active_patches / total_patches_per_image

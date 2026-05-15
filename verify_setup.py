@@ -115,7 +115,7 @@ def run_mask_sanity():
         
         ga_sparsities = []
         for i in range(len(sample_images)):
-            mask = generate_dynamic_mask(ga.precomputed_features[i], ga.n_patches_h, ga.n_patches_w, best_rules)
+            mask, _ = generate_dynamic_mask(ga.precomputed_features[i], best_rules)
             ga_sparsities.append(tf.reduce_mean(tf.cast(mask, tf.float32)).numpy())
         ga_sparsity = np.mean(ga_sparsities)
         
@@ -149,7 +149,7 @@ def run_mask_sanity():
         
         # GA Mask
         features = ga.precomputed_features[i]
-        ga_mask = generate_dynamic_mask(features, ga.n_patches_h, ga.n_patches_w, best_rules)
+        ga_mask, _ = generate_dynamic_mask(features, best_rules)
         vis.visualize_mask(img, ga_mask, f"masks/ga_overlay_{i}.png", mask_mode="ga")
         
         # Random Mask

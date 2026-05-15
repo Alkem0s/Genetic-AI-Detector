@@ -53,19 +53,19 @@ proxy_ga_config = {
 # These define the search space for feature weights
 # The optimizer will ensure they sum to 1.0
 feature_weight_ranges = {
-    'gradient': (0.0, 1.0),    # Measures unnatural gradient perfection
-    'pattern': (0.0, 1.0),     # Detects repeating patterns/artifacts  
-    'noise': (0.0, 1.0),       # Analyzes noise distribution
-    'edge': (0.0, 1.0),        # Examines edge coherence and artifacts
-    'symmetry': (0.0, 1.0),    # Measures unnatural symmetry
-    'texture': (0.0, 1.0),     # Analyzes texture consistency
-    'color': (0.0, 1.0),       # Detects color distribution anomalies
-    'hash': (0.0, 1.0),        # Perceptual hash similarity to known AI patterns
-    'dct': (0.0, 1.0),         # Analyzes DCT AC/DC energy ratios
-    'channel_correlation': (0.0, 1.0), # Detects chromatic aberration vs AI alignment
-    'glcm': (0.0, 1.0),        # GLCM contrast/homogeneity
-    'noise_spectrum': (0.0, 1.0), # High frequency noise signature analysis
-    'ycbcr_correlation': (0.0, 1.0) # Chrominance and Luminance correlation 
+    'gradient': (0.0, 1.0),             # Measures unnatural gradient perfection
+    'pattern': (0.0, 1.0),              # Detects repeating patterns/artifacts  
+    'noise': (0.0, 1.0),                # Analyzes noise distribution
+    'edge': (0.0, 1.0),                 # Examines edge coherence and artifacts
+    'symmetry': (0.0, 1.0),             # Measures unnatural symmetry
+    'texture': (0.0, 1.0),              # Analyzes texture consistency
+    'color': (0.0, 1.0),                # Detects color distribution anomalies
+    'hash': (0.0, 1.0),                 # Perceptual hash similarity to known AI patterns
+    'dct': (0.0, 1.0),                  # Analyzes DCT AC/DC energy ratios
+    'channel_correlation': (0.0, 1.0),  # Detects chromatic aberration vs AI alignment
+    'glcm': (0.0, 1.0),                 # GLCM contrast/homogeneity
+    'noise_spectrum': (0.0, 1.0),       # High frequency noise signature analysis
+    'ycbcr_correlation': (0.0, 1.0)     # Chrominance and Luminance correlation 
 }
 
 

@@ -321,10 +321,8 @@ def _visualize_masks_for_experiment(
                 model_wrapper.pipeline._feature_extractor
                 .extract_patch_features(img_tensor[0])
             )
-            patch_mask = generate_dynamic_mask(
+            patch_mask, _ = generate_dynamic_mask(
                 patch_features,
-                model_wrapper.n_patches_h,
-                model_wrapper.n_patches_w,
                 ga_results['best_individual'].rules_tensor,
             )
         elif mask_mode == 'random':

@@ -53,7 +53,7 @@ def generate_dynamic_mask(patch_features, rule_tensor):
     rule_has_false = tf.reduce_any(tf.logical_not(rule_results), axis=[0, 1, 2])
     rule_activity_mask = tf.logical_and(rule_has_true, rule_has_false)
     
-    return tf.cast(final_mask, tf.int8), rule_activity_mask
+    return tf.cast(final_mask, tf.int8), tf.cast(rule_activity_mask, tf.int8)
 
 
 @tf.function
@@ -244,7 +244,8 @@ def evaluate_ga_individual(precomputed_features, labels, feature_weights,
     
     # Filter for rules that are both valid (index >= 0) AND active (have variance)
     valid_rule_mask = rule_feature_indices >= 0
-    effective_rule_mask = tf.logical_and(valid_rule_mask, rule_activity)
+    # rule_activity is now int8, so we check > 0
+    effective_rule_mask = tf.logical_and(valid_rule_mask, rule_activity > 0)
     
     # Map those back to the features
     num_features = tf.shape(feature_weights)[0]

@@ -164,12 +164,11 @@ class FeaturePipeline:
     def _generate_mask(self, patch_features: tf.Tensor) -> tf.Tensor:
         """Thin wrapper so callers don't need to import fitness_evaluation."""
         from fitness_evaluation import generate_dynamic_mask
-        return generate_dynamic_mask(
+        mask, _ = generate_dynamic_mask(
             patch_features,
-            self.n_patches_h,
-            self.n_patches_w,
             self.genetic_rules,
         )
+        return mask
 
     def set_genetic_rules(self, genetic_rules: tf.Tensor) -> None:
         """Replace the genetic rules (e.g. after a new GA run)."""
