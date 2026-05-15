@@ -18,24 +18,26 @@ def generate_dynamic_mask(patch_features, rule_tensor):
     include_mask = tf.logical_and(feature_indices >= 0, actions == 1)
     exclude_mask = tf.logical_and(feature_indices >= 0, actions == 0)
     
+    # 1. Compute for ALL rules to keep shapes static
+    max_f = tf.shape(patch_features)[-1] - 1
+    safe_indices = tf.clip_by_value(feature_indices, 0, max_f)
+    
+    # [Batch, H, W, Rules]
+    selected_features = tf.gather(patch_features, safe_indices, axis=-1)
+    
+    # Broadcast thresholds and operators
+    is_greater = tf.logical_and(tf.equal(operators, 0), selected_features > thresholds)
+    is_less    = tf.logical_and(tf.equal(operators, 1), selected_features < thresholds)
+    
+    # rule_results: [Batch, H, W, Rules]
+    rule_results = tf.logical_or(is_greater, is_less)
+    
     def evaluate_rules(v_mask):
-        if not tf.reduce_any(v_mask):
-            return tf.zeros(tf.shape(patch_features)[:-1], dtype=tf.bool)
-        
-        v_indices = tf.boolean_mask(feature_indices, v_mask)
-        v_thresholds = tf.boolean_mask(thresholds, v_mask)
-        v_operators = tf.boolean_mask(operators, v_mask)
-        
-        max_f = tf.shape(patch_features)[-1] - 1
-        v_indices = tf.clip_by_value(v_indices, 0, max_f)
-        selected_features = tf.gather(patch_features, v_indices, axis=-1)
-        
-        # operator == 0 -> '>', operator == 1 -> '<'
-        is_greater = tf.logical_and(tf.equal(v_operators, 0), selected_features > v_thresholds)
-        is_less    = tf.logical_and(tf.equal(v_operators, 1), selected_features < v_thresholds)
-        
-        rule_results = tf.logical_or(is_greater, is_less)
-        return tf.reduce_any(rule_results, axis=-1)
+        # v_mask: [Rules] -> reshape to [1, 1, 1, Rules]
+        v_mask_reshaped = tf.reshape(v_mask, [1, 1, 1, -1])
+        valid_rule_results = tf.logical_and(rule_results, v_mask_reshaped)
+        # Reduce over the Rules dimension
+        return tf.reduce_any(valid_rule_results, axis=-1)
 
     # Final mask = (Any Include Rule matches) AND NOT (Any Exclude Rule matches)
     final_include = evaluate_rules(include_mask)
@@ -43,7 +45,15 @@ def generate_dynamic_mask(patch_features, rule_tensor):
     
     final_mask = tf.logical_and(final_include, tf.logical_not(final_exclude))
     
-    return tf.cast(final_mask, tf.int8)
+    # --- Anti-Dummy Rule Check ---
+    # A rule is considered 'active' if it actually discriminates.
+    # It must be True for at least one patch AND False for at least one patch in the batch.
+    # rule_results shape: [Batch, H, W, Rules]
+    rule_has_true = tf.reduce_any(rule_results, axis=[0, 1, 2])
+    rule_has_false = tf.reduce_any(tf.logical_not(rule_results), axis=[0, 1, 2])
+    rule_activity_mask = tf.logical_and(rule_has_true, rule_has_false)
+    
+    return tf.cast(final_mask, tf.int8), rule_activity_mask
 
 
 @tf.function
@@ -87,20 +97,27 @@ def compute_batch_divergence_score(masked_feature_vectors, labels, feature_weigh
     """
     eps = tf.constant(1e-8, dtype=tf.float32)
 
-    ai_mask    = tf.cast(labels > 0.5, tf.bool)
-    human_mask = tf.logical_not(ai_mask)
+    ai_mask_f    = tf.cast(labels > 0.5, tf.float32)
+    human_mask_f = 1.0 - ai_mask_f
 
-    ai_features    = tf.boolean_mask(masked_feature_vectors, ai_mask)
-    human_features = tf.boolean_mask(masked_feature_vectors, human_mask)
+    n_ai_f    = tf.reduce_sum(ai_mask_f)
+    n_human_f = tf.reduce_sum(human_mask_f)
 
-    n_ai    = tf.shape(ai_features)[0]
-    n_human = tf.shape(human_features)[0]
+    # Expand masks for broadcasting: [Batch, 1]
+    ai_mask_exp = tf.expand_dims(ai_mask_f, -1)
+    human_mask_exp = tf.expand_dims(human_mask_f, -1)
 
     def _compute():
-        mu_ai    = tf.reduce_mean(ai_features,    axis=0)
-        mu_human = tf.reduce_mean(human_features, axis=0)
-        var_ai   = tf.math.reduce_variance(ai_features,    axis=0)
-        var_human = tf.math.reduce_variance(human_features, axis=0)
+        # Weighted mean
+        mu_ai    = tf.reduce_sum(masked_feature_vectors * ai_mask_exp, axis=0) / (n_ai_f + eps)
+        mu_human = tf.reduce_sum(masked_feature_vectors * human_mask_exp, axis=0) / (n_human_f + eps)
+        
+        # Weighted variance
+        diff_ai = (masked_feature_vectors - mu_ai) * ai_mask_exp
+        var_ai  = tf.reduce_sum(tf.square(diff_ai), axis=0) / (n_ai_f + eps)
+        
+        diff_human = (masked_feature_vectors - mu_human) * human_mask_exp
+        var_human  = tf.reduce_sum(tf.square(diff_human), axis=0) / (n_human_f + eps)
 
         # 1. Fisher Discriminant Ratio (FDR)
         fdr = tf.square(mu_ai - mu_human) / (var_ai + var_human + eps)
@@ -128,7 +145,7 @@ def compute_batch_divergence_score(masked_feature_vectors, labels, feature_weigh
         return tf.clip_by_value(divergence, 0.0, 1.0)
 
     return tf.cond(
-        tf.logical_or(tf.equal(n_ai, 0), tf.equal(n_human, 0)),
+        tf.logical_or(n_ai_f < 0.5, n_human_f < 0.5),
         lambda: tf.constant(0.0, dtype=tf.float32),
         _compute,
     )
@@ -140,8 +157,8 @@ def compute_image_scores(precomputed_features, feature_weights, individual_rule_
     Process all images in a single vectorized pass.
     """
     # 1. Generate masks for the entire batch at once
-    # [Batch, H, W]
-    patch_mask = generate_dynamic_mask(precomputed_features, individual_rule_tensor)
+    # patch_mask: [Batch, H, W], rule_activity: [Rules]
+    patch_mask, rule_activity = generate_dynamic_mask(precomputed_features, individual_rule_tensor)
     
     # 2. Calculate connectivity for the entire batch
     # [Batch]
@@ -163,30 +180,43 @@ def compute_image_scores(precomputed_features, feature_weights, individual_rule_
     masked_feature_vectors = sum_features / (tf.expand_dims(active_f, -1) + 1e-8)
     masked_feature_vectors = tf.clip_by_value(masked_feature_vectors, 0.0, 1.0)
 
-    return masked_feature_vectors, active_patches_per_image, connectivity_scores
+    return masked_feature_vectors, active_patches_per_image, connectivity_scores, rule_activity
 
 
 @tf.function(reduce_retracing=True)
 def evaluate_ga_individual(precomputed_features, labels, feature_weights, 
                            individual_rule_tensor, n_patches_h, n_patches_w,
-                           fitness_weights, max_possible_rules):
+                           fitness_weights, max_possible_rules, inactive_penalty):
     """
     Vectorized evaluation of a single GA individual.
     """
     # --- Image Scoring ---
-    masked_feature_vectors, active_patches, connectivity_scores = compute_image_scores(
+    masked_feature_vectors, active_patches, connectivity_scores, rule_activity = compute_image_scores(
         precomputed_features, feature_weights, individual_rule_tensor
     )
 
     # --- Component Scores ---
-    # 1. Divergence
-    divergence = compute_batch_divergence_score(masked_feature_vectors, labels, feature_weights)
-
-    # 2. Efficiency (Penalty for 0 or all patches)
     n_total_patches = tf.cast(n_patches_h * n_patches_w, tf.float32)
     mean_active = tf.reduce_mean(tf.cast(active_patches, tf.float32))
-    # Penalty if mean_active is near 0 or near n_total
-    efficiency = 1.0 - tf.abs((mean_active / (n_total_patches + 1e-8)) - 0.5) * 2.0
+    sparsity = mean_active / (n_total_patches + 1e-8)
+
+    # 1. Divergence with Sparsity Gate (Prevents overfitting to tiny patch samples)
+    divergence = compute_batch_divergence_score(masked_feature_vectors, labels, feature_weights)
+    
+    # If sparsity is below 10%, we scale down the divergence linearly to zero
+    sparsity_gate = tf.minimum(sparsity / 0.10, 1.0)
+    divergence = divergence * sparsity_gate
+
+    # 2. Efficiency (Non-linear penalty for sparse or dense masks)
+    # We want a 'sweet spot' between 20% and 60% coverage.
+    # We implement a plateau: any sparsity in [0.20, 0.60] gets a perfect 1.0 efficiency.
+    # Outside this range, it drops off quadratically.
+    dist = tf.maximum(tf.abs(sparsity - 0.4) - 0.20, 0.0)
+    efficiency = 1.0 - tf.pow(dist / 0.4, 2.0)
+    
+    # Hard floor: if we have fewer than 5% patches, we crash the efficiency to near-zero
+    # to prevent overfitting to local noise.
+    efficiency = tf.where(sparsity < 0.05, efficiency * 0.1, efficiency)
     efficiency = tf.maximum(efficiency, 0.0)
 
     # 3. Connectivity
@@ -197,40 +227,69 @@ def evaluate_ga_individual(precomputed_features, labels, feature_weights,
     simplicity = 1.0 - (active_rules / tf.cast(max_possible_rules, tf.float32))
 
     # --- Weighted Fitness ---
-    total_fitness = (
+    base_fitness = (
         divergence * fitness_weights['divergence_score'] +
         efficiency * fitness_weights['efficiency_score'] +
         connectivity * fitness_weights['connectivity_score'] +
         simplicity * fitness_weights['simplicity_score']
     )
 
-    return total_fitness, divergence, efficiency, connectivity, simplicity
+    # --- Inactive Weight Penalty ---
+    # We penalize individuals that ignore features which were given high weights in Phase 1.
+    # CRITICAL: We only count a feature as 'utilized' if it was used in an ACTIVE rule.
+    # Dummy rules (always True or always False) are ignored.
+    
+    # Get feature indices for all rules
+    rule_feature_indices = tf.cast(individual_rule_tensor[:, 0], tf.int32)
+    
+    # Filter for rules that are both valid (index >= 0) AND active (have variance)
+    valid_rule_mask = rule_feature_indices >= 0
+    effective_rule_mask = tf.logical_and(valid_rule_mask, rule_activity)
+    
+    # Map those back to the features
+    num_features = tf.shape(feature_weights)[0]
+    # features_utilized: [num_features]
+    features_utilized = tf.reduce_any(
+        tf.logical_and(
+            tf.equal(
+                tf.expand_dims(tf.range(num_features), 1), 
+                tf.expand_dims(rule_feature_indices, 0)
+            ),
+            tf.expand_dims(effective_rule_mask, 0)
+        ),
+        axis=1
+    )
+    
+    # Sum weights of features NOT utilized by any effective rule
+    inactive_weights_sum = tf.reduce_sum(tf.boolean_mask(feature_weights, tf.logical_not(features_utilized)))
+    penalty = inactive_weights_sum * inactive_penalty
+    
+    total_fitness = base_fitness - penalty
+
+    return total_fitness, divergence, efficiency, connectivity, simplicity, base_fitness
 
 
-@tf.function(reduce_retracing=True)
+@tf.function(jit_compile=True, reduce_retracing=True)
 def evaluate_ga_population(precomputed_features, labels, feature_weights,
                            rules_tensors, num_active_rules_tensors,
                            n_patches_h, n_patches_w, fitness_weights,
-                           max_possible_rules):
+                           max_possible_rules, inactive_penalty):
     """
     Map over the population to evaluate each individual.
-    Since compute_image_scores is now fully vectorized, we can use a simple map_fn.
     """
     def eval_individual(args):
         rules, num_active = args
         return evaluate_ga_individual(
             precomputed_features, labels, feature_weights,
             rules, n_patches_h, n_patches_w,
-            fitness_weights, max_possible_rules
+            fitness_weights, max_possible_rules, 
+            inactive_penalty=inactive_penalty
         )
 
-    # We use a small parallel_iterations here because each individual evaluation
-    # is now a massive vectorized op on 5000 images. 
-    # Too much parallelism here would hit VRAM limits.
     fitness_tuples = tf.map_fn(
         eval_individual,
         (rules_tensors, num_active_rules_tensors),
-        fn_output_signature=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
+        fn_output_signature=(tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32),
         parallel_iterations=4,  
     )
 

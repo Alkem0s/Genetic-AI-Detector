@@ -3,13 +3,13 @@
     "pattern": 0.45306915044784546,
     "noise": 0.9999999403953552,
     "edge": 0.09375,
-    "symmetry": 0.45274117588996887,
-    "texture": 0.8485907912254333,
+    "symmetry": 0.45283010601997375,
+    "texture": 0.8837010860443115,
     "color": 1.0,
-    "hash": 0.5,
+    "hash": 0.5089284181594849,
     "dct": 9.999999974752427e-07,
     "channel_correlation": 1.0,
     "glcm": 1.0,
     "noise_spectrum": 1.0,
-    "ycbcr_correlation": 0.9765891432762146
+    "ycbcr_correlation": 0.9769089221954346
 }

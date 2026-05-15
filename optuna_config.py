@@ -30,18 +30,19 @@ deterministic_trial_seeding = True
 optimize_weight_penalty = True
 inactive_weight_penalty = 0.2  # Used as fixed penalty if optimize_weight_penalty is False
 
-# Proxy GA Configuration used DURING Phase 1 optimization (to keep it fast)
+# Proxy GA Configuration used DURING Phase 1 optimization
 # These will override best_ga_config.json for Phase 1.
 use_proxy_ga_config = True
 proxy_ga_config = {
-    "population_size": 100,
-    "n_generations": 120,
-    "rules_per_individual": 18,
+    "population_size": 150,
+    "n_generations": 150,
+    "rules_per_individual": 12,
     "max_possible_rules": 50,
     "crossover_prob": 0.7,
-    "mutation_prob": 0.25,
+    "mutation_prob": 0.3,
     "tournament_size": 3,
     "num_elites": 1,
+    "inactive_weight_penalty": 0.2,
     "verbose": False
 }
 

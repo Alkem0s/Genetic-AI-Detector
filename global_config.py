@@ -49,7 +49,8 @@ patch_size = 8
 scale_factor = 1.0
 
 # --- Genetic Algorithm Environment ---
-sample_size = 5000
+sample_size = 6000
+probe_sample_size = 3000
 use_multiprocessing = True
 use_feature_cache = False
 
@@ -60,8 +61,8 @@ use_feature_cache = False
 # rather than performing linear classification.
 # Efficiency weight is increased to prevent degenerate all-patch / no-patch masks.
 fitness_weights = {
-    'divergence_score':   0.80,
+    'divergence_score':   0.75,
     'efficiency_score':   0.10,
     'connectivity_score': 0.05,
-    'simplicity_score':   0.05,
+    'simplicity_score':   0.10,
 }

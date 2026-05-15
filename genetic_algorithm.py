@@ -186,7 +186,6 @@ class GeneticFeatureOptimizer:
         # --- Automated Feature Scaling (Dynamic Normalization) ---
         # We calculate the 99th percentile for each feature to use as a scaling divisor.
         # This maps the vast majority of 'AI signals' into the [0, 1] range.
-        logger.info("Auto-calibrating feature scales (Dynamic Normalization)...")
         
         # Flatten across batch and spatial dims to get [total_patches, num_features]
         total_patches = tf.shape(raw_features)[0] * tf.shape(raw_features)[1] * tf.shape(raw_features)[2]
@@ -291,7 +290,8 @@ class GeneticFeatureOptimizer:
         fitness = evaluate_ga_individual(
             self.probe_features, self.probe_labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
-            self.config.fitness_weights, self.max_rules_tf
+            self.config.fitness_weights, self.max_rules_tf,
+            self.inactive_penalty_tf
         )
         return float(fitness[0])
 
@@ -302,7 +302,8 @@ class GeneticFeatureOptimizer:
         fitness = evaluate_ga_individual(
             self.precomputed_features, self.eval_labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
-            self.config.fitness_weights, self.max_rules_tf
+            self.config.fitness_weights, self.max_rules_tf,
+            self.inactive_penalty_tf
         )
         return float(fitness[0])
 
@@ -310,12 +311,28 @@ class GeneticFeatureOptimizer:
         """
         Calculate the fitness components of an individual on the training set.
         """
-        fitness, div, eff, conn, simp = evaluate_ga_individual(
+        fitness, div, eff, conn, simp, base_fit = evaluate_ga_individual(
             self.precomputed_features, self.eval_labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
-            self.config.fitness_weights, self.max_rules_tf
+            self.config.fitness_weights, self.max_rules_tf,
+            self.inactive_penalty_tf
         )
-        return float(fitness), float(div), float(eff), float(conn), float(simp)
+        
+        # Determine which features are inactive for logging
+        active_indices = tf.cast(individual.rules_tensor[:, 0], tf.int32)
+        num_features = len(self.feature_names)
+        present_mask = tf.reduce_any(
+            tf.equal(
+                tf.expand_dims(tf.range(num_features), 1), 
+                tf.expand_dims(active_indices, 0)
+            ), 
+            axis=1
+        ).numpy()
+        
+        inactive_features = [self.feature_names[i] for i, present in enumerate(present_mask) if not present]
+        penalty_amount = float(base_fit) - float(fitness)
+        
+        return float(fitness), float(div), float(eff), float(conn), float(simp), float(base_fit), inactive_features, penalty_amount
 
     def _tensor_rules_similar(self, ind1, ind2):
         """
@@ -437,7 +454,10 @@ class GeneticFeatureOptimizer:
                 tf.cast(operator, tf.float32), tf.cast(action, tf.float32)]
 
     def _evaluate_individual_wrapper(self, individual):
-        """Wrapper for individual evaluation that uses precomputed features"""
+        """Wrapper for individual evaluation that uses precomputed features.
+        Note: This is a fallback path. The main loop uses _evaluate_population
+        for efficient batched GPU evaluation.
+        """
         if self.verbose:
             start_time = time.time()
         
@@ -446,12 +466,17 @@ class GeneticFeatureOptimizer:
             logger.error("Features not precomputed!")
             raise RuntimeError("Features must be precomputed before evaluation")
         
-        # Pass the tensor directly to the evaluation function
-        fitness = evaluate_ga_individual(
-            individual, self.config, self.precomputed_features, self.eval_labels, 
-            self.n_patches_h, self.n_patches_w,
-            self.feature_weights, self.n_patches, self.max_possible_rules,
+        # Correct signature: (precomputed_features, labels, feature_weights,
+        #                     individual_rule_tensor, n_patches_h, n_patches_w,
+        #                     fitness_weights, max_possible_rules)
+        fitness_tuple = evaluate_ga_individual(
+            self.precomputed_features, self.eval_labels, self.feature_weights,
+            individual.rules_tensor, self.n_patches_h, self.n_patches_w,
+            self.config.fitness_weights, self.max_rules_tf,
+            self.inactive_penalty_tf
         )
+        # DEAP expects a tuple of floats
+        fitness = (float(fitness_tuple[0]),)
         
         if self.verbose:
             end_time = time.time()
@@ -480,7 +505,7 @@ class GeneticFeatureOptimizer:
             self.precomputed_features, self.eval_labels, self.feature_weights,
             rules_tensors, num_active_rules_tensors,
             self.n_patches_h, self.n_patches_w, self.config.fitness_weights,
-            self.max_rules_tf
+            self.max_rules_tf, self.inactive_penalty_tf
         )
         
         # We only need the total fitness (first element of tuple) for the GA loop
@@ -770,21 +795,21 @@ class GeneticFeatureOptimizer:
             record = stats.compile(pop)
             
             # Calculate breakdown for the best individual (HOF[0])
-            best_true_fit, div, eff, conn, simp = self.get_fitness_breakdown(hof[0])
+            best_penalized, div, eff, conn, simp, best_true, inactive, p_amt = self.get_fitness_breakdown(hof[0])
             
             # Update progress bar description with stats
             pbar.set_postfix({'max': f"{record['max']:.4f}", 'div': f"{div:.4f}"})
             
             # Only log generation stats at DEBUG level to keep the console clean during HPO
             logger.debug(f"  [{run_id}] Gen {gen + 1}/{self.n_generations}: Max={record['max']:.4f}, Avg={record['avg']:.4f}")
-            logger.debug(f"  [{run_id}] Gen {gen + 1}: Best True Fit={best_true_fit:.4f} (Div={div:.4f}, Eff={eff:.4f}, Conn={conn:.4f}, Simp={simp:.4f})")
+            logger.debug(f"  [{run_id}] Gen {gen + 1}: Best True Fit={best_true:.4f} (Div={div:.4f}, Eff={eff:.4f}, Conn={conn:.4f}, Simp={simp:.4f})")
             
             self.current_run_history.append({
                 'generation': gen + 1,
                 'max_fitness': record['max'],
                 'avg_fitness': record['avg'],
                 'std_fitness': record['std'],
-                'max_true_fitness': best_true_fit,
+                'max_true_fitness': best_true,
                 'div_score': div,
                 'eff_score': eff,
                 'conn_score': conn,
@@ -868,9 +893,13 @@ class GeneticFeatureOptimizer:
         )
 
         # Get components for the final best individual
-        best_true_fit, div, eff, conn, simp = self.get_fitness_breakdown(best_ind)
+        best_penalized, div, eff, conn, simp, best_true, inactive, p_amt = self.get_fitness_breakdown(best_ind)
         
-        logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f} (True Fit={best_true_fit:.4f})")
+        logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f} (True Fit={best_true:.4f})")
+        if p_amt > 0:
+            logger.info(f"Inactive Penalty: -{p_amt:.4f} (Missing: {', '.join(inactive)})")
+        else:
+            logger.info("Inactive Penalty: 0.0000 (All features utilized)")
         logger.info(f"Best Ind Components: Div={div:.4f}, Eff={eff:.4f}, Conn={conn:.4f}, Simp={simp:.4f}")
         logger.info(f"Rules: {best_ind.num_active_rules}")
         logger.info(f"Average active patches: {avg_active:.1f} ({avg_percentage:.1f}%) out of {self.n_patches}")
@@ -929,7 +958,8 @@ class GeneticFeatureOptimizer:
         fitness_vals = evaluate_ga_individual(
             self.precomputed_features, self.labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
-            self.config.fitness_weights, self.max_rules_tf
+            self.config.fitness_weights, self.max_rules_tf,
+            self.inactive_penalty_tf
         )
         fitness = fitness_vals[0]
         
@@ -939,7 +969,7 @@ class GeneticFeatureOptimizer:
         self.precomputed_features = old_features
         self.features_computed = True
         
-        logger.info(f"Honest Validation Fitness: {fitness:.4f}")
+        logger.info(f"Validation Fitness: {fitness:.4f}")
         return float(fitness)
 
     def get_run_history(self):

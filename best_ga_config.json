@@ -1,13 +1,13 @@
 {
-  "fitness": 0.644516,
-  "population_size": 100,
-  "n_generations": 120,
-  "rules_per_individual": 13,
+  "population_size": 155,
+  "n_generations": 156,
+  "rules_per_individual": 21,
   "max_possible_rules": 50,
-  "crossover_prob": 0.6897987726295555,
-  "mutation_prob": 0.23900466011060914,
+  "crossover_prob": 0.7225458661866344,
+  "mutation_prob": 0.29884094621818,
   "tournament_size": 3,
   "num_elites": 1,
+  "inactive_weight_penalty": 0.3356575859867043,
   "random_seed": 42,
   "verbose": false
 }
