@@ -203,30 +203,34 @@ def evaluate_ga_individual(precomputed_features, labels, feature_weights,
     # 1. Divergence with Sparsity Gate (Prevents overfitting to tiny patch samples)
     divergence = compute_batch_divergence_score(masked_feature_vectors, labels, feature_weights)
     
-    # If sparsity is below 10%, we scale down the divergence linearly to zero
+    # If sparsity is below 10%, we scale down the divergence for fitness only
     sparsity_gate = tf.minimum(sparsity / 0.10, 1.0)
-    divergence = divergence * sparsity_gate
 
     # 2. Efficiency (Non-linear penalty for sparse or dense masks)
     # We want a 'sweet spot' defined by target and radius.
-    # We implement a plateau: any sparsity in [target - radius, target + radius] gets a perfect 1.0 efficiency.
     # Outside this range, it drops off quadratically.
     dist = tf.maximum(tf.abs(sparsity - target_sparsity) - sparsity_radius, 0.0)
     efficiency = 1.0 - tf.pow(dist / 0.4, 2.0)
-    
-    # Hard floor: if we have fewer than 5% patches, we crash the efficiency to near-zero
-    # to prevent overfitting to local noise.
-    efficiency = tf.where(sparsity < 0.05, efficiency * 0.1, efficiency)
     efficiency = tf.maximum(efficiency, 0.0)
+    
+    # Efficiency Hard Floor Penalty Factor (applied to fitness later)
+    # If we have fewer than 5% patches, we apply a milder penalty (0.5x) to avoid sharp "cliffs"
+    eff_penalty_factor = tf.where(sparsity < 0.05, 0.5, 1.0)
 
     # 3. Connectivity
     connectivity = tf.reduce_mean(connectivity_scores)
 
-    # 4. Simplicity
+    # 4. Simplicity (Only penalize rules beyond the number of features)
     active_rules = tf.reduce_sum(tf.cast(individual_rule_tensor[:, 0] >= 0, tf.float32))
-    simplicity = 1.0 - (active_rules / tf.cast(max_possible_rules, tf.float32))
+    num_features_f = tf.cast(tf.shape(feature_weights)[0], tf.float32)
+    max_rules_f = tf.cast(max_possible_rules, tf.float32)
+    
+    # We only penalize complexity if rule count exceeds the feature count
+    excess_rules = tf.maximum(active_rules - num_features_f, 0.0)
+    simplicity = 1.0 - (excess_rules / (max_rules_f - num_features_f + 1e-8))
 
     # --- Weighted Fitness ---
+    # We calculate a raw base fitness first using unpenalized components
     base_fitness = (
         divergence * fitness_weights['divergence_score'] +
         efficiency * fitness_weights['efficiency_score'] +
@@ -265,7 +269,11 @@ def evaluate_ga_individual(precomputed_features, labels, feature_weights,
     inactive_weights_sum = tf.reduce_sum(tf.boolean_mask(feature_weights, tf.logical_not(features_utilized)))
     penalty = inactive_weights_sum * inactive_penalty
     
-    total_fitness = base_fitness - penalty
+    # Final Fitness: We apply the gating penalties to the positive fitness components.
+    # SAFETY VALVE: We only phase in the inactive weight penalty as divergence improves.
+    # This prevents the penalty from crushing promising but immature individuals early on.
+    penalty_gate = tf.minimum(divergence / 0.8, 1.0)
+    total_fitness = (base_fitness * sparsity_gate * eff_penalty_factor) - (penalty * penalty_gate)
 
     return total_fitness, divergence, efficiency, connectivity, simplicity, base_fitness
 

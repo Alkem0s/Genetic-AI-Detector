@@ -5,7 +5,7 @@ import optuna_config as config
 def analyze_study(study_name):
     print(f"\n{'='*20} {study_name} {'='*20}")
     try:
-        storage = JournalStorage(JournalFileStorage("optuna_journal.log"))
+        storage = JournalStorage(JournalFileStorage("optuna_journal_I.log"))
         study = optuna.load_study(study_name=study_name, storage=storage)
         
         trials = study.trials

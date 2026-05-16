@@ -9,8 +9,8 @@ Modify these values to control the optimization process.
 # =============================================================================
 
 # Number of trials for each optimization phase
-feature_weight_trials = 50  # Trials for optimizing feature weights
-ga_config_trials = 50       # Trials for optimizing GA configuration
+feature_weight_trials = 80  # Trials for optimizing feature weights
+ga_config_trials = 80       # Trials for optimizing GA configuration
 
 # Study names (for organization/logging)
 feature_weight_study_name = "feature_weights_optimization"
@@ -34,15 +34,17 @@ inactive_weight_penalty = 0.2  # Used as fixed penalty if optimize_weight_penalt
 # These will override best_ga_config.json for Phase 1.
 use_proxy_ga_config = True
 proxy_ga_config = {
-    "population_size": 150,
-    "n_generations": 150,
-    "rules_per_individual": 12,
+    "population_size": 160,
+    "n_generations": 120,
+    "rules_per_individual": 14,
     "max_possible_rules": 50,
-    "crossover_prob": 0.7,
-    "mutation_prob": 0.3,
-    "tournament_size": 3,
-    "num_elites": 1,
-    "inactive_weight_penalty": 0.2,
+    "crossover_prob": 0.6,
+    "mutation_prob": 0.35,
+    "tournament_size": 5,
+    "num_elites": 3,
+    "inactive_weight_penalty": 0.05,
+    "target_sparsity": 0.6,
+    "sparsity_radius": 0.2,
     "verbose": False
 }
 
@@ -53,19 +55,24 @@ proxy_ga_config = {
 # These define the search space for feature weights
 # The optimizer will ensure they sum to 1.0
 feature_weight_ranges = {
-    'gradient': (0.0, 1.0),             # Measures unnatural gradient perfection
-    'pattern': (0.0, 1.0),              # Detects repeating patterns/artifacts  
-    'noise': (0.0, 1.0),                # Analyzes noise distribution
-    'edge': (0.0, 1.0),                 # Examines edge coherence and artifacts
-    'symmetry': (0.0, 1.0),             # Measures unnatural symmetry
-    'texture': (0.0, 1.0),              # Analyzes texture consistency
-    'color': (0.0, 1.0),                # Detects color distribution anomalies
-    'hash': (0.0, 1.0),                 # Perceptual hash similarity to known AI patterns
-    'dct': (0.0, 1.0),                  # Analyzes DCT AC/DC energy ratios
-    'channel_correlation': (0.0, 1.0),  # Detects chromatic aberration vs AI alignment
-    'glcm': (0.0, 1.0),                 # GLCM contrast/homogeneity
-    'noise_spectrum': (0.0, 1.0),       # High frequency noise signature analysis
-    'ycbcr_correlation': (0.0, 1.0)     # Chrominance and Luminance correlation 
+    # The Power Trio (Consistently > 0.7 in Phase 1)
+    'gradient': (0.5, 1.0),
+    'noise': (0.5, 1.0),
+    'hash': (0.5, 1.0),
+    
+    # Support Signals (Consistently 0.2 - 0.6)
+    'pattern': (0.1, 0.6),
+    'symmetry': (0.1, 0.6),
+    'texture': (0.1, 0.6),
+    'color': (0.1, 0.6),
+    'noise_spectrum': (0.1, 0.6),
+    'channel_correlation': (0.1, 0.6),
+    
+    # Low Priority / Noisy Signals (Consistently < 0.2)
+    'edge': (0.0, 0.3),
+    'dct': (0.0, 0.3),
+    'glcm': (0.0, 0.3),
+    'ycbcr_correlation': (0.0, 0.1)
 }
 
 
@@ -74,26 +81,24 @@ feature_weight_ranges = {
 # =============================================================================
 
 # Population and generation settings
-population_size_range = (100, 180)
-n_generations_range = (100, 350)
+population_size_range = (150, 220)
+n_generations_range = (80, 150)
 
 # Rule configuration
-rules_per_individual_range = (10, 25)
-max_possible_rules_range = (15, 50)
+# We have 13 features, so we want at least 13-14 rules for full coverage
+rules_per_individual_range = (14, 25)
+max_possible_rules_range = (30, 60)
 
 # Mask coverage (Sparsity) targets
-# target_sparsity is the center of the efficiency plateau
-# sparsity_radius is the half-width of the plateau
-# These ranges ensure the plateau stays within [0.1, 0.9]
-target_sparsity_range = (0.3, 0.7)
-sparsity_radius_range = (0.05, 0.2)
+target_sparsity_range = (0.4, 0.75)
+sparsity_radius_range = (0.1, 0.20)
 
 # Genetic operators
-crossover_prob_range = (0.5, 0.75)
-mutation_prob_range = (0.2, 0.5)
-tournament_size_range = (2, 8)
-num_elites_range = (1, 5)
-inactive_weight_penalty_range = (0.0, 0.5)
+crossover_prob_range = (0.5, 0.7)
+mutation_prob_range = (0.2, 0.4)
+tournament_size_range = (2, 5)
+num_elites_range = (2, 4)
+inactive_weight_penalty_range = (0.05, 0.2)
 
 
 # =============================================================================

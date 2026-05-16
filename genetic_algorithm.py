@@ -164,9 +164,12 @@ class GeneticFeatureOptimizer:
         logger.info(f"Extracting features for {num_samples} evaluation images...")
 
         # Extract features for all images in batches
+        tf.keras.backend.clear_session()
+        
         started_profiler = False
-        if self.config.profile:
-            profile_dir = os.path.join(self.config.profile_log_dir, 'feature_extraction')
+        if getattr(self.config, 'profile', False):
+            profile_dir = os.path.join(getattr(self.config, 'profile_log_dir', 'profiler_logs'), 'feature_extraction')
+            os.makedirs(profile_dir, exist_ok=True)
             tf.profiler.experimental.start(profile_dir)
             started_profiler = True
             logger.info(f"Feature extraction profiling started. Logging to {profile_dir}")
@@ -188,6 +191,9 @@ class GeneticFeatureOptimizer:
 
         # Concatenate all batch features into a single tensor
         raw_features = tf.concat(all_batch_features, axis=0)
+        del all_batch_features
+        import gc
+        gc.collect()
         
         # --- Automated Feature Scaling (Dynamic Normalization) ---
         # We calculate the 99th percentile for each feature to use as a scaling divisor.
@@ -236,64 +242,38 @@ class GeneticFeatureOptimizer:
         else:
             logger.info("Features already computed. Use force=True to recompute.")
 
-    def precompute_probe_features(self, images, labels):
+    def precompute_probe_features(self, images=None, labels=None):
         """
-        Precompute and cache features for a cross-generator probe set.
-
+        Precompute and cache features for the probe dataset once.
+        Processes in batches to avoid GPU OOM.
+        
         Uses the EXISTING self.feature_scales (calibrated on training data) so that
         probe features are on exactly the same scale as training features — ensuring
         a fair, apples-to-apples fitness comparison.
 
-        Call this ONCE after the main feature precomputation.  The results are stored
-        in self.probe_features / self.probe_labels and reused across all Optuna trials.
-
         Args:
-            images: Numpy array  [N, H, W, 3]
-            labels: Numpy array  [N] int labels (0=real, 1=ai)
+            images: Optional numpy array of images. If None, loaded via DataLoader.
+            labels: Optional numpy array of labels. If None, loaded via DataLoader.
         """
+        if hasattr(self, 'precomputed_probe_features') and self.precomputed_probe_features is not None:
+            return
+
         if self.feature_scales is None:
             raise RuntimeError(
                 "Cannot precompute probe features before training feature scales are calibrated. "
                 "Call _precompute_features() first."
             )
 
-        logger.info(f"Precomputing probe features for {len(images)} cross-generator images ...")
-        start = time.time()
-
-        all_batch_features = []
-        num_samples = len(images)
-        for i in range(0, num_samples, self.config.extraction_batch_size):
-            batch_images = images[i : i + self.config.extraction_batch_size]
-            batch_features = self.feature_extractor.extract_batch_patch_features(batch_images)
-            all_batch_features.append(batch_features)
-
-        raw_features = tf.concat(all_batch_features, axis=0)
-
-        # Normalise with TRAINING scales (no re-calibration)
-        self.probe_features = raw_features / self.feature_scales
-        self.probe_labels   = tf.convert_to_tensor(labels, dtype=tf.float32)
-
-        logger.info(
-            f"Probe features precomputed in {time.time() - start:.2f}s  "
-            f"shape={self.probe_features.shape}"
-        )
-
-    def precompute_probe_features(self):
-        """
-        Precompute and cache features for the probe dataset once.
-        Processes in batches to avoid GPU OOM.
-        """
-        if hasattr(self, 'precomputed_probe_features') and self.precomputed_probe_features is not None:
-            return
-
-        from data_loader import DataLoader
-        dl = DataLoader()
-        logger.info("Loading probe images for precomputation...")
-        probe_images, probe_labels = dl.create_val_sample(sample_size=self.config.probe_sample_size)
-        self.probe_labels = tf.convert_to_tensor(probe_labels, dtype=tf.float32)
+        if images is None or labels is None:
+            from data_loader import DataLoader
+            dl = DataLoader()
+            logger.info("Loading probe images for precomputation via DataLoader...")
+            images, labels = dl.create_val_sample(sample_size=self.config.probe_sample_size)
         
-        # Extract and cache features in batches to avoid OOM
-        logger.info(f"Extracting features for {len(probe_images)} probe images...")
+        self.probe_labels = tf.convert_to_tensor(labels, dtype=tf.float32)
+        
+        logger.info(f"Extracting probe features for {len(images)} images...")
+        start_time = time.time()
         
         batch_size = self.config.extraction_batch_size
         all_probe_features = []
@@ -301,9 +281,10 @@ class GeneticFeatureOptimizer:
         # Reset session to ensure fresh workspace
         tf.keras.backend.clear_session()
         
-        for i in range(0, len(probe_images), batch_size):
-            batch_end = min(i + batch_size, len(probe_images))
-            batch_imgs = tf.convert_to_tensor(probe_images[i:batch_end], dtype=tf.float32)
+        num_samples = len(images)
+        for i in range(0, num_samples, batch_size):
+            batch_end = min(i + batch_size, num_samples)
+            batch_imgs = images[i:batch_end]
             
             # Extract features for this batch
             batch_features = self.feature_extractor.extract_batch_patch_features(batch_imgs)
@@ -313,10 +294,17 @@ class GeneticFeatureOptimizer:
         raw_probe_features = tf.concat(all_probe_features, axis=0)
         self.precomputed_probe_features = raw_probe_features / self.feature_scales
         
-        # Clear images to free RAM
-        del probe_images
-        import gc
-        gc.collect()
+        # Clear temporary images to free RAM if they were loaded here
+        if 'dl' in locals():
+            del images
+            import gc
+            gc.collect()
+            
+        logger.info(
+            f"Probe features precomputed in {time.time() - start_time:.2f}s  "
+            f"shape={self.precomputed_probe_features.shape}"
+        )
+
 
     def eval_on_probe(self, individual, penalized=False):
         """
@@ -355,7 +343,7 @@ class GeneticFeatureOptimizer:
             self.config.fitness_weights, self.max_rules_tf,
             self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
         )
-        return float(fitness[0])
+        return float(fitness[5]) # base_fitness (unpenalized)
 
     def get_fitness_breakdown(self, individual, features=None, labels=None):
         """
@@ -1026,7 +1014,7 @@ class GeneticFeatureOptimizer:
             self.precomputed_features, self.labels, self.feature_weights,
             individual.rules_tensor, self.n_patches_h, self.n_patches_w,
             self.config.fitness_weights, self.max_rules_tf,
-            self.inactive_penalty_tf
+            self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
         )
         fitness = fitness_vals[0]
         

@@ -1,13 +1,14 @@
 {
-  "population_size": 155,
-  "n_generations": 156,
-  "rules_per_individual": 21,
+  "population_size": 161,
+  "n_generations": 101,
+  "rules_per_individual": 14,
   "max_possible_rules": 50,
-  "crossover_prob": 0.7225458661866344,
-  "mutation_prob": 0.29884094621818,
-  "tournament_size": 3,
-  "num_elites": 1,
-  "inactive_weight_penalty": 0.3356575859867043,
-  "random_seed": 42,
-  "verbose": false
+  "crossover_prob": 0.5980122554396453,
+  "mutation_prob": 0.3457401846832045,
+  "tournament_size": 6,
+  "num_elites": 3,
+  "inactive_weight_penalty": 0.0062578187585477585,
+  "target_sparsity": 0.6232264137788657,
+  "sparsity_radius": 0.18194208900897688,
+  "fitness": 0.3350957944367726
 }

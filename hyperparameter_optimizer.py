@@ -765,6 +765,8 @@ class HyperparameterOptimizer:
             'tournament_size':      int(best_trial.params['tournament_size']),
             'num_elites':           int(best_trial.params['num_elites']),
             'inactive_weight_penalty': float(best_trial.params.get('inactive_weight_penalty', getattr(config, 'inactive_weight_penalty', 0.0))),
+            'target_sparsity':      float(best_trial.params.get('target_sparsity', getattr(config, 'target_sparsity', 0.4))),
+            'sparsity_radius':      float(best_trial.params.get('sparsity_radius', getattr(config, 'sparsity_radius', 0.2))),
         }
         
         # Ensure max_possible_rules >= rules_per_individual
