@@ -9,8 +9,8 @@ Modify these values to control the optimization process.
 # =============================================================================
 
 # Number of trials for each optimization phase
-feature_weight_trials = 80  # Trials for optimizing feature weights
-ga_config_trials = 80       # Trials for optimizing GA configuration
+feature_weight_trials = 100  # Trials for optimizing feature weights
+ga_config_trials = 100       # Trials for optimizing GA configuration
 
 # Study names (for organization/logging)
 feature_weight_study_name = "feature_weights_optimization"
@@ -61,18 +61,23 @@ feature_weight_ranges = {
     'hash': (0.5, 1.0),
     
     # Support Signals (Consistently 0.2 - 0.6)
-    'pattern': (0.1, 0.6),
     'symmetry': (0.1, 0.6),
     'texture': (0.1, 0.6),
     'color': (0.1, 0.6),
     'noise_spectrum': (0.1, 0.6),
-    'channel_correlation': (0.1, 0.6),
+
+    # Mixed
+
+    'glcm': (0.0, 0.6),
+    'dct': (0.0, 0.6),
+    'saturation_clipping': (0.0, 1.0),
+    'local_entropy': (0.0, 1.0),
+
+    # Weak
+    'channel_correlation': (0.0, 0.3),
+    'pattern': (0.0, 0.3)
     
-    # Low Priority / Noisy Signals (Consistently < 0.2)
-    'edge': (0.0, 0.3),
-    'dct': (0.0, 0.3),
-    'glcm': (0.0, 0.3),
-    'ycbcr_correlation': (0.0, 0.1)
+
 }
 
 

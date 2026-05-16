@@ -287,11 +287,42 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
-    def _extract_edge_feature(self, image: tf.Tensor) -> tf.Tensor:
-        with tf.name_scope('edge_feature'):
-            gray = tf.cast(self._rgb_to_grayscale(image), tf.float32) * 255.0
-            edge_map = self._tf_native_canny(gray, low_threshold=50.0, high_threshold=150.0)
-            return self._apply_mask(edge_map, image)
+    def _extract_saturation_clipping_feature(self, image: tf.Tensor) -> tf.Tensor:
+        """
+        Saturation Clipping Asymmetry: Physical camera sensors clip highlights and
+        shadows in each R/G/B channel independently, producing a characteristic
+        inter-channel variance in the clipping ratio. AI generators tend to either
+        avoid clipping entirely (smooth gradients) or clip in an unnaturally uniform
+        way across all three channels.
+
+        Method:
+            1. Count per-channel fraction of pixels near 0 (shadow clip) or 1 (highlight clip).
+            2. Measure variance of these per-channel clip ratios.
+            3. High variance = natural sensor behaviour; Low variance = AI-like uniformity.
+        """
+        with tf.name_scope('saturation_clipping_feature'):
+            # Threshold: pixels within 2/255 of the clip boundaries
+            clip_low  = 2.0 / 255.0
+            clip_high = 253.0 / 255.0
+
+            near_zero = tf.cast(image < clip_low,  tf.float32)   # [batch, H, W, 3]
+            near_one  = tf.cast(image > clip_high, tf.float32)   # [batch, H, W, 3]
+            clipped   = near_zero + near_one                      # [batch, H, W, 3]
+
+            # Per-channel clip fraction: mean over spatial dims
+            clip_ratio = tf.reduce_mean(clipped, axis=[-3, -2])   # [batch, 3]
+
+            # Inter-channel variance of clip ratio is the forensic signal
+            clip_variance = tf.math.reduce_variance(clip_ratio, axis=-1)  # [batch]
+
+            # Normalise: natural images typically have variance up to ~0.01
+            score = tf.clip_by_value(clip_variance / 0.01, 0.0, 1.0)     # [batch]
+            score = tf.reshape(score, [-1, 1, 1])
+
+            # Broadcast to spatial dims using the grayscale shape as reference
+            gray = self._rgb_to_grayscale(image)
+            feature_map = tf.ones_like(gray) * score
+            return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)

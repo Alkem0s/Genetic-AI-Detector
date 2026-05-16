@@ -86,14 +86,14 @@ class FeatureExtractor:
         Returns a 3D tensor: [patch_size, patch_size, num_features]
 
         Feature order must match global_config / optuna_config.feature_weight_ranges key order:
-            gradient, pattern, noise, edge, symmetry, texture,
+            gradient, pattern, noise, saturation_clipping, symmetry, texture,
             color, hash, dct, channel_correlation, glcm,
-            noise_spectrum, ycbcr_correlation
+            noise_spectrum, local_entropy
         """
         gradient_feature   = self.structural_extractor._extract_gradient_feature(patch)
         pattern_feature    = self.structural_extractor._extract_pattern_feature(patch)
         noise_feature      = self.texture_extractor._extract_noise_feature(patch)
-        edge_feature       = self.structural_extractor._extract_edge_feature(patch)
+        saturation_clipping_feature = self.structural_extractor._extract_saturation_clipping_feature(patch)
         symmetry_feature   = self.structural_extractor._extract_symmetry_feature(patch)
         texture_feature    = self.texture_extractor._extract_texture_feature(patch)
         color_feature      = self.texture_extractor._extract_color_feature(patch)
@@ -102,14 +102,14 @@ class FeatureExtractor:
         channel_correlation_feature = self.texture_extractor._extract_channel_correlation_feature(patch)
         glcm_feature       = self.texture_extractor._extract_glcm_feature(patch)
         noise_spectrum_feature = self.structural_extractor._extract_noise_spectrum_feature(patch)
-        ycbcr_correlation_feature = self.texture_extractor._extract_ycbcr_correlation_feature(patch)
+        local_entropy_feature = self.texture_extractor._extract_local_entropy_feature(patch)
 
         # Stack in the same order as feature_weights in global_config.py / optuna_config.py
         feature_stack = tf.stack([
             gradient_feature,
             pattern_feature,
             noise_feature,
-            edge_feature,
+            saturation_clipping_feature,
             symmetry_feature,
             texture_feature,
             color_feature,
@@ -118,7 +118,7 @@ class FeatureExtractor:
             channel_correlation_feature,
             glcm_feature,
             noise_spectrum_feature,
-            ycbcr_correlation_feature,
+            local_entropy_feature,
         ], axis=-1)  # [patch_size, patch_size, 13]
 
         return feature_stack

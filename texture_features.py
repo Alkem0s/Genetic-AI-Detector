@@ -178,56 +178,58 @@ class TextureFeatureExtractor(BaseFeatureExtractor):
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
-    def _extract_ycbcr_correlation_feature(self, image: tf.Tensor) -> tf.Tensor:
+    def _extract_local_entropy_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
-        Saturation-Weighted YCbCr Correlation: Measures how tightly brightness and
-        chroma are coupled, weighted by per-pixel saturation.
+        Local Patch Entropy: Measures the Shannon entropy of the grayscale intensity
+        histogram within each patch. AI generators produce patches with a characteristic
+        entropy profile — either too uniform (smooth flat regions from diffusion) or
+        too structured (repeating artifacts from upsampling). Natural sensor noise
+        creates a specific entropy 'texture' that is hard to fake.
 
-        AI generators often produce flat, highly-saturated colour regions where
-        the luminance gradient is decoupled from the chroma — a physically unusual
-        condition.  Weighting by saturation focuses the metric on exactly those
-        regions where the decoupling is most diagnostic.
-
-        High score → strong coupling (possibly AI palette smoothing).
-        Low score  → decoupled chroma (possibly real noise).
-        The GA rules can learn either direction depending on the generator.
+        Method:
+            1. Quantize grayscale to N intensity bins.
+            2. Build a soft histogram via segment-sum.
+            3. Compute Shannon entropy H = -sum(p * log(p)).
+            4. Normalize by log(N) so output is in [0, 1].
         """
-        with tf.name_scope('ycbcr_correlation'):
-            image_rgb = tf.clip_by_value(image[..., ::-1], 0.0, 1.0)
+        with tf.name_scope('local_entropy_feature'):
+            gray = self._rgb_to_grayscale(image)  # [batch, H, W]
 
-            yuv = tf.image.rgb_to_yuv(image_rgb)
-            y   = yuv[..., 0]
-            u   = yuv[..., 1]
-            v   = yuv[..., 2]
+            n_bins = 32
+            rank   = tf.rank(gray)
+            n_batch = tf.cond(tf.equal(rank, 2), lambda: 1, lambda: tf.shape(gray)[0])
+            gray_3d = tf.cond(tf.equal(rank, 2), lambda: tf.expand_dims(gray, 0), lambda: gray)
 
-            # Saturation from HSV (proxy for chroma importance per pixel)
-            hsv = tf.image.rgb_to_hsv(image_rgb)
-            sat = hsv[..., 1]  # [batch, H, W], in [0, 1]
+            # Quantize to [0, n_bins - 1]
+            gray_q = tf.cast(
+                tf.clip_by_value(tf.floor(gray_3d * n_bins), 0, n_bins - 1),
+                tf.int32
+            )  # [batch, H, W]
 
-            # Saturation-weighted Pearson correlation between Y and U / Y and V
-            def weighted_pearson_corr(a, b, w):
-                """Pearson r with per-pixel weights w (same shape as a, b)."""
-                w_sum   = tf.reduce_sum(w, axis=[-2, -1], keepdims=True) + self.EPSILON_TF
-                mean_a  = tf.reduce_sum(w * a, axis=[-2, -1], keepdims=True) / w_sum
-                mean_b  = tf.reduce_sum(w * b, axis=[-2, -1], keepdims=True) / w_sum
-                a_dev   = a - mean_a
-                b_dev   = b - mean_b
-                covar   = tf.reduce_sum(w * a_dev * b_dev,   axis=[-2, -1])
-                var_a   = tf.reduce_sum(w * tf.square(a_dev), axis=[-2, -1])
-                var_b   = tf.reduce_sum(w * tf.square(b_dev), axis=[-2, -1])
-                std_a   = tf.sqrt(var_a / (tf.reduce_sum(w, axis=[-2, -1]) + self.EPSILON_TF) + self.EPSILON_TF)
-                std_b   = tf.sqrt(var_b / (tf.reduce_sum(w, axis=[-2, -1]) + self.EPSILON_TF) + self.EPSILON_TF)
-                return covar / (tf.reduce_sum(w, axis=[-2, -1]) * std_a * std_b + self.EPSILON_TF)
+            # Build per-batch histogram via segment_sum
+            flat_q = tf.reshape(gray_q, [n_batch, -1])  # [batch, H*W]
+            batch_offsets = tf.expand_dims(tf.range(n_batch) * n_bins, 1)
+            flat_idx = tf.reshape(flat_q + batch_offsets, [-1])
+            ones = tf.ones(tf.shape(flat_idx), dtype=tf.float32)
+            hist_flat = tf.math.unsorted_segment_sum(ones, flat_idx, n_batch * n_bins)
+            hist = tf.reshape(hist_flat, [n_batch, n_bins])  # [batch, n_bins]
 
-            corr_yu = weighted_pearson_corr(y, u, sat)
-            corr_yv = weighted_pearson_corr(y, v, sat)
+            # Normalize to probability distribution
+            hist_sum = tf.reduce_sum(hist, axis=1, keepdims=True) + self.EPSILON_TF
+            p = hist / hist_sum
 
-            # Absolute magnitude of the average weighted correlation
-            avg_abs_corr = (tf.abs(corr_yu) + tf.abs(corr_yv)) / 2.0
-            score = tf.clip_by_value(avg_abs_corr, 0.0, 1.0)
+            # Shannon entropy: H = -sum(p * log(p)), in nats
+            log_p = tf.math.log(p + self.EPSILON_TF)
+            entropy = -tf.reduce_sum(p * log_p, axis=1)  # [batch]
+
+            # Normalize by log(n_bins) → [0, 1]
+            max_entropy = tf.math.log(tf.cast(n_bins, tf.float32))
+            score = tf.clip_by_value(entropy / max_entropy, 0.0, 1.0)
+
+            score = tf.cond(tf.equal(rank, 2), lambda: tf.squeeze(score, [0]), lambda: score)
             score = tf.reshape(score, [-1, 1, 1])
 
-            feature_map = tf.ones_like(y) * score
+            feature_map = tf.ones_like(gray) * score
             return self._apply_mask(feature_map, image)
 
     @tf.function(input_signature=[
