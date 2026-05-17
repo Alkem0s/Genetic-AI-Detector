@@ -70,7 +70,7 @@ feature_weight_ranges = {
 
     'glcm': (0.0, 0.6),
     'dct': (0.0, 0.6),
-    'saturation_clipping': (0.0, 1.0),
+    'laplacian_peak_ratio': (0.0, 1.0),
     'local_entropy': (0.0, 1.0),
 
     # Weak

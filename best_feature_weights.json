@@ -2,7 +2,7 @@
   "gradient": 0.20222466,
   "pattern": 0.02708703,
   "noise": 0.13339785,
-  "saturation_clipping": 0.1,
+  "laplacian_peak_ratio": 0.1,
   "symmetry": 0.06288187,
   "texture": 0.09695127,
   "color": 0.05866314,

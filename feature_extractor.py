@@ -86,14 +86,14 @@ class FeatureExtractor:
         Returns a 3D tensor: [patch_size, patch_size, num_features]
 
         Feature order must match global_config / optuna_config.feature_weight_ranges key order:
-            gradient, pattern, noise, saturation_clipping, symmetry, texture,
+            gradient, pattern, noise, laplacian_peak_ratio, symmetry, texture,
             color, hash, dct, channel_correlation, glcm,
             noise_spectrum, local_entropy
         """
         gradient_feature   = self.structural_extractor._extract_gradient_feature(patch)
         pattern_feature    = self.structural_extractor._extract_pattern_feature(patch)
         noise_feature      = self.texture_extractor._extract_noise_feature(patch)
-        saturation_clipping_feature = self.structural_extractor._extract_saturation_clipping_feature(patch)
+        laplacian_peak_ratio_feature = self.structural_extractor._extract_laplacian_peak_ratio_feature(patch)
         symmetry_feature   = self.structural_extractor._extract_symmetry_feature(patch)
         texture_feature    = self.texture_extractor._extract_texture_feature(patch)
         color_feature      = self.texture_extractor._extract_color_feature(patch)
@@ -109,7 +109,7 @@ class FeatureExtractor:
             gradient_feature,
             pattern_feature,
             noise_feature,
-            saturation_clipping_feature,
+            laplacian_peak_ratio_feature,
             symmetry_feature,
             texture_feature,
             color_feature,

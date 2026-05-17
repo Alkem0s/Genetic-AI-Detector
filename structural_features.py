@@ -287,42 +287,65 @@ class StructuralFeatureExtractor(BaseFeatureExtractor):
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
     ])
-    def _extract_saturation_clipping_feature(self, image: tf.Tensor) -> tf.Tensor:
+    def _extract_laplacian_peak_ratio_feature(self, image: tf.Tensor) -> tf.Tensor:
         """
-        Saturation Clipping Asymmetry: Physical camera sensors clip highlights and
-        shadows in each R/G/B channel independently, producing a characteristic
-        inter-channel variance in the clipping ratio. AI generators tend to either
-        avoid clipping entirely (smooth gradients) or clip in an unnaturally uniform
-        way across all three channels.
+        Laplacian Peak Ratio: Measures the concentration of high-frequency energy
+        relative to background mid-frequency energy in the Laplacian domain.
+
+        AI generators produce unnatural sharpness spikes from their upsampling layers
+        (transposed convolutions, pixel shuffle, etc.), creating a high local
+        peak-to-mean ratio in the Laplacian response. Physical camera lenses distribute
+        blur and sharpness continuously and smoothly, creating a lower, more uniform ratio.
+
+        This signal is robust to JPEG compression because it measures relative ratios
+        between frequency bands rather than absolute pixel values.
 
         Method:
-            1. Count per-channel fraction of pixels near 0 (shadow clip) or 1 (highlight clip).
-            2. Measure variance of these per-channel clip ratios.
-            3. High variance = natural sensor behaviour; Low variance = AI-like uniformity.
+            1. Apply Laplacian kernel to get the high-frequency response.
+            2. Compute local max (3x3 max-pool) vs. local mean (3x3 avg-pool).
+            3. Aggregate the mean peak-to-mean ratio across the patch.
+            4. Normalise: natural ~2-4x ratio maps to low score; AI spikes ~8-12x map to high.
         """
-        with tf.name_scope('saturation_clipping_feature'):
-            # Threshold: pixels within 2/255 of the clip boundaries
-            clip_low  = 2.0 / 255.0
-            clip_high = 253.0 / 255.0
+        with tf.name_scope('laplacian_peak_ratio'):
+            gray = self._rgb_to_grayscale(image)  # [batch, H, W]
 
-            near_zero = tf.cast(image < clip_low,  tf.float32)   # [batch, H, W, 3]
-            near_one  = tf.cast(image > clip_high, tf.float32)   # [batch, H, W, 3]
-            clipped   = near_zero + near_one                      # [batch, H, W, 3]
+            laplacian_kernel = tf.reshape(
+                tf.constant([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]], dtype=tf.float32),
+                [3, 3, 1, 1]
+            )
 
-            # Per-channel clip fraction: mean over spatial dims
-            clip_ratio = tf.reduce_mean(clipped, axis=[-3, -2])   # [batch, 3]
+            rank = tf.rank(gray)
+            gray_exp = tf.cond(
+                tf.equal(rank, 2),
+                lambda: tf.expand_dims(tf.expand_dims(gray, 0), -1),
+                lambda: tf.expand_dims(gray, -1)
+            )  # [batch, H, W, 1]
 
-            # Inter-channel variance of clip ratio is the forensic signal
-            clip_variance = tf.math.reduce_variance(clip_ratio, axis=-1)  # [batch]
+            lap     = tf.nn.conv2d(gray_exp, laplacian_kernel, strides=[1, 1, 1, 1], padding='SAME')
+            lap_abs = tf.abs(lap)  # [batch, H, W, 1]
 
-            # Normalise: natural images typically have variance up to ~0.01
-            score = tf.clip_by_value(clip_variance / 0.01, 0.0, 1.0)     # [batch]
+            # Local max via 3x3 max-pool
+            local_max = tf.nn.max_pool2d(lap_abs, ksize=3, strides=1, padding='SAME')
+
+            # Local mean via 3x3 average-pool
+            mean_kernel = tf.ones([3, 3, 1, 1], dtype=tf.float32) / 9.0
+            local_mean  = tf.nn.conv2d(lap_abs, mean_kernel, strides=[1, 1, 1, 1], padding='SAME')
+
+            # Peak-to-mean ratio at each pixel
+            peak_ratio = local_max / (local_mean + self.EPSILON_TF)  # [batch, H, W, 1]
+
+            # Aggregate: mean peak ratio across spatial dims -> [batch]
+            mean_ratio = tf.reduce_mean(peak_ratio, axis=[1, 2, 3])
+
+            # Normalise: ratio in [1, 10+]; natural images ~2-4, AI spikes ~8-12
+            score = tf.clip_by_value((mean_ratio - 1.0) / 9.0, 0.0, 1.0)
+
+            score = tf.cond(tf.equal(rank, 2), lambda: tf.squeeze(score, [0]), lambda: score)
             score = tf.reshape(score, [-1, 1, 1])
 
-            # Broadcast to spatial dims using the grayscale shape as reference
-            gray = self._rgb_to_grayscale(image)
             feature_map = tf.ones_like(gray) * score
             return self._apply_mask(feature_map, image)
+
 
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[None, config.patch_size, config.patch_size, 3], dtype=tf.float32)
