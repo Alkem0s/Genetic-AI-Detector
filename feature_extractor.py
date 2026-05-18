@@ -82,24 +82,22 @@ class FeatureExtractor:
     ])
     def _extract_single_patch_features(self, patch: tf.Tensor) -> tf.Tensor:
         """
-        Extracts all 13 individual features from a single patch.
+        Extracts all 11 individual features from a single patch.
         Returns a 3D tensor: [patch_size, patch_size, num_features]
 
         Feature order must match global_config / optuna_config.feature_weight_ranges key order:
-            gradient, pattern, noise, laplacian_peak_ratio, symmetry, texture,
-            color, hash, dct, channel_correlation, glcm,
+            gradient, pattern, noise, symmetry, texture,
+            color, hash, dct, glcm,
             noise_spectrum, local_entropy
         """
         gradient_feature   = self.structural_extractor._extract_gradient_feature(patch)
         pattern_feature    = self.structural_extractor._extract_pattern_feature(patch)
         noise_feature      = self.texture_extractor._extract_noise_feature(patch)
-        laplacian_peak_ratio_feature = self.structural_extractor._extract_laplacian_peak_ratio_feature(patch)
         symmetry_feature   = self.structural_extractor._extract_symmetry_feature(patch)
         texture_feature    = self.texture_extractor._extract_texture_feature(patch)
         color_feature      = self.texture_extractor._extract_color_feature(patch)
         hash_feature       = self.texture_extractor._extract_hash_feature(patch)
         dct_feature        = self.structural_extractor._extract_dct_feature(patch)
-        channel_correlation_feature = self.texture_extractor._extract_channel_correlation_feature(patch)
         glcm_feature       = self.texture_extractor._extract_glcm_feature(patch)
         noise_spectrum_feature = self.structural_extractor._extract_noise_spectrum_feature(patch)
         local_entropy_feature = self.texture_extractor._extract_local_entropy_feature(patch)
@@ -109,17 +107,15 @@ class FeatureExtractor:
             gradient_feature,
             pattern_feature,
             noise_feature,
-            laplacian_peak_ratio_feature,
             symmetry_feature,
             texture_feature,
             color_feature,
             hash_feature,
             dct_feature,
-            channel_correlation_feature,
             glcm_feature,
             noise_spectrum_feature,
             local_entropy_feature,
-        ], axis=-1)  # [patch_size, patch_size, 13]
+        ], axis=-1)  # [patch_size, patch_size, 11]
 
         return feature_stack
     

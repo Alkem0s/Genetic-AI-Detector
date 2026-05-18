@@ -36,7 +36,7 @@ use_proxy_ga_config = True
 proxy_ga_config = {
     "population_size": 160,
     "n_generations": 120,
-    "rules_per_individual": 14,
+    "rules_per_individual": 12,
     "max_possible_rules": 50,
     "crossover_prob": 0.6,
     "mutation_prob": 0.35,
@@ -67,17 +67,12 @@ feature_weight_ranges = {
     'noise_spectrum': (0.1, 0.6),
 
     # Mixed
-
     'glcm': (0.0, 0.6),
     'dct': (0.0, 0.6),
-    'laplacian_peak_ratio': (0.0, 1.0),
     'local_entropy': (0.0, 1.0),
 
     # Weak
-    'channel_correlation': (0.0, 0.3),
     'pattern': (0.0, 0.3)
-    
-
 }
 
 
@@ -86,17 +81,17 @@ feature_weight_ranges = {
 # =============================================================================
 
 # Population and generation settings
-population_size_range = (150, 220)
-n_generations_range = (80, 150)
+population_size_range = (100, 250)  # Expanded downwards to allow lighter GAs
+n_generations_range = (50, 200)    # Expanded downwards to allow faster convergence
 
 # Rule configuration
-# We have 13 features, so we want at least 13-14 rules for full coverage
-rules_per_individual_range = (14, 25)
+# We have 11 features, so we want at least 11-12 rules for full coverage
+rules_per_individual_range = (12, 25)
 max_possible_rules_range = (30, 60)
 
 # Mask coverage (Sparsity) targets
-target_sparsity_range = (0.4, 0.75)
-sparsity_radius_range = (0.1, 0.20)
+target_sparsity_range = (0.25, 0.70)  # Expanded downwards to allow sparser/more efficient selective masks
+sparsity_radius_range = (0.05, 0.20) # Expanded downwards to allow tighter constraints
 
 # Genetic operators
 crossover_prob_range = (0.5, 0.7)
@@ -104,6 +99,9 @@ mutation_prob_range = (0.2, 0.4)
 tournament_size_range = (2, 5)
 num_elites_range = (2, 4)
 inactive_weight_penalty_range = (0.05, 0.2)
+
+# Compute effort penalty coefficient (used in Phase 2 to discourage bloated populations/generations)
+compute_penalty_coefficient = 5e-7  # Halved from 1e-6 (0.005 penalty per 10,000 extra evaluations)
 
 
 # =============================================================================

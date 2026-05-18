@@ -606,7 +606,8 @@ class HyperparameterOptimizer:
             pop_size = ga_params.get('population_size', 100)
             n_gens = ga_params.get('n_generations', 100)
             compute_effort = pop_size * n_gens
-            compute_penalty = compute_effort * 1e-6  # 0.01 penalty per 10,000 extra evaluations
+            penalty_coeff = getattr(config, 'compute_penalty_coefficient', 5e-7)
+            compute_penalty = compute_effort * penalty_coeff  # Discourage bloated evaluations
             
             final_score = fitness - compute_penalty
             
