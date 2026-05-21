@@ -102,97 +102,99 @@ class DataLoader:
     def _stratified_subsample(self, df, max_samples):
         """
         Subsample the dataframe to a maximum number of samples while preserving
-        label proportions.
+        both label and generator proportions if both columns exist, otherwise fallback
+        to label proportions.
         """
         if df.empty or len(df) <= max_samples:
             return df
-            
-        label_counts = df['label'].value_counts()
-        total_samples = len(df)
 
-        # Calculate target samples per label based on original proportions
-        target_samples_per_label = {}
+        # Determine stratification columns
+        strat_cols = []
+        if 'generator' in df.columns:
+            strat_cols.append('generator')
+        if 'label' in df.columns:
+            strat_cols.append('label')
+
+        if not strat_cols:
+            # Fallback to simple random sampling if no stratification columns are present
+            return df.sample(n=max_samples, random_state=self.random_seed).reset_index(drop=True)
+
+        # Get the group counts
+        group_counts = df.groupby(strat_cols).size()
+        total_samples = len(df)
+        
+        # Calculate target samples per group based on original proportions
+        target_samples_per_group = {}
         allocated_samples = 0
         
-        # First, calculate proportional allocation
-        for label in label_counts.index:
-            proportion = label_counts[label] / total_samples
+        for group, count in group_counts.items():
+            proportion = count / total_samples
             target_count = int(max_samples * proportion)
-            
-            # Ensure at least 1 sample per label if the label exists and we have room
-            if target_count == 0 and label_counts[label] > 0 and allocated_samples < max_samples:
+            # Ensure at least 1 sample if group exists and we have room
+            if target_count == 0 and count > 0 and allocated_samples < max_samples:
                 target_count = 1
-            
-            # Don't exceed available samples for this label
-            target_count = min(target_count, label_counts[label])
-            
-            target_samples_per_label[label] = target_count
+            target_count = min(target_count, count)
+            target_samples_per_group[group] = target_count
             allocated_samples += target_count
-        
-        # If we haven't allocated all samples, distribute the remainder
-        # proportionally among labels that have more samples available
+
+        # Distribute remaining samples
         remaining_samples = max_samples - allocated_samples
-        
         if remaining_samples > 0:
-            # Calculate how many additional samples we can take from each label
-            available_additional = {}
-            for label in label_counts.index:
-                available_additional[label] = max(0, label_counts[label] - target_samples_per_label[label])
-            
-            # Distribute remaining samples proportionally among labels with availability
+            available_additional = {group: max(0, count - target_samples_per_group[group]) 
+                                    for group, count in group_counts.items()}
             total_additional_available = sum(available_additional.values())
             
             if total_additional_available > 0:
-                for label in label_counts.index:
-                    if available_additional[label] > 0:
-                        proportion = available_additional[label] / total_additional_available
-                        additional = min(
-                            int(remaining_samples * proportion),
-                            available_additional[label]
-                        )
-                        target_samples_per_label[label] += additional
+                for group in group_counts.index:
+                    if available_additional[group] > 0:
+                        proportion = available_additional[group] / total_additional_available
+                        additional = min(int(remaining_samples * proportion), available_additional[group])
+                        target_samples_per_group[group] += additional
                         remaining_samples -= additional
-                        
                         if remaining_samples <= 0:
                             break
-            
-            # If there are still remaining samples, add them one by one to labels with availability
+                            
+            # Add one by one if there are still remaining due to rounding
             while remaining_samples > 0:
                 added_any = False
-                for label in label_counts.index:
+                for group in group_counts.index:
                     if remaining_samples <= 0:
                         break
-                    if target_samples_per_label[label] < label_counts[label]:
-                        target_samples_per_label[label] += 1
+                    if target_samples_per_group[group] < group_counts[group]:
+                        target_samples_per_group[group] += 1
                         remaining_samples -= 1
                         added_any = True
-                
-                # If we can't add any more samples, break to avoid infinite loop
                 if not added_any:
                     break
-        
-        # Sample from each label according to target counts
+
+        # Sample from each group according to target counts
         subsampled_dfs = []
-        for label, target_count in target_samples_per_label.items():
+        for group, target_count in target_samples_per_group.items():
             if target_count > 0:
-                label_df = df[df['label'] == label]
-                sampled_df = label_df.sample(n=target_count, random_state=self.random_seed)
+                # Filter df for this group
+                if len(strat_cols) == 1:
+                    mask = (df[strat_cols[0]] == group)
+                else:
+                    mask = (df[strat_cols[0]] == group[0]) & (df[strat_cols[1]] == group[1])
+                group_df = df[mask]
+                sampled_df = group_df.sample(n=target_count, random_state=self.random_seed)
                 subsampled_dfs.append(sampled_df)
-        
+
         # Combine and shuffle
         result_df = pd.concat(subsampled_dfs, ignore_index=True)
         result_df = result_df.sample(frac=1, random_state=self.random_seed).reset_index(drop=True)
-        
+
         # Print allocation summary
         logger.info(f"Stratified sampling allocated {len(result_df)} samples:")
-        actual_counts = result_df['label'].value_counts().sort_index()
-        for label in sorted(target_samples_per_label.keys()):
-            original = label_counts[label]
-            target = target_samples_per_label[label]
-            actual = actual_counts.get(label, 0)
+        actual_counts = result_df.groupby(strat_cols).size()
+        for group in group_counts.index:
+            original = group_counts[group]
+            target = target_samples_per_group[group]
+            actual = actual_counts.get(group, 0)
             original_pct = (original / total_samples) * 100
             actual_pct = (actual / len(result_df)) * 100 if len(result_df) > 0 else 0
-            logger.info(f"  Label {label}: {actual}/{original} samples ({original_pct:.1f}% → {actual_pct:.1f}%)")
+            group_name = f"{group[0]}/{group[1]}" if len(strat_cols) == 2 else str(group)
+            logger.info(f"  Group {group_name}: {actual}/{original} samples ({original_pct:.1f}% → {actual_pct:.1f}%)")
         
         return result_df
 

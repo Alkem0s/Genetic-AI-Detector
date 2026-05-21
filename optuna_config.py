@@ -9,8 +9,8 @@ Modify these values to control the optimization process.
 # =============================================================================
 
 # Number of trials for each optimization phase
-feature_weight_trials = 100  # Trials for optimizing feature weights
-ga_config_trials = 100       # Trials for optimizing GA configuration
+feature_weight_trials = 80  # Trials for optimizing feature weights
+ga_config_trials = 80       # Trials for optimizing GA configuration
 
 # Study names (for organization/logging)
 feature_weight_study_name = "feature_weights_optimization"
@@ -34,17 +34,17 @@ inactive_weight_penalty = 0.2  # Used as fixed penalty if optimize_weight_penalt
 # These will override best_ga_config.json for Phase 1.
 use_proxy_ga_config = True
 proxy_ga_config = {
-    "population_size": 160,
+    "population_size": 180,
     "n_generations": 120,
     "rules_per_individual": 12,
     "max_possible_rules": 50,
     "crossover_prob": 0.6,
     "mutation_prob": 0.35,
-    "tournament_size": 5,
-    "num_elites": 3,
-    "inactive_weight_penalty": 0.05,
-    "target_sparsity": 0.6,
-    "sparsity_radius": 0.2,
+    "tournament_size": 4,
+    "num_elites": 2,
+    "inactive_weight_penalty": 0.1,
+    "target_sparsity": 0.45,
+    "sparsity_radius": 0.25,
     "verbose": False
 }
 
@@ -54,25 +54,19 @@ proxy_ga_config = {
 
 # These define the search space for feature weights
 # The optimizer will ensure they sum to 1.0
+# ORDER MUST MATCH THE CANONICAL STACK IN FEATURE EXTRACTOR
 feature_weight_ranges = {
-    # The Power Trio (Consistently > 0.7 in Phase 1)
     'gradient': (0.5, 1.0),
+    'pattern': (0.0, 0.3),
     'noise': (0.5, 1.0),
-    'hash': (0.5, 1.0),
-    
-    # Support Signals (Consistently 0.2 - 0.6)
     'symmetry': (0.1, 0.6),
     'texture': (0.1, 0.6),
     'color': (0.1, 0.6),
-    'noise_spectrum': (0.1, 0.6),
-
-    # Mixed
-    'glcm': (0.0, 0.6),
+    'hash': (0.5, 1.0),
     'dct': (0.0, 0.6),
-    'local_entropy': (0.0, 1.0),
-
-    # Weak
-    'pattern': (0.0, 0.3)
+    'glcm': (0.0, 0.6),
+    'noise_spectrum': (0.1, 0.6),
+    'local_entropy': (0.0, 1.0)
 }
 
 
@@ -94,11 +88,11 @@ target_sparsity_range = (0.25, 0.70)  # Expanded downwards to allow sparser/more
 sparsity_radius_range = (0.05, 0.20) # Expanded downwards to allow tighter constraints
 
 # Genetic operators
-crossover_prob_range = (0.5, 0.7)
-mutation_prob_range = (0.2, 0.4)
+crossover_prob_range = (0.5, 0.85)
+mutation_prob_range = (0.2, 0.55)
 tournament_size_range = (2, 5)
 num_elites_range = (2, 4)
-inactive_weight_penalty_range = (0.05, 0.2)
+inactive_weight_penalty_range = (0.005, 0.2)
 
 # Compute effort penalty coefficient (used in Phase 2 to discourage bloated populations/generations)
 compute_penalty_coefficient = 5e-7  # Halved from 1e-6 (0.005 penalty per 10,000 extra evaluations)

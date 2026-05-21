@@ -187,8 +187,10 @@ class HyperparameterOptimizer:
             self.genetic_optimizer.config.feature_weights = feature_weights.copy()
             # Update the tensor version used in evaluation
             import tensorflow as tf
+            # Explicitly order the weights array to match self.genetic_optimizer.feature_names
+            ordered_weights = [feature_weights[name] for name in self.genetic_optimizer.feature_names]
             self.genetic_optimizer.feature_weights = tf.convert_to_tensor(
-                list(feature_weights.values()), dtype=tf.float32
+                ordered_weights, dtype=tf.float32
             )
             
         # Update GA parameters if provided
@@ -252,8 +254,16 @@ class HyperparameterOptimizer:
             Dictionary of suggested feature weights (normalized to sum to 1.0)
         """
         weights = {}
-        for feature, (min_val, max_val) in config.feature_weight_ranges.items():
-            # Explicitly cast to float to avoid any SQLite/numpy compatibility issues
+        # Ensure we iterate in the exact order of the GA optimizer's feature_names to prevent index mismatches!
+        feature_order = self.genetic_optimizer.feature_names
+        
+        for feature in feature_order:
+            if feature in config.feature_weight_ranges:
+                min_val, max_val = config.feature_weight_ranges[feature]
+            else:
+                logger.warning(f"Feature '{feature}' not found in feature_weight_ranges. Using default (0.0, 1.0).")
+                min_val, max_val = 0.0, 1.0
+                
             weights[feature] = float(trial.suggest_float(
                 f"weight_{feature}", 
                 float(min_val), 

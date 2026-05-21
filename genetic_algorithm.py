@@ -315,22 +315,15 @@ class GeneticFeatureOptimizer:
         if not hasattr(self, 'precomputed_probe_features') or self.precomputed_probe_features is None:
             self.precompute_probe_features()
 
+        fitness_vals = evaluate_ga_individual(
+            self.precomputed_probe_features, self.probe_labels, self.feature_weights,
+            individual.rules_tensor, self.n_patches_h, self.n_patches_w,
+            self.config.fitness_weights, self.max_rules_tf,
+            self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
+        )
         if penalized:
-            # Use the penalized breakdown logic
-            fitness, _, _, _, _, _, _, _ = self.get_fitness_breakdown(
-                individual, 
-                features=self.precomputed_probe_features, 
-                labels=self.probe_labels
-            )
-            return fitness
+            return float(fitness_vals[0]) # total_fitness (penalized)
         else:
-            # Return unpenalized fitness
-            fitness_vals = evaluate_ga_individual(
-                self.precomputed_probe_features, self.probe_labels, self.feature_weights,
-                individual.rules_tensor, self.n_patches_h, self.n_patches_w,
-                self.config.fitness_weights, self.max_rules_tf,
-                self.inactive_penalty_tf, self.target_sparsity_tf, self.sparsity_radius_tf
-            )
             return float(fitness_vals[5]) # base_fitness (unpenalized)
 
     def get_unpenalized_fitness(self, individual):
@@ -819,6 +812,10 @@ class GeneticFeatureOptimizer:
         logger.debug(f"Hall of Fame initialized with capacity {self.num_elites} and custom similarity function.")
 
         run_start_time = time.time()
+        
+        # Validation checkpointing to prevent overfitting
+        best_val_score = -float('inf')
+        best_val_individual = None
 
         pbar = tqdm(range(self.n_generations), desc=f"GA [{run_id}]")
         for gen in pbar:
@@ -837,8 +834,22 @@ class GeneticFeatureOptimizer:
             hof.update(pop)
             record = stats.compile(pop)
             
-            # Calculate breakdown for the best individual (HOF[0])
-            best_penalized, div, eff, conn, simp, best_true, inactive, p_amt = self.get_fitness_breakdown(hof[0])
+            # Calculate breakdown only periodically to avoid CPU-GPU sync overhead
+            # We always evaluate on generation 0, the last generation, and every 10 generations
+            is_eval_gen = (gen == 0 or gen == self.n_generations - 1 or gen % 10 == 0)
+            
+            if is_eval_gen:
+                best_penalized, div, eff, conn, simp, best_true, inactive, p_amt = self.get_fitness_breakdown(hof[0])
+                last_div = div
+                last_eff = eff
+                last_conn = conn
+                last_simp = simp
+                last_best_true = best_true
+            else:
+                best_penalized = record['max']
+                if 'last_div' not in locals():
+                    last_div, last_eff, last_conn, last_simp, last_best_true = 0.0, 0.0, 0.0, 0.0, 0.0
+                div, eff, conn, simp, best_true = last_div, last_eff, last_conn, last_simp, last_best_true
             
             # Update progress bar description with stats
             pbar.set_postfix({'max': f"{record['max']:.4f}", 'div': f"{div:.4f}"})
@@ -859,6 +870,22 @@ class GeneticFeatureOptimizer:
                 'simp_score': simp,
                 'generation_time': gen_end_time - gen_start_time
             })
+
+            # --- VALIDATION CHECKPOINTING ---
+            if hasattr(self, 'precomputed_probe_features') and self.precomputed_probe_features is not None:
+                if is_eval_gen:
+                    train_fit = hof[0].fitness.values[0]
+                    # Match the penalization setup to get generalizable features
+                    probe_fit = self.eval_on_probe(hof[0], penalized=(self.inactive_penalty_tf > 0.0))
+                    val_score = 0.7 * train_fit + 0.3 * probe_fit
+                    
+                    if val_score > best_val_score:
+                        best_val_score = val_score
+                        best_val_individual = self.toolbox.clone(hof[0])
+                        # Ensure metadata is fully copied
+                        best_val_individual.num_active_rules = hof[0].num_active_rules
+                        best_val_individual.rules_tensor = tf.identity(hof[0].rules_tensor)
+            # --------------------------------
 
             # --- OPTUNA PRUNING HOOK ---
             if on_generation_callback is not None:
@@ -898,7 +925,12 @@ class GeneticFeatureOptimizer:
 
         logger.debug(f"Genetic algorithm run '{run_id}' complete in {total_run_time:.2f} seconds.")
 
-        best_ind = hof[0]
+        # Select best individual based on validation checkpoint if available
+        if best_val_individual is not None:
+            best_ind = best_val_individual
+            logger.info(f"Loaded best validation individual from checkpoint (blended val score: {best_val_score:.4f})")
+        else:
+            best_ind = hof[0]
 
         logger.info("Best rule set found:")
         

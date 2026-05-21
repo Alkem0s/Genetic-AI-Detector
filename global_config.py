@@ -71,5 +71,5 @@ fitness_weights = {
 # Any sparsity within [target_sparsity - radius, target_sparsity + radius] 
 # will receive a perfect 1.0 efficiency score. 
 # Defaults to [0.2, 0.6] range.
-target_sparsity = 0.4
-sparsity_radius = 0.2
+target_sparsity = 0.45
+sparsity_radius = 0.25
