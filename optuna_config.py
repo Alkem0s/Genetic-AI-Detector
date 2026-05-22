@@ -10,7 +10,7 @@ Modify these values to control the optimization process.
 
 # Number of trials for each optimization phase
 feature_weight_trials = 80  # Trials for optimizing feature weights
-ga_config_trials = 80       # Trials for optimizing GA configuration
+ga_config_trials = 100       # Trials for optimizing GA configuration
 
 # Study names (for organization/logging)
 feature_weight_study_name = "feature_weights_optimization"
