@@ -62,10 +62,14 @@ class DataLoader:
                         
                     # Get all image files
                     all_imgs = [f for f in cls_path.iterdir() if f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}]
+                    # Sort to guarantee filesystem-independent order across runs
+                    all_imgs.sort(key=lambda x: x.name)
                     
                     # Randomly shuffle before checking to ensure variety if we hit the limit
                     import random
-                    random.shuffle(all_imgs)
+                    seed_val = self.random_seed if self.random_seed is not None else 42
+                    local_rand = random.Random(seed_val)
+                    local_rand.shuffle(all_imgs)
                     
                     if limit_per_cls:
                         valid_imgs = all_imgs[:limit_per_cls]

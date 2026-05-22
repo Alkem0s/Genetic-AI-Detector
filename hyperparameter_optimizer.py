@@ -36,6 +36,18 @@ class HyperparameterOptimizer:
         """Initialize the optimizer with data loading and create reusable GA instance."""
         logger.info("Initializing HyperparameterOptimizer...")
         
+        # Seed all random number generators at the absolute top of initialization
+        base_seed = getattr(config, 'optimization_seed', 42)
+        if base_seed is not None:
+            import random
+            import numpy as np
+            import tensorflow as tf
+            random.seed(base_seed)
+            np.random.seed(base_seed)
+            tf.random.set_seed(base_seed)
+            global_config.random_seed = base_seed
+            logger.info(f"Global random, numpy, tensorflow, and global_config seeds set to {base_seed}")
+            
         # Load data once at the beginning
         self.data_loader = DataLoader()
         _, _, all_images, all_labels = self.data_loader.create_datasets()
