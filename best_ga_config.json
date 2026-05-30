@@ -1,14 +1,14 @@
 {
-  "population_size": 140,
-  "n_generations": 62,
-  "rules_per_individual": 17,
+  "population_size": 200,
+  "n_generations": 100,
+  "rules_per_individual": 12,
   "max_possible_rules": 60,
-  "crossover_prob": 0.5967490824572736,
-  "mutation_prob": 0.3797231626299301,
+  "crossover_prob": 0.8137113551172906,
+  "mutation_prob": 0.21559339145580186,
   "tournament_size": 3,
   "num_elites": 3,
-  "inactive_weight_penalty": 0.09268615934995823,
-  "target_sparsity": 0.4463273509829994,
-  "sparsity_radius": 0.10903970628618581,
-  "fitness": 0.3492955054594676
+  "inactive_weight_penalty": 0.0322918672611915,
+  "target_sparsity": 0.5421956673107167,
+  "sparsity_radius": 0.07315553987718788,
+  "fitness": 0.33093083399327594
 }

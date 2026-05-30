@@ -398,12 +398,9 @@ class HyperparameterOptimizer:
                 logger.info(f"Trial {trial.number}: Testing feature weights: {feature_weights}")
             
             # --- BLENDED PRUNING CALLBACK ---
+            best_blended_so_far = [-float('inf')]
+
             def pruning_callback(gen_num, best_ind):
-                if not config.enable_pruning or gen_num < config.pruning_warmup_steps:
-                    return
-                if gen_num % config.pruning_interval != 0:
-                    return
-                
                 # Evaluate on probe and blend
                 # Evaluate with penalty to ensure pruning respects the "Honest Weights" policy
                 t_fit, _, _, _, _, _, _, _ = self.genetic_optimizer.get_fitness_breakdown(best_ind)
@@ -411,9 +408,19 @@ class HyperparameterOptimizer:
                 p_fit = self.genetic_optimizer.eval_on_probe(best_ind, penalized=True)
                 blended = 0.7 * t_fit + 0.3 * p_fit
                 
-                trial.report(blended, gen_num)
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
+                if blended > best_blended_so_far[0]:
+                    best_blended_so_far[0] = blended
+                
+                # Check for pruning at exactly generation 40 and 80
+                if config.enable_pruning:
+                    if gen_num == 40:
+                        trial.report(best_blended_so_far[0], step=40)
+                        if trial.should_prune():
+                            raise optuna.TrialPruned()
+                    elif gen_num == 80:
+                        trial.report(best_blended_so_far[0], step=80)
+                        if trial.should_prune():
+                            raise optuna.TrialPruned()
             # -------------------------------
 
             # Clear history to avoid memory accumulation across trials
@@ -541,12 +548,9 @@ class HyperparameterOptimizer:
                 logger.info(f"Trial {trial.number}: Testing GA config: {ga_params}")
             
             # --- BLENDED PRUNING CALLBACK ---
+            best_blended_so_far = [-float('inf')]
+
             def pruning_callback(gen_num, best_ind):
-                if not config.enable_pruning or gen_num < config.pruning_warmup_steps:
-                    return
-                if gen_num % config.pruning_interval != 0:
-                    return
-                
                 # Evaluate on probe and blend (Unpenalized for Phase 2)
                 t_fit = self.genetic_optimizer.get_unpenalized_fitness(best_ind)
                 p_fit = self.genetic_optimizer.eval_on_probe(best_ind, penalized=False)
@@ -556,9 +560,19 @@ class HyperparameterOptimizer:
                 else:
                     blended = 0.7 * t_fit + 0.3 * p_fit
                 
-                trial.report(blended, gen_num)
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
+                if blended > best_blended_so_far[0]:
+                    best_blended_so_far[0] = blended
+                
+                # Check for pruning at exactly generation 40 and 80
+                if config.enable_pruning:
+                    if gen_num == 40:
+                        trial.report(best_blended_so_far[0], step=40)
+                        if trial.should_prune():
+                            raise optuna.TrialPruned()
+                    elif gen_num == 80:
+                        trial.report(best_blended_so_far[0], step=80)
+                        if trial.should_prune():
+                            raise optuna.TrialPruned()
             # -------------------------------
 
             # Clear history to avoid memory accumulation across trials
@@ -686,7 +700,7 @@ class HyperparameterOptimizer:
             storage=storage,
             load_if_exists=True,
             sampler=self._sampler,
-            pruner=optuna.pruners.MedianPruner() if config.enable_pruning else None
+            pruner=optuna.pruners.PercentilePruner(percentile=config.prune_percentile) if config.enable_pruning else None
         )
         study = self.fw_study
         
@@ -761,7 +775,7 @@ class HyperparameterOptimizer:
             storage=storage,
             load_if_exists=True,
             sampler=self._sampler,
-            pruner=optuna.pruners.MedianPruner() if config.enable_pruning else None
+            pruner=optuna.pruners.PercentilePruner(percentile=config.prune_percentile) if config.enable_pruning else None
         )
         study = self.ga_study
         

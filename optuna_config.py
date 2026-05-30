@@ -10,7 +10,7 @@ Modify these values to control the optimization process.
 
 # Number of trials for each optimization phase
 feature_weight_trials = 80  # Trials for optimizing feature weights
-ga_config_trials = 100       # Trials for optimizing GA configuration
+ga_config_trials = 50       # Trials for optimizing GA configuration
 
 # Study names (for organization/logging)
 feature_weight_study_name = "feature_weights_optimization"
@@ -106,6 +106,11 @@ compute_penalty_coefficient = 5e-7  # Halved from 1e-6 (0.005 penalty per 10,000
 enable_pruning = True
 pruning_warmup_steps = 50  # Number of generations before pruning can occur
 pruning_interval = 5      # Check for pruning every N generations
+
+# The percentile of trials to KEEP. Optuna's PercentilePruner keeps the top X%
+# of trials and prunes the rest. Setting this to 75.0 keeps the top 75%
+# (i.e. prunes the bottom 25%). Setting it to 25.0 would prune the bottom 75%.
+prune_percentile = 75.0
 
 # Minimum fitness threshold for early stopping
 # Set to 0 initially — the divergence score starts near 0 for random rule sets

@@ -190,12 +190,8 @@ class FeaturePipeline:
         # (batch, n_patches_h, n_patches_w, n_features)
         patch_features = self._feature_extractor.extract_batch_patch_features(images)
 
-        # Build one mask per image in the batch.
-        # Use tf.map_fn instead of a python list comprehension so it traces correctly in graph mode.
-        batch_masks = tf.vectorized_map(
-            self._generate_mask,
-            patch_features
-        )
+        # Build masks for the batch using vectorized operations directly
+        batch_masks = self._generate_mask(patch_features)
 
         # (batch, n_patches_h, n_patches_w) → pixel masks
         pixel_mask = utils.convert_patch_mask_to_pixel_mask(batch_masks)
@@ -233,36 +229,47 @@ class FeaturePipeline:
     ) -> None:
         """
         Extract features for every image in *dataset* and persist them as
-        individual .npy files under ``feature_cache_dir/<dataset_name>/``.
+        individual patch-level .npy files under ``feature_cache_dir/<dataset_name>/``.
+        This stores raw patch features (shape [32, 32, 11]), which are 64x smaller
+        than full-resolution pixel feature maps, saving huge amounts of disk space.
 
         Args:
             dataset:      A tf.data.Dataset that yields (images, labels) or images.
             dataset_name: Subdirectory name used for this dataset's cache.
         """
         import logging
+        from tqdm import tqdm
         logger = logging.getLogger(__name__)
-        logger.info(f"Precomputing features for {dataset_name}")
+        logger.info(f"Precomputing patch features for {dataset_name}")
 
         save_dir = os.path.join(self.feature_cache_dir, dataset_name)
         os.makedirs(save_dir, exist_ok=True)
 
-        index = 0
-        for batch in dataset:
-            images   = batch[0] if isinstance(batch, tuple) else batch
-            features = self.extract_batch_features(images)
+        self._ensure_feature_extractor()
 
-            for i in range(features.shape[0]):
+        # Try to determine cardinality for progress bar total
+        cardinality = dataset.cardinality().numpy()
+        total_batches = int(cardinality) if cardinality > 0 else None
+
+        index = 0
+        pbar = tqdm(dataset, total=total_batches, desc=f"Precomputing {dataset_name} features")
+        for batch in pbar:
+            images   = batch[0] if isinstance(batch, tuple) else batch
+            # Extract raw patch-level features: [batch, n_patches_h, n_patches_w, feature_channels]
+            patch_features = self._feature_extractor.extract_batch_patch_features(images)
+
+            for i in range(patch_features.shape[0]):
                 np.save(
                     os.path.join(save_dir, f"feature_{index}.npy"),
-                    features[i].numpy(),
+                    patch_features[i].numpy().astype(np.float16), # Save as float16 to save space
                 )
                 index += 1
 
-        logger.info(f"Saved {index} features for {dataset_name}")
+        logger.info(f"Saved {index} patch features for {dataset_name}")
 
     def load_features(self, dataset_name: str) -> tf.data.Dataset:
         """
-        Return a tf.data.Dataset that streams pre-computed feature tensors
+        Return a tf.data.Dataset that streams pre-computed patch-level feature tensors
         from ``feature_cache_dir/<dataset_name>/``.
 
         Args:
@@ -270,11 +277,11 @@ class FeaturePipeline:
 
         Returns:
             A Dataset of float32 tensors, each shaped
-            (image_size, image_size, feature_channels).
+            (n_patches_h, n_patches_w, feature_channels).
         """
         import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"Loading precomputed features for {dataset_name}")
+        logger.info(f"Loading precomputed patch features for {dataset_name}")
 
         save_dir = os.path.join(self.feature_cache_dir, dataset_name)
         feature_paths = sorted(
@@ -287,7 +294,7 @@ class FeaturePipeline:
         )
 
         def load_feature(path: bytes) -> np.ndarray:
-            return np.load(path.decode("utf-8"))
+            return np.load(path.decode("utf-8")).astype(np.float32)
 
         feature_dataset = tf.data.Dataset.from_tensor_slices(feature_paths)
         feature_dataset = feature_dataset.map(
@@ -296,7 +303,7 @@ class FeaturePipeline:
         )
         feature_dataset = feature_dataset.map(
             lambda x: tf.ensure_shape(
-                x, [config.image_size, config.image_size, self.feature_channels]
+                x, [self.n_patches_h, self.n_patches_w, self.feature_channels]
             )
         )
         return feature_dataset
@@ -319,14 +326,33 @@ class FeaturePipeline:
         """
         if dataset_name:
             feature_dataset = self.load_features(dataset_name)
+            # Batch the feature dataset to match the image dataset batching structure!
+            # We use config.cnn_batch_size which is the global batch size.
+            feature_dataset = feature_dataset.batch(config.cnn_batch_size)
 
-            def combine(inputs, feature):
-                feature = tf.expand_dims(feature, axis=0)
+            def combine(inputs, feature_batch):
+                # inputs: (images, labels) or images
+                # feature_batch: [batch_size, n_patches_h, n_patches_w, feature_channels]
+                
+                # Apply mask to patch features
+                batch_masks = self._generate_mask(feature_batch) # [batch, n_ph, n_pw]
+                pixel_mask = utils.convert_patch_mask_to_pixel_mask(batch_masks) # [batch, H, W]
+                pixel_mask = tf.expand_dims(pixel_mask, axis=-1) # [batch, H, W, 1]
+                
+                # Resize patch features to full image resolution
+                resized_feature_maps = tf.image.resize(
+                    feature_batch,
+                    [config.image_size, config.image_size],
+                    method=tf.image.ResizeMethod.BILINEAR,
+                ) # [batch, H, W, feature_channels]
+                
+                # Apply mask
+                masked_features = resized_feature_maps * pixel_mask
+                
                 if isinstance(inputs, tuple):
                     image, label = inputs
-                    feature = tf.repeat(feature, tf.shape(image)[0], axis=0)
-                    return {"image_input": image, "feature_input": feature}, label
-                return {"image_input": inputs, "feature_input": feature}
+                    return {"image_input": image, "feature_input": masked_features}, label
+                return {"image_input": inputs, "feature_input": masked_features}
 
             return (
                 tf.data.Dataset.zip((dataset, feature_dataset))

@@ -52,7 +52,7 @@ scale_factor = 1.0
 sample_size = 6000
 probe_sample_size = 3000
 use_multiprocessing = True
-use_feature_cache = False
+use_feature_cache = True
 
 # --- Fitness Weights ---
 # divergence_score replaces the old balanced_accuracy + f1 components.

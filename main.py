@@ -108,8 +108,8 @@ def load_optimized_config():
     try:
         # Load weights
         with open(weights_path, 'r') as f:
-            config.feature_weights = json.load(f)
-        logger.info(f"Successfully loaded feature weights from {weights_path}")
+            raw_weights = json.load(f)
+        config.feature_weights = {k: v for k, v in raw_weights.items() if not k.startswith("__")}
         
         # Load GA config
         with open(ga_path, 'r') as f:
