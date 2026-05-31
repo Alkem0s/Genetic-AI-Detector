@@ -1,6 +1,8 @@
 # model_architecture.py
 import json
 import tensorflow as tf
+import builtins
+builtins.tf = tf
 from tensorflow.keras import layers, models, Model, callbacks # type: ignore
 import numpy as np
 import os
@@ -171,18 +173,8 @@ class AIDetectorModel:
             # Resize feature maps to fixed spatial size
             f = layers.Resizing(spatial_size, spatial_size, interpolation='bilinear')(f)
             
-            # Create custom layer for dtype conversion
-            class CastToComputeDtype(layers.Layer):
-                def __init__(self, dtype, **kwargs):
-                    super().__init__(**kwargs)
-                    self.dtype = dtype
-                def call(self, inputs):
-                    return tf.cast(inputs, self.dtype)
-                def compute_output_shape(self, input_shape):
-                    return input_shape
-            
-            # Cast feature maps to compute dtype
-            f = layers.Lambda(lambda x: tf.cast(x, compute_dtype))(f)
+            # Cast feature maps to compute dtype using Identity layer
+            f = layers.Identity(dtype=compute_dtype)(f)
             
             # Global attention weights
             attn_weights = layers.Conv2D(1, (1, 1), activation='sigmoid', padding='same')(x)
@@ -250,11 +242,28 @@ class AIDetectorModel:
             dict: Training history
         """
         logger.info("Starting model training...")
-        # Set up callbacks
+        # Set up callbacks monitoring validation accuracy dynamically
+        patience = getattr(config, 'cnn_early_stopping_patience', 10)
+        reduce_lr_patience = max(2, patience // 2)
         callbacks_list = [
-            callbacks.EarlyStopping(patience=10, restore_best_weights=True),
-            callbacks.ReduceLROnPlateau(factor=0.5, patience=5),
-            callbacks.ModelCheckpoint(output_model_path, save_best_only=True)
+            callbacks.EarlyStopping(
+                monitor='val_accuracy',
+                mode='max',
+                patience=patience,
+                restore_best_weights=True
+            ),
+            callbacks.ReduceLROnPlateau(
+                monitor='val_accuracy',
+                mode='max',
+                factor=0.5,
+                patience=reduce_lr_patience
+            ),
+            callbacks.ModelCheckpoint(
+                output_model_path,
+                monitor='val_accuracy',
+                mode='max',
+                save_best_only=True
+            )
         ]
         
         if config.profile:
@@ -331,10 +340,26 @@ class AIDetectorModel:
             filepath (str): Path to the saved model
         """
         logger.info(f"Loading model from {filepath}...")
+        try:
+            tf.keras.config.enable_unsafe_deserialization()
+        except AttributeError:
+            pass
         self.model = tf.keras.models.load_model(filepath)
         # Determine if this is a feature-using model or not by checking the input shape
         self.use_features = len(self.model.inputs) > 1
         logger.info(f"Model loaded successfully. Use features: {self.use_features}")
+
+
+def _augment_image(image):
+    # Random flips
+    image = tf.image.random_flip_left_right(image)
+    # Random brightness and contrast adjustments
+    image = tf.image.random_brightness(image, max_delta=0.1)
+    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    # Clip to [0, 1]
+    image = tf.clip_by_value(image, 0.0, 1.0)
+    image.set_shape([config.image_size, config.image_size, 3])
+    return image
 
 
 class ModelWrapper:
@@ -465,21 +490,26 @@ class ModelWrapper:
         self,
         dataset: tf.data.Dataset,
         dataset_name: str | None = None,
+        is_training: bool = False,
     ) -> tf.data.Dataset:
-        """Combine image dataset with feature maps (cached or on-the-fly)."""
+        """Prepare dataset for training/evaluation (adding features, shuffling, batching)."""
+        # If not using features, just shuffle (if training) and batch
         if not self.use_features:
-            return dataset
-        return self.pipeline.prepare_dataset(dataset, dataset_name)
+            if is_training:
+                if config.use_augmentation:
+                    dataset = dataset.map(
+                        lambda x, y: (_augment_image(x), y),
+                        num_parallel_calls=tf.data.AUTOTUNE
+                    )
+                buffer_size = min(10000, config.cnn_batch_size * 100)
+                dataset = dataset.shuffle(buffer_size=buffer_size, seed=config.random_seed)
+            dataset = dataset.batch(config.cnn_batch_size)
+            return dataset.prefetch(tf.data.AUTOTUNE)
 
-    def _prepare_dataset_on_the_fly(
-        self, dataset: tf.data.Dataset
-    ) -> tf.data.Dataset:
-        """Fallback: compute features inline for each batch."""
-        if not self.use_features:
-            return dataset
-        return self.pipeline._prepare_dataset_on_the_fly(dataset)
+        # If using features, delegate to pipeline
+        return self.pipeline.prepare_dataset(dataset, dataset_name, is_training=is_training)
 
-    def train(self, train_dataset, validation_dataset=None, model_path='ai_detector_model.h5', precompute_features=None):
+    def train(self, train_dataset, validation_dataset=None, model_path='ai_detector_model.keras', precompute_features=None):
         """Training method with index-based feature caching"""
         logger.info("Starting model wrapper training.")
         
@@ -565,7 +595,7 @@ class ModelWrapper:
         logger.info(f"Saving complete model state to {base_path}.*")
         
         # Save the neural network model
-        model_path = f"{base_path}.h5"
+        model_path = f"{base_path}.keras"
         self.model.save(model_path)
         
         # Save genetic rules and configuration
@@ -575,7 +605,7 @@ class ModelWrapper:
             'mask_mode': self.mask_mode,
             'genetic_rules': self.genetic_rules.numpy().tolist() if self.genetic_rules is not None else None,
             'random_mask_sparsity': (
-                self._random_generator.target_sparsity
+                float(self._random_generator.target_sparsity.numpy())
                 if self._random_generator is not None else None
             ),
         }
@@ -619,7 +649,9 @@ class ModelWrapper:
         )
         
         # Load the neural network model
-        model_path = f"{base_path}_model.h5"
+        model_path = f"{base_path}_model.keras"
+        if not os.path.exists(model_path) and os.path.exists(f"{base_path}.keras"):
+            model_path = f"{base_path}.keras"
         model_wrapper.model.load(model_path)
 
         model_wrapper.use_features = config_data.get('use_features', model_wrapper.model.use_features)

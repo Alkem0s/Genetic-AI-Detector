@@ -9,8 +9,8 @@ Modify these values to control the optimization process.
 # =============================================================================
 
 # Number of trials for each optimization phase
-feature_weight_trials = 80  # Trials for optimizing feature weights
-ga_config_trials = 50       # Trials for optimizing GA configuration
+feature_weight_trials = 100  # Trials for optimizing feature weights
+ga_config_trials = 150       # Trials for optimizing GA configuration
 
 # Study names (for organization/logging)
 feature_weight_study_name = "feature_weights_optimization"
@@ -129,3 +129,27 @@ combined_config_output_file = "best_combined_config.json"
 # Whether to print detailed progress
 show_progress_bar = True
 log_intermediate_results = True
+
+# =============================================================================
+# CNN HYPERPARAMETER OPTIMIZATION CONFIGURATION (Phase 3)
+# =============================================================================
+cnn_trials = 50
+cnn_epochs = 30                  # Maximum epochs to train each CNN trial
+cnn_early_stopping_patience = 5  # Patience for early stopping during tuning
+num_cnn_runs_per_trial = 1       # Number of seeded runs to average per trial for stability
+
+# Max images in total during CNN HPO to speed up trials (distributed automatically)
+cnn_max_train_samples = 5000
+cnn_max_val_samples = 2000
+
+cnn_study_name_template = "cnn_optimization_{mask_mode}"
+cnn_config_output_file_template = "best_cnn_config_{mask_mode}.json"
+
+# CNN HPO Search Spaces
+cnn_learning_rate_range = (1e-5, 1e-2)
+cnn_dropout_1_range = (0.0, 0.6)
+cnn_dropout_2_range = (0.0, 0.6)
+cnn_dense_units_range = (64, 512)
+cnn_l2_reg_range = (1e-6, 1e-2)
+cnn_optimizers = ['adam', 'rmsprop', 'sgd']
+

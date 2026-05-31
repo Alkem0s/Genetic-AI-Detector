@@ -239,6 +239,7 @@ class DataLoader:
         if is_exact_match:
             # Already perfect
             img = tf.cast(img, tf.float32) / 255.0
+            img.set_shape([self.image_size, self.image_size, 3])
             return img, label
 
         # 3. Process non-square or larger images
@@ -262,6 +263,7 @@ class DataLoader:
 
         # Normalize to [0, 1]
         img = tf.cast(img, tf.float32) / 255.0
+        img.set_shape([self.image_size, self.image_size, 3])
 
         return img, label
 
@@ -322,6 +324,7 @@ class DataLoader:
         
         # Make sure values stay in [0, 1] range
         image = tf.clip_by_value(image, 0.0, 1.0)
+        image.set_shape([self.image_size, self.image_size, 3])
         
         return image
     
@@ -344,12 +347,12 @@ class DataLoader:
             
         return pd.concat(balanced_dfs).sample(frac=1, random_state=self.random_seed).reset_index(drop=True)
 
-    def create_datasets(self):
+    def create_datasets(self, create_sample=True):
         """
         Create train and test datasets from folder structure.
         
         Returns:
-            Tuple of (train_ds, val_ds)
+            Tuple of (train_ds, val_ds, sample_images, sample_labels)
         """
         logger.info("Using folder-based dataset discovery...")
         
@@ -375,6 +378,17 @@ class DataLoader:
         # Ensure every generator contributes the same amount to prevent bias
         train_df = self._balance_generators(train_df, "Training")
         test_df = self._balance_generators(test_df, "Validation/Test")
+        
+        # --- TOTAL SAMPLE SIZE SUBSAMPLING (with automatic stratification) ---
+        max_train = getattr(config, 'max_train_samples', None)
+        if max_train is not None and not train_df.empty and len(train_df) > max_train:
+            logger.info(f"Subsampling balanced training dataset from {len(train_df)} to {max_train} total samples...")
+            train_df = self._stratified_subsample(train_df, max_train)
+            
+        max_val = getattr(config, 'max_val_samples', None)
+        if max_val is not None and not test_df.empty and len(test_df) > max_val:
+            logger.info(f"Subsampling balanced validation dataset from {len(test_df)} to {max_val} total samples...")
+            test_df = self._stratified_subsample(test_df, max_val)
         
         if train_df.empty:
             raise ValueError(f"No training data found in {config.dataset_sampled_dir}")
@@ -406,50 +420,52 @@ class DataLoader:
             num_parallel_calls=tf.data.AUTOTUNE
         )
         
-        # Configure for performance
-        train_ds = self._configure_for_performance(train_ds, is_training=True)
-        test_ds = self._configure_for_performance(test_ds, is_training=False)
+        # Configure for performance (kept unbatched and unshuffled; batching and shuffling
+        # are handled inside ModelWrapper / FeaturePipeline)
+        train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
+        test_ds = test_ds.prefetch(tf.data.AUTOTUNE)
         
-        # Create a small sample dataset for feature extractor/genetic algorithm
-        # to avoid loading all images for those steps
-        sample_size = config.sample_size
-        logger.info(f"Creating sample dataset of {sample_size} images for feature extraction")
+        sample_images = np.array([])
+        sample_labels = np.array([])
         
-        # Use stratified sampling for the sample dataset too
-        try:
-            sample_df = self._stratified_subsample(train_df, sample_size)
-            logger.info("Sample dataset label distribution:")
-            sample_label_counts = sample_df['label'].value_counts().sort_index()
-            for label, count in sample_label_counts.items():
-                percentage = (count / len(sample_df)) * 100
-                logger.info(f"  Label {label}: {count} images ({percentage:.1f}%)")
-        except:
-            logger.info("Using random sampling for sample dataset")
-            sample_df = train_df.sample(sample_size, random_state=self.random_seed)
-        
-        sample_images = []
-        sample_labels = []
-        
-        if config.use_feature_extraction:
-            # Use tf.data pipeline for fast parallel loading
-            sample_ds = tf.data.Dataset.from_tensor_slices(
-                (sample_df['file_name'].values, sample_df['label'].values)
-            )
-            sample_ds = sample_ds.map(
-                lambda path, label: self._process_path(path, label, use_center_crop=True),
-                num_parallel_calls=tf.data.AUTOTUNE
-            ).batch(256).prefetch(tf.data.AUTOTUNE)
+        if create_sample:
+            # Create a small sample dataset for feature extractor/genetic algorithm
+            # to avoid loading all images for those steps
+            sample_size = config.sample_size
+            logger.info(f"Creating sample dataset of {sample_size} images for feature extraction")
             
-            for img_batch, lbl_batch in sample_ds:
-                sample_images.append(img_batch.numpy())
-                sample_labels.append(lbl_batch.numpy())
+            # Use stratified sampling for the sample dataset too
+            try:
+                sample_df = self._stratified_subsample(train_df, sample_size)
+                logger.info("Sample dataset label distribution:")
+                sample_label_counts = sample_df['label'].value_counts().sort_index()
+                for label, count in sample_label_counts.items():
+                    percentage = (count / len(sample_df)) * 100
+                    logger.info(f"  Label {label}: {count} images ({percentage:.1f}%)")
+            except:
+                logger.info("Using random sampling for sample dataset")
+                sample_df = train_df.sample(sample_size, random_state=self.random_seed)
+            
+            sample_imgs_list = []
+            sample_lbls_list = []
+            
+            if config.use_feature_extraction:
+                # Use tf.data pipeline for fast parallel loading
+                sample_ds = tf.data.Dataset.from_tensor_slices(
+                    (sample_df['file_name'].values, sample_df['label'].values)
+                )
+                sample_ds = sample_ds.map(
+                    lambda path, label: self._process_path(path, label, use_center_crop=True),
+                    num_parallel_calls=tf.data.AUTOTUNE
+                ).batch(256).prefetch(tf.data.AUTOTUNE)
                 
-            if sample_images:
-                sample_images = np.concatenate(sample_images, axis=0)
-                sample_labels = np.concatenate(sample_labels, axis=0)
-            else:
-                sample_images = np.array([])
-                sample_labels = np.array([])
+                for img_batch, lbl_batch in sample_ds:
+                    sample_imgs_list.append(img_batch.numpy())
+                    sample_lbls_list.append(lbl_batch.numpy())
+                    
+                if sample_imgs_list:
+                    sample_images = np.concatenate(sample_imgs_list, axis=0)
+                    sample_labels = np.concatenate(sample_lbls_list, axis=0)
             
         return train_ds, test_ds, sample_images, sample_labels
 

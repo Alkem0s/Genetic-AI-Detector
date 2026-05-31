@@ -1,5 +1,6 @@
 import optuna # type: ignore
 from optuna.storages import JournalStorage, JournalFileStorage
+import os
 import json
 import logging
 import argparse
@@ -33,7 +34,7 @@ class HyperparameterOptimizer:
     """
     
     def __init__(self):
-        """Initialize the optimizer with data loading and create reusable GA instance."""
+        """Initialize the optimizer with data loading configuration and weights."""
         logger.info("Initializing HyperparameterOptimizer...")
         
         # Seed all random number generators at the absolute top of initialization
@@ -48,27 +49,17 @@ class HyperparameterOptimizer:
             global_config.random_seed = base_seed
             logger.info(f"Global random, numpy, tensorflow, and global_config seeds set to {base_seed}")
             
-        # Load data once at the beginning
         self.data_loader = DataLoader()
-        _, _, all_images, all_labels = self.data_loader.create_datasets()
         
-        # Use the FULL training sample for optimisation.
-        # The val_generators (sdv4, vqdm) form a completely separate held-out set
-        # loaded lazily by _get_val_sample() for the final validation only.
-        self.train_images = all_images
-        self.train_labels = all_labels
+        # Dataset placeholders — loaded lazily depending on HPO phase
+        self.train_ds = None
+        self.test_ds = None
+        self.train_images = None
+        self.train_labels = None
         
         # Placeholder — loaded on demand from global_config.val_generators
         self._val_images = None
         self._val_labels = None
-        
-        logger.info(
-            f"Training sample: {len(self.train_images)} images "
-            f"from train_generators={global_config.train_generators}"
-        )
-        logger.info(
-            f"Validation will use val_generators={global_config.val_generators} "
-        )
         
         # 1. Load Strict Source-of-Truth JSONs (Optimization Baseline)
         try:
@@ -91,38 +82,8 @@ class HyperparameterOptimizer:
             logger.error(f"Please ensure {config.feature_weights_output_file} and {config.ga_config_output_file} exist.")
             sys.exit(1)
 
-        # 2. Create a single GeneticFeatureOptimizer instance
-        # Features will be precomputed once during initialization
-        base_config = self.create_base_config()
-        logger.info("Creating GeneticFeatureOptimizer instance (features will be precomputed once)...")
-        
-        self.genetic_optimizer = GeneticFeatureOptimizer(
-            images=self.train_images,
-            labels=self.train_labels,
-            config=base_config
-        )
-        
-        # Save the auto-calibrated scales for future use/inference
-        self.genetic_optimizer.save_feature_scales("feature_scales.json")
-        
-        # --- CRITICAL MEMORY OPTIMIZATION ---
-        # Once features are precomputed, we NO LONGER need the raw images.
-        # We clear them NOW before starting the probe extraction to save RAM/VRAM.
-        logger.info("Features precomputed. Clearing raw training images to free up RAM...")
-        self.train_images = None
-        if hasattr(self, 'genetic_optimizer'):
-            self.genetic_optimizer.images = None
-        import gc
-        gc.collect()
-        # ------------------------------------
-        
-        # --- CRITICAL: PRECOMPUTE PROBE FEATURES ---
-        # We precompute probe features NOW to avoid OOM crashes later.
-        # This ensures heavy extraction happens when GPU memory is fresh.
-        logger.info("Precomputing probe features for HPO validation...")
-        self.genetic_optimizer.precompute_probe_features()
-
-
+        # Genetic Feature Optimizer placeholder — loaded lazily
+        self.genetic_optimizer = None
         
         # Store best results
         self.best_fitness = -float('inf')
@@ -138,6 +99,67 @@ class HyperparameterOptimizer:
             if config.optimization_seed is not None
             else optuna.samplers.TPESampler()
         )
+
+    def _init_ga_optimizer(self):
+        """Lazily initialize the GeneticFeatureOptimizer and precompute feature arrays for GA optimization (Phase 1 & 2)."""
+        if self.genetic_optimizer is not None:
+            return
+            
+        logger.info("Initializing GA Datasets and GeneticFeatureOptimizer for Phase 1/2...")
+        # Load datasets and GA sample
+        self.train_ds, self.test_ds, all_images, all_labels = self.data_loader.create_datasets(create_sample=True)
+        self.train_images = all_images
+        self.train_labels = all_labels
+        
+        logger.info(
+            f"Training sample: {len(self.train_images)} images "
+            f"from train_generators={global_config.train_generators}"
+        )
+        logger.info(
+            f"Validation will use val_generators={global_config.val_generators}"
+        )
+        
+        base_config = self.create_base_config()
+        logger.info("Creating GeneticFeatureOptimizer instance (features will be precomputed once)...")
+        
+        self.genetic_optimizer = GeneticFeatureOptimizer(
+            images=self.train_images,
+            labels=self.train_labels,
+            config=base_config
+        )
+        
+        # Save the auto-calibrated scales for future use/inference
+        self.genetic_optimizer.save_feature_scales("feature_scales.json")
+        
+        # --- CRITICAL MEMORY OPTIMIZATION ---
+        logger.info("Features precomputed. Clearing raw training images to free up RAM...")
+        self.train_images = None
+        if hasattr(self, 'genetic_optimizer'):
+            self.genetic_optimizer.images = None
+        import gc
+        gc.collect()
+        # ------------------------------------
+        
+        # --- CRITICAL: PRECOMPUTE PROBE FEATURES ---
+        logger.info("Precomputing probe features for HPO validation...")
+        self.genetic_optimizer.precompute_probe_features()
+
+    def _init_cnn_datasets(self, mask_mode: str):
+        """Initialize and configure datasets specifically for CNN optimization (Phase 3)."""
+        logger.info("Initializing CNN Datasets for Phase 3...")
+        
+        # Apply temporary limits for HPO
+        global_config.max_train_samples = getattr(config, 'cnn_max_train_samples', 3000)
+        global_config.max_val_samples = getattr(config, 'cnn_max_val_samples', 1000)
+        global_config.mask_mode = mask_mode
+        global_config.feature_weights = self.json_weights
+        
+        logger.info(f"Re-loading data with limits: max_train={global_config.max_train_samples}, max_val={global_config.max_val_samples}")
+        # Only create the sample dataset if we actually need it (i.e. mask_mode is 'ga')
+        self.train_ds, self.test_ds, sample_images, sample_labels = self.data_loader.create_datasets(
+            create_sample=(mask_mode == 'ga')
+        )
+        return sample_images, sample_labels
 
     def _get_val_sample(self):
         """
@@ -687,6 +709,9 @@ class HyperparameterOptimizer:
         Returns:
             Dictionary of best feature weights
         """
+        # Lazily load data and precompute features for Phase 1 GA
+        self._init_ga_optimizer()
+        
         logger.info("="*60)
         logger.info("PHASE 1: Optimizing Feature Weights")
         logger.info("="*60)
@@ -758,6 +783,9 @@ class HyperparameterOptimizer:
         Returns:
             Dictionary of best GA configuration
         """
+        # Lazily load data and precompute features for Phase 2 GA
+        self._init_ga_optimizer()
+        
         logger.info("="*60)
         logger.info("PHASE 2: Optimizing GA Configuration")
         logger.info("="*60)
@@ -914,32 +942,306 @@ class HyperparameterOptimizer:
             logger.error(f"Optimization failed: {str(e)}")
             raise
 
+    def suggest_cnn_params(self, trial: optuna.Trial) -> Dict[str, Any]:
+        """Suggest CNN hyperparameters for optimization trial."""
+        lr_min, lr_max = getattr(config, 'cnn_learning_rate_range', (1e-5, 1e-2))
+        do1_min, do1_max = getattr(config, 'cnn_dropout_1_range', (0.0, 0.6))
+        do2_min, do2_max = getattr(config, 'cnn_dropout_2_range', (0.0, 0.6))
+        du_min, du_max = getattr(config, 'cnn_dense_units_range', (64, 512))
+        l2_min, l2_max = getattr(config, 'cnn_l2_reg_range', (1e-6, 1e-2))
+        optimizers = getattr(config, 'cnn_optimizers', ['adam', 'rmsprop', 'sgd'])
+        
+        params = {
+            'learning_rate': float(trial.suggest_float('learning_rate', float(lr_min), float(lr_max), log=True)),
+            'dropout_1': float(trial.suggest_float('dropout_1', float(do1_min), float(do1_max))),
+            'dropout_2': float(trial.suggest_float('dropout_2', float(do2_min), float(do2_max))),
+            'dense_units': int(trial.suggest_int('dense_units', int(du_min), int(du_max), step=64)),
+            'l2_reg': float(trial.suggest_float('l2_reg', float(l2_min), float(l2_max), log=True)),
+            'optimizer': str(trial.suggest_categorical('optimizer', optimizers))
+        }
+        return params
+
+    def objective_cnn(self, trial: optuna.Trial, mask_mode: str, 
+                      genetic_rules=None, random_mask_sparsity: float = None) -> float:
+        """Objective function for optimizing CNN hyperparameters."""
+        import tensorflow as tf
+        import gc
+        import os
+        from model_architecture import ModelWrapper
+        
+        # 1. Suggest CNN parameters
+        cnn_params = self.suggest_cnn_params(trial)
+        
+        # 2. Set them on global_config dynamically
+        for key, value in cnn_params.items():
+            setattr(global_config, f"cnn_{key}", value)
+            
+        # Also set the training settings for fast tuning
+        original_epochs = global_config.epochs
+        original_use_cache = global_config.use_feature_cache
+        original_seed = global_config.random_seed
+        
+        global_config.epochs = getattr(config, 'cnn_epochs', 15)
+        # Use feature cache for speed if use_features is True
+        use_features = mask_mode in ('ga', 'random')
+        global_config.use_feature_cache = use_features
+        
+        num_runs = getattr(config, 'num_cnn_runs_per_trial', 1)
+        base_seed = getattr(config, 'optimization_seed', 42)
+        if base_seed is None:
+            base_seed = 42
+            
+        logger.info(f"Trial {trial.number}: Testing CNN params on mode '{mask_mode}' with {num_runs} runs: {cnn_params}")
+        
+        run_accuracies = []
+        
+        try:
+            for run_idx in range(num_runs):
+                import numpy as np
+                run_seed = base_seed + trial.number * 100 + run_idx
+                global_config.random_seed = run_seed
+                np.random.seed(run_seed)
+                tf.random.set_seed(run_seed)
+                
+                logger.info(f"  Trial {trial.number} Run {run_idx}/{num_runs} using seed {run_seed}")
+                
+                temp_model_path = os.path.join(global_config.output_dir, f"temp_cnn_{mask_mode}_trial_{trial.number}_run_{run_idx}.keras")
+                
+                try:
+                    # 3. Create ModelWrapper
+                    model_wrapper = ModelWrapper(
+                        genetic_rules=genetic_rules,
+                        mask_mode=mask_mode,
+                        random_mask_sparsity=random_mask_sparsity
+                    )
+                    
+                    # 4. Train the model
+                    model_wrapper.train(
+                        train_dataset=self.train_ds,
+                        validation_dataset=self.test_ds,
+                        model_path=temp_model_path,
+                        precompute_features=use_features
+                    )
+                    
+                    # Evaluate using best checkpoint weights
+                    if os.path.exists(temp_model_path):
+                        model_wrapper.model.load(temp_model_path)
+                    
+                    eval_results = model_wrapper.evaluate(self.test_ds)
+                    val_acc = eval_results[1]
+                    run_accuracies.append(val_acc)
+                    
+                    logger.info(f"  Trial {trial.number} Run {run_idx} finished. Val Accuracy: {val_acc:.4f}")
+                    
+                finally:
+                    # Clean up temporary files for this run
+                    if os.path.exists(temp_model_path):
+                        try:
+                            os.remove(temp_model_path)
+                        except Exception as e:
+                            logger.warning(f"Could not remove temp model file {temp_model_path}: {e}")
+            
+            avg_acc = float(np.mean(run_accuracies))
+            logger.info(f"Trial {trial.number} finished. Averaged Validation Accuracy ({num_runs} runs): {avg_acc:.4f}")
+            return avg_acc
+            
+        except Exception as e:
+            logger.error(f"Trial {trial.number} failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0.0
+            
+        finally:
+            # Clean up and reset config
+            global_config.epochs = original_epochs
+            global_config.use_feature_cache = original_use_cache
+            global_config.random_seed = original_seed
+            
+            # Clear TensorFlow and garbage collect
+            tf.keras.backend.clear_session()
+            gc.collect()
+
+    def optimize_cnn(self, mask_mode: str) -> Dict[str, Any]:
+        """
+        Optimize CNN hyperparameters for a specific mask mode using Optuna.
+        """
+        logger.info("="*60)
+        logger.info(f"PHASE 3: Optimizing CNN Hyperparameters (Mode: {mask_mode.upper()})")
+        logger.info("="*60)
+        
+        # Clear existing cache directories to avoid stale/stray files
+        import shutil
+        cache_dir = os.path.join(global_config.output_dir, global_config.feature_cache_dir)
+        if os.path.exists(cache_dir):
+            try:
+                shutil.rmtree(cache_dir)
+                logger.info(f"Cleared feature cache directory at {cache_dir} to start Phase 3 freshly.")
+            except Exception as e:
+                logger.warning(f"Could not clear feature cache directory: {e}")
+
+        # Save original config
+        orig_max_train = global_config.max_train_samples
+        orig_max_val = global_config.max_val_samples
+        orig_use_cache = global_config.use_feature_cache
+        orig_mask_mode = global_config.mask_mode
+        
+        sample_images, sample_labels = self._init_cnn_datasets(mask_mode)
+        
+        genetic_rules = None
+        random_mask_sparsity = None
+        
+        # Setup specific properties based on mask mode
+        if mask_mode == 'ga':
+            logger.info("Setting up GA mode for CNN HPO...")
+            logger.info("Running Genetic Algorithm to obtain best rules...")
+            
+            if self.genetic_optimizer is None:
+                base_config = self.create_base_config()
+                self.genetic_optimizer = GeneticFeatureOptimizer(
+                    images=sample_images,
+                    labels=sample_labels,
+                    config=base_config
+                )
+            else:
+                self.genetic_optimizer.images = sample_images
+                self.genetic_optimizer.labels = sample_labels
+            
+            # Apply best GA config from JSON
+            self.update_optimizer_config(ga_params=self.json_ga_config)
+            
+            # Run optimizer
+            ga_results = self.genetic_optimizer.run(run_id="cnn_hpo_ga_prep")
+            genetic_rules = ga_results['best_individual'].rules_tensor
+            
+            # Clear optimizer images/labels to free memory
+            self.genetic_optimizer.images = None
+            import gc
+            gc.collect()
+            
+            # Precompute raw features once (ModelWrapper uses features)
+            from model_architecture import ModelWrapper
+            model_wrapper = ModelWrapper(
+                genetic_rules=genetic_rules,
+                mask_mode=mask_mode
+            )
+            logger.info("Precomputing raw features for GA mode...")
+            model_wrapper.precompute_features(self.train_ds, "train")
+            model_wrapper.precompute_features(self.test_ds, "val")
+            model_wrapper.precompute_features(self.test_ds, "test")
+            
+        elif mask_mode == 'random':
+            logger.info("Setting up Random mode for CNN HPO...")
+            # Retrieve target sparsity
+            random_mask_sparsity = self.json_ga_config.get('target_sparsity', 0.45)
+            logger.info(f"Using random mask target sparsity: {random_mask_sparsity}")
+            
+            # Precompute raw features once
+            from model_architecture import ModelWrapper
+            model_wrapper = ModelWrapper(
+                mask_mode=mask_mode,
+                random_mask_sparsity=random_mask_sparsity
+            )
+            logger.info("Precomputing raw features for Random mode...")
+            model_wrapper.precompute_features(self.train_ds, "train")
+            model_wrapper.precompute_features(self.test_ds, "val")
+            model_wrapper.precompute_features(self.test_ds, "test")
+            
+        else:
+            logger.info("Setting up None mode for CNN HPO (no feature extraction)...")
+            
+        # Create Optuna study using JournalStorage to avoid locking
+        study_name = config.cnn_study_name_template.format(mask_mode=mask_mode)
+        storage = JournalStorage(JournalFileStorage("optuna_journal.log"))
+        
+        study = optuna.create_study(
+            direction='maximize',
+            study_name=study_name,
+            storage=storage,
+            load_if_exists=True,
+            sampler=self._sampler
+        )
+        
+        # Optimize
+        from tqdm import tqdm
+        start_time = time.time()
+        
+        objective = lambda t: self.objective_cnn(
+            trial=t,
+            mask_mode=mask_mode,
+            genetic_rules=genetic_rules,
+            random_mask_sparsity=random_mask_sparsity
+        )
+        
+        num_trials = getattr(config, 'cnn_trials', 20)
+        for _ in tqdm(range(num_trials), desc=f"Optimizing CNN ({mask_mode})"):
+            study.optimize(
+                objective,
+                n_trials=1,
+                show_progress_bar=False
+            )
+            
+        end_time = time.time()
+        best_trial = study.best_trial
+        
+        logger.info(f"CNN optimization ({mask_mode}) completed in {end_time - start_time:.2f} seconds")
+        logger.info(f"Best validation accuracy: {best_trial.value:.4f}")
+        logger.info(f"Best CNN params: {best_trial.params}")
+        
+        # Restore original configs
+        global_config.max_train_samples = orig_max_train
+        global_config.max_val_samples = orig_max_val
+        global_config.use_feature_cache = orig_use_cache
+        global_config.mask_mode = orig_mask_mode
+        
+        # Save results
+        output_file = config.cnn_config_output_file_template.format(mask_mode=mask_mode)
+        output_data = best_trial.params.copy()
+        output_data['validation_accuracy'] = best_trial.value
+        self.save_json(output_data, output_file)
+        
+        # Clear TensorFlow and garbage collect
+        import tensorflow as tf
+        tf.keras.backend.clear_session()
+        import gc
+        gc.collect()
+        
+        return best_trial.params
+
 
 def main():
     """Main function to run the hyperparameter optimization."""
-    parser = argparse.ArgumentParser(description="Run hyperparameter optimization for the genetic algorithm.")
+    parser = argparse.ArgumentParser(description="Run hyperparameter optimization.")
     parser.add_argument(
         '--phase', 
         type=str, 
-        choices=['all', 'weights', 'ga'], 
+        choices=['weights', 'ga', 'cnn'], 
+        required=True,
+        help="Optimization phase to run: 'weights' (Phase 1), 'ga' (Phase 2), or 'cnn' (Phase 3)."
+    )
+    parser.add_argument(
+        '--mask-mode',
+        type=str,
+        choices=['ga', 'random', 'none', 'all'],
         default='all',
-        help="Optimization phase to run: 'weights' (Phase 1), 'ga' (Phase 2), or 'all' (both)."
+        help="Mask mode to tune CNN for (only used for cnn phase: ga, random, none, or all)"
     )
     args = parser.parse_args()
     
     try:
         optimizer = HyperparameterOptimizer()
-        best_weights, best_ga_config = optimizer.run_optimization(phase=args.phase)
         
-        print("\n" + "="*60)
-        print("FINAL RESULTS")
-        print("="*60)
-        if best_weights is not None:
-            print(f"Best Feature Weights: {best_weights}")
-        if best_ga_config is not None:
-            print(f"Best GA Configuration: {best_ga_config}")
-        print(f"Best Fitness Achieved: {optimizer.best_fitness:.4f}")
-        
+        if args.phase == 'weights':
+            best_weights = optimizer.optimize_feature_weights()
+            print(f"\nBest Feature Weights: {best_weights}")
+        elif args.phase == 'ga':
+            best_ga_config = optimizer.optimize_ga_config()
+            print(f"\nBest GA Configuration: {best_ga_config}")
+        elif args.phase == 'cnn':
+            mask_modes = ['ga', 'random', 'none'] if args.mask_mode == 'all' else [args.mask_mode]
+            for mode in mask_modes:
+                best_cnn = optimizer.optimize_cnn(mode)
+                print(f"\nBest CNN Params for '{mode}': {best_cnn}")
+                
     except KeyboardInterrupt:
         print("\nOptimization stopped by user.")
     except Exception as e:

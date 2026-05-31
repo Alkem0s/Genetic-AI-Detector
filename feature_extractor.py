@@ -10,6 +10,20 @@ import utils
 from structural_features import StructuralFeatureExtractor
 from texture_features import TextureFeatureExtractor
 
+# Global in-memory cache to speed up HPO trials and epoch times by avoiding disk reads
+_IN_MEMORY_FEATURE_CACHE = {}
+
+def _augment_image(image):
+    # Random flips
+    image = tf.image.random_flip_left_right(image)
+    # Random brightness and contrast adjustments
+    image = tf.image.random_brightness(image, max_delta=0.1)
+    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    # Clip to [0, 1]
+    image = tf.clip_by_value(image, 0.0, 1.0)
+    return image
+
+
 class FeatureExtractor:
     """
     Class for feature extraction in AI image detection system.
@@ -229,9 +243,10 @@ class FeaturePipeline:
     ) -> None:
         """
         Extract features for every image in *dataset* and persist them as
-        individual patch-level .npy files under ``feature_cache_dir/<dataset_name>/``.
-        This stores raw patch features (shape [32, 32, 11]), which are 64x smaller
-        than full-resolution pixel feature maps, saving huge amounts of disk space.
+        a single consolidated features.npy file under ``feature_cache_dir/<dataset_name>/``.
+        This stores raw patch features (shape [N, 32, 32, 11]), which are 64x smaller
+        than full-resolution pixel feature maps, saving huge amounts of disk space
+        and avoiding the heavy I/O overhead of writing individual files.
 
         Args:
             dataset:      A tf.data.Dataset that yields (images, labels) or images.
@@ -240,40 +255,60 @@ class FeaturePipeline:
         import logging
         from tqdm import tqdm
         logger = logging.getLogger(__name__)
-        logger.info(f"Precomputing patch features for {dataset_name}")
 
         save_dir = os.path.join(self.feature_cache_dir, dataset_name)
+        features_file = os.path.join(save_dir, "features.npy")
+        
+        # Check if features are already precomputed and reuse them
+        if os.path.exists(features_file):
+            logger.info(f"Precomputed features for {dataset_name} already exist in {features_file}. Reusing cached features.")
+            return
+            
+        # Legacy fallback check (if individual files already exist, do not recompute)
+        if os.path.exists(save_dir):
+            existing_files = [f for f in os.listdir(save_dir) if f.endswith('.npy') and f != "features.npy"]
+            if len(existing_files) > 0:
+                logger.info(f"Legacy precomputed features for {dataset_name} already exist in {save_dir} ({len(existing_files)} files). Reusing cached features.")
+                return
+
+        # Invalidate in-memory cache for this directory before writing new features
+        keys_to_remove = [k for k in _IN_MEMORY_FEATURE_CACHE if k[0] == save_dir]
+        for k in keys_to_remove:
+            _IN_MEMORY_FEATURE_CACHE.pop(k, None)
+
+        logger.info(f"Precomputing patch features for {dataset_name}")
         os.makedirs(save_dir, exist_ok=True)
 
         self._ensure_feature_extractor()
 
-        # Try to determine cardinality for progress bar total
-        cardinality = dataset.cardinality().numpy()
-        total_batches = int(cardinality) if cardinality > 0 else None
+        # Batch the dataset for fast feature extraction
+        batched_dataset = dataset.batch(config.cnn_batch_size).prefetch(tf.data.AUTOTUNE)
 
-        index = 0
-        pbar = tqdm(dataset, total=total_batches, desc=f"Precomputing {dataset_name} features")
+        # Try to determine cardinality for progress bar total
+        import math
+        cardinality = dataset.cardinality().numpy()
+        total_batches = math.ceil(cardinality / config.cnn_batch_size) if cardinality > 0 else None
+
+        features_list = []
+        pbar = tqdm(batched_dataset, total=total_batches, desc=f"Precomputing {dataset_name} features")
         for batch in pbar:
             images   = batch[0] if isinstance(batch, tuple) else batch
             # Extract raw patch-level features: [batch, n_patches_h, n_patches_w, feature_channels]
             patch_features = self._feature_extractor.extract_batch_patch_features(images)
+            features_list.append(patch_features.numpy().astype(np.float16))
 
-            for i in range(patch_features.shape[0]):
-                np.save(
-                    os.path.join(save_dir, f"feature_{index}.npy"),
-                    patch_features[i].numpy().astype(np.float16), # Save as float16 to save space
-                )
-                index += 1
-
-        logger.info(f"Saved {index} patch features for {dataset_name}")
+        if features_list:
+            all_features = np.concatenate(features_list, axis=0)
+            np.save(features_file, all_features)
+            logger.info(f"Saved {all_features.shape[0]} patch features to {features_file}")
 
     def load_features(self, dataset_name: str) -> tf.data.Dataset:
         """
-        Return a tf.data.Dataset that streams pre-computed patch-level feature tensors
-        from ``feature_cache_dir/<dataset_name>/``.
+        Return a tf.data.Dataset that streams pre-computed patch-level feature tensors.
+        Loads from disk into RAM once and caches them to speed up subsequent epochs and HPO trials.
 
         Args:
-            dataset_name: Subdirectory whose .npy files should be loaded.
+            dataset_name: Subdirectory whose features should be loaded.
 
         Returns:
             A Dataset of float32 tensors, each shaped
@@ -281,26 +316,46 @@ class FeaturePipeline:
         """
         import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"Loading precomputed patch features for {dataset_name}")
 
         save_dir = os.path.join(self.feature_cache_dir, dataset_name)
-        feature_paths = sorted(
-            [
-                os.path.join(save_dir, f)
-                for f in os.listdir(save_dir)
-                if f.endswith(".npy")
-            ],
-            key=lambda x: int(x.split("_")[-1].split(".")[0]),
-        )
+        features_file = os.path.join(save_dir, "features.npy")
+        h_val = self.n_patches_h.numpy() if hasattr(self.n_patches_h, 'numpy') else self.n_patches_h
+        w_val = self.n_patches_w.numpy() if hasattr(self.n_patches_w, 'numpy') else self.n_patches_w
+        cache_key = (save_dir, h_val, w_val, self.feature_channels)
 
-        def load_feature(path: bytes) -> np.ndarray:
-            return np.load(path.decode("utf-8")).astype(np.float32)
+        if cache_key in _IN_MEMORY_FEATURE_CACHE:
+            logger.info(f"Reusing in-memory precomputed patch features for {dataset_name}")
+            features_array = _IN_MEMORY_FEATURE_CACHE[cache_key]
+        else:
+            logger.info(f"Loading precomputed patch features for {dataset_name} into RAM...")
+            if os.path.exists(features_file):
+                features_array = np.load(features_file).astype(np.float32)
+            else:
+                # Fallback to load legacy individual .npy files if features.npy doesn't exist
+                logger.warning(f"{features_file} not found. Searching for legacy individual .npy files...")
+                feature_paths = sorted(
+                    [
+                        os.path.join(save_dir, f)
+                        for f in os.listdir(save_dir)
+                        if f.endswith(".npy")
+                    ],
+                    key=lambda x: int(x.split("_")[-1].split(".")[0]),
+                )
 
-        feature_dataset = tf.data.Dataset.from_tensor_slices(feature_paths)
-        feature_dataset = feature_dataset.map(
-            lambda path: tf.numpy_function(load_feature, [path], tf.float32),
-            num_parallel_calls=tf.data.AUTOTUNE,
-        )
+                # Load all .npy files into a list and stack into a single numpy array
+                features_list = []
+                for path in feature_paths:
+                    features_list.append(np.load(path).astype(np.float32))
+
+                if features_list:
+                    features_array = np.stack(features_list, axis=0)
+                else:
+                    raise FileNotFoundError(f"No precomputed features found in {save_dir}")
+                
+            _IN_MEMORY_FEATURE_CACHE[cache_key] = features_array
+            logger.info(f"Loaded features array into RAM. Shape: {features_array.shape}")
+
+        feature_dataset = tf.data.Dataset.from_tensor_slices(features_array)
         feature_dataset = feature_dataset.map(
             lambda x: tf.ensure_shape(
                 x, [self.n_patches_h, self.n_patches_w, self.feature_channels]
@@ -312,6 +367,7 @@ class FeaturePipeline:
         self,
         dataset: tf.data.Dataset,
         dataset_name: str | None = None,
+        is_training: bool = False,
     ) -> tf.data.Dataset:
         """
         Combine an image dataset with feature maps, either from the cache
@@ -320,15 +376,33 @@ class FeaturePipeline:
         Args:
             dataset:      Source tf.data.Dataset yielding (images, labels).
             dataset_name: If provided, load features from the pre-computed cache.
+            is_training:  Whether to apply shuffling, batching, and data augmentation.
 
         Returns:
             A Dataset yielding ({'image_input': …, 'feature_input': …}, labels).
         """
         if dataset_name:
-            feature_dataset = self.load_features(dataset_name)
-            # Batch the feature dataset to match the image dataset batching structure!
-            # We use config.cnn_batch_size which is the global batch size.
-            feature_dataset = feature_dataset.batch(config.cnn_batch_size)
+            feature_dataset = self.load_features(dataset_name) # Unbatched
+
+            # Zip them unbatched so they are perfectly aligned in the original order!
+            zipped = tf.data.Dataset.zip((dataset, feature_dataset))
+
+            if is_training:
+                # Apply data augmentation to images
+                if config.use_augmentation:
+                    def augment(inputs, features):
+                        if isinstance(inputs, tuple):
+                            img, lbl = inputs
+                            return (_augment_image(img), lbl), features
+                        return _augment_image(inputs), features
+                    zipped = zipped.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
+
+                # Shuffle the zipped dataset
+                buffer_size = min(10000, config.cnn_batch_size * 100)
+                zipped = zipped.shuffle(buffer_size=buffer_size, seed=config.random_seed)
+
+            # Batch the zipped dataset
+            zipped = zipped.batch(config.cnn_batch_size)
 
             def combine(inputs, feature_batch):
                 # inputs: (images, labels) or images
@@ -355,29 +429,35 @@ class FeaturePipeline:
                 return {"image_input": inputs, "feature_input": masked_features}
 
             return (
-                tf.data.Dataset.zip((dataset, feature_dataset))
+                zipped
                 .map(combine, num_parallel_calls=tf.data.AUTOTUNE)
                 .prefetch(tf.data.AUTOTUNE)
             )
 
-        return self._prepare_dataset_on_the_fly(dataset)
+        return self._prepare_dataset_on_the_fly(dataset, is_training=is_training)
 
     def _prepare_dataset_on_the_fly(
-        self, dataset: tf.data.Dataset
+        self, dataset: tf.data.Dataset, is_training: bool = False
     ) -> tf.data.Dataset:
         """
         Fallback: compute features for each batch as it is consumed.
-
-        Args:
-            dataset: Source tf.data.Dataset yielding (images, labels).
-
-        Returns:
-            A Dataset yielding ({'image_input': …, 'feature_input': …}, labels).
         """
         import logging
         logging.getLogger(__name__).info(
             "Preparing dataset with on-the-fly feature computation"
         )
+
+        # Shuffle and batch the image dataset first
+        if is_training:
+            if config.use_augmentation:
+                dataset = dataset.map(
+                    lambda x, y: (_augment_image(x), y),
+                    num_parallel_calls=tf.data.AUTOTUNE
+                )
+            buffer_size = min(10000, config.cnn_batch_size * 100)
+            dataset = dataset.shuffle(buffer_size=buffer_size, seed=config.random_seed)
+        
+        dataset = dataset.batch(config.cnn_batch_size)
 
         pipeline = self  # capture for the closure
 

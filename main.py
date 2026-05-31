@@ -126,6 +126,27 @@ def load_optimized_config():
         sys.exit(1)
 
 
+def load_optimized_cnn_config(mask_mode: str):
+    """
+    Load optimized CNN hyperparameters for the specific mask mode.
+    If the file doesn't exist, fallback to default parameters.
+    """
+    cnn_config_path = f"best_cnn_config_{mask_mode}.json"
+    if os.path.exists(cnn_config_path):
+        try:
+            with open(cnn_config_path, 'r') as f:
+                cnn_config = json.load(f)
+            logger.info(f"Loading optimized CNN parameters for mask_mode '{mask_mode}' from {cnn_config_path}:")
+            for key, value in cnn_config.items():
+                if key != "validation_accuracy":  # skip metadata
+                    setattr(config, f"cnn_{key}", value)
+                    logger.info(f"  cnn_{key} = {value}")
+        except Exception as e:
+            logger.warning(f"Failed to load CNN config from {cnn_config_path}: {e}. Using defaults.")
+    else:
+        logger.info(f"No optimized CNN config found at {cnn_config_path}. Using default CNN parameters.")
+
+
 # ---------------------------------------------------------------------------
 # Core experiment runner
 # ---------------------------------------------------------------------------
@@ -151,6 +172,20 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
     )
 
     load_optimized_config()
+    load_optimized_cnn_config(mask_mode)
+    config.use_feature_extraction = mask_mode in ('ga', 'random')
+
+    # Clear existing cache directories if starting a new 'ga' run
+    # to prevent stale cache reuse when generators change.
+    if mask_mode == 'ga':
+        import shutil
+        cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
+        if os.path.exists(cache_dir):
+            try:
+                shutil.rmtree(cache_dir)
+                logger.info(f"Cleared feature cache directory at {cache_dir} for fresh GA experiment.")
+            except Exception as e:
+                logger.warning(f"Could not clear feature cache directory: {e}")
 
     # --- Step 1: Data loading --------------------------------------------------
     logger.info("=== Step 1: Loading and preparing datasets ===")
@@ -215,12 +250,6 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
     if mask_mode == 'ga' and results is not None:
         genetic_rules = results['best_individual'].rules_tensor
 
-    model_wrapper = ModelWrapper(
-        genetic_rules=genetic_rules,
-        mask_mode=mask_mode,
-        random_mask_sparsity=mask_sparsity_mean,
-    )
-
     # Unique model base path per experiment
     gen_train_tag = "_".join(generator_train)
     gen_test_tag  = "_".join(generator_test)
@@ -229,29 +258,136 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
         config.output_dir, f"model_{experiment_tag}"
     )
 
-    with tf.profiler.experimental.Trace('model_training_phase'):
-        history = model_wrapper.train(
-            train_dataset=train_ds,
-            validation_dataset=test_ds,
-            model_path=f"{model_base_path}.h5",
+    num_runs = getattr(config, 'num_experiment_runs', 1)
+    base_seed = getattr(config, 'random_seed', 42)
+    if base_seed is None:
+        base_seed = 42
+
+    all_runs_metrics = []
+    histories = []
+    
+    best_acc_so_far = -1.0
+    best_model_wrapper = None
+    best_history = None
+    best_run_idx = 0
+
+    logger.info(f"Starting {num_runs} runs for experiment (mask_mode={mask_mode!r})...")
+
+    for run_idx in range(num_runs):
+        run_seed = base_seed + run_idx * 100
+        logger.info(f"\n--- Run {run_idx + 1}/{num_runs} with seed {run_seed} ---")
+        
+        # Set seeds
+        np.random.seed(run_seed)
+        tf.random.set_seed(run_seed)
+        
+        # Build ModelWrapper
+        model_wrapper = ModelWrapper(
+            genetic_rules=genetic_rules,
+            mask_mode=mask_mode,
+            random_mask_sparsity=mask_sparsity_mean,
         )
+        
+        run_model_path = f"{model_base_path}_run_{run_idx}"
+        
+        # Train model
+        with tf.profiler.experimental.Trace(f'model_training_phase_run_{run_idx}'):
+            history = model_wrapper.train(
+                train_dataset=train_ds,
+                validation_dataset=test_ds,
+                model_path=f"{run_model_path}.keras",
+            )
+        histories.append(history)
+        
+        # Save model wrapper state
+        model_wrapper.save(run_model_path)
+        
+        # Evaluate model
+        logger.info(f"Evaluating Run {run_idx + 1}...")
+        metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
+        
+        # JPEG robustness
+        robustness = {}
+        if getattr(config, 'eval_jpeg_robustness', False):
+            from utils import evaluate_robustness
+            logger.info(f"Evaluating JPEG robustness for Run {run_idx + 1}...")
+            robustness = evaluate_robustness(
+                model_wrapper, test_ds,
+                quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
+                logger=logger,
+            )
+        
+        metrics['robustness'] = robustness
+        all_runs_metrics.append(metrics)
+        
+        acc = metrics.get('accuracy', 0.0)
+        logger.info(f"Run {run_idx + 1} Accuracy: {acc:.4f}  Loss: {metrics.get('loss', 0.0):.4f}")
+        
+        # Keep track of the best run
+        if acc > best_acc_so_far:
+            best_acc_so_far = acc
+            best_model_wrapper = model_wrapper
+            best_history = history
+            best_run_idx = run_idx
 
-    model_wrapper.save(model_base_path)
-    logger.info(f"Model state saved to {model_base_path}.*")
+    # Save the best model wrapper to model_base_path so it acts as standard model
+    if best_model_wrapper is not None:
+        best_model_wrapper.save(model_base_path)
+        import shutil
+        best_run_model_keras = f"{model_base_path}_run_{best_run_idx}.keras"
+        if os.path.exists(best_run_model_keras):
+            shutil.copyfile(best_run_model_keras, f"{model_base_path}.keras")
+        logger.info(f"Saved best model (accuracy: {best_acc_so_far:.4f}) to {model_base_path}.*")
 
-    # --- Step 4: Evaluate -----------------------------------------------------
-    logger.info("=== Step 4: Evaluating the model ===")
-    metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
-    logger.info(f"Test accuracy: {metrics['accuracy']:.4f}  loss: {metrics['loss']:.4f}")
+    # Average metrics across all runs
+    avg_metrics = {}
+    metric_keys = ['accuracy', 'loss', 'precision', 'recall', 'f1', 'balanced_accuracy']
+    for key in metric_keys:
+        vals = [r.get(key) for r in all_runs_metrics if r.get(key) is not None]
+        if vals:
+            avg_metrics[key] = float(np.mean(vals))
+            avg_metrics[f"{key}_std"] = float(np.std(vals))
+            
+    # Average confusion matrix
+    cm_lists = [r.get('confusion_matrix') for r in all_runs_metrics if r.get('confusion_matrix') is not None]
+    if cm_lists:
+        avg_cm = np.mean(cm_lists, axis=0).tolist()
+        avg_metrics['confusion_matrix'] = avg_cm
+        
+    # Average classification report
+    reports = [r.get('classification_report') for r in all_runs_metrics if r.get('classification_report') is not None]
+    if reports:
+        avg_report = {}
+        for cls in ['Human', 'AI']:
+            avg_report[cls] = {}
+            for field in ['precision', 'recall', 'f1-score', 'support']:
+                vals = [rep[cls][field] for rep in reports if cls in rep and field in rep[cls]]
+                if vals:
+                    avg_report[cls][field] = float(np.mean(vals))
+        avg_metrics['classification_report'] = avg_report
 
-    # --- Step 4b: JPEG robustness evaluation ----------------------------------
-    logger.info("=== Step 4b: JPEG robustness evaluation ===")
-    from utils import evaluate_robustness
-    robustness = evaluate_robustness(
-        model_wrapper, test_ds,
-        quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
-        logger=logger,
-    )
+    # Average JPEG robustness
+    robustness_runs = [r.get('robustness') for r in all_runs_metrics if r.get('robustness') is not None]
+    avg_robustness = {}
+    if robustness_runs:
+        qualities = list(robustness_runs[0].keys())
+        for q in qualities:
+            avg_robustness[q] = {}
+            for field in ['accuracy', 'accuracy_drop']:
+                vals = [run_rob[q][field] for run_rob in robustness_runs if q in run_rob and field in run_rob[q]]
+                if vals:
+                    avg_robustness[q][field] = float(np.mean(vals))
+
+    # Output aggregated evaluation logs
+    logger.info(f"\n{'='*30} experiment summary (averaged over {num_runs} runs) {'='*30}")
+    logger.info(f"Test accuracy: {avg_metrics['accuracy']:.4f} (std={avg_metrics.get('accuracy_std', 0.0):.4f})")
+    logger.info(f"Test loss:     {avg_metrics['loss']:.4f} (std={avg_metrics.get('loss_std', 0.0):.4f})")
+    logger.info(f"Test F1:       {avg_metrics.get('f1', 0.0):.4f}")
+    
+    # Assign aggregated values to be saved
+    metrics = avg_metrics
+    robustness = avg_robustness
+    history = best_history
 
     # --- Step 5: Mask visualisation (10 sample images per model) --------------
     if mask_mode in ('ga', 'random') and len(sample_images) > 0:
@@ -394,22 +530,36 @@ def _save_experiment_results(
 
 def run_all_experiments():
     """
-    Run the full 4-experiment comparison matrix:
+    Run the full 6-experiment comparison matrix:
 
-    1. In-distribution  GA masks
-    2. In-distribution  random masks (matched sparsity)
-    3. Cross-generator  GA masks
-    4. Cross-generator  random masks (matched sparsity)
+    1. In-distribution  baseline (no masks)
+    2. In-distribution  GA masks
+    3. In-distribution  random masks (matched sparsity)
+    4. Cross-generator  baseline (no masks)
+    5. Cross-generator  GA masks
+    6. Cross-generator  random masks (matched sparsity)
 
     Results are saved as individual JSON files in output/.
     """
+    # Clear existing cache directories to ensure clean slate for the comparison matrix
+    import shutil
+    cache_dir = os.path.join(config.output_dir, config.feature_cache_dir)
+    if os.path.exists(cache_dir):
+        try:
+            shutil.rmtree(cache_dir)
+            logger.info(f"Cleared feature cache directory at {cache_dir} to start comparison matrix freshly.")
+        except Exception as e:
+            logger.warning(f"Could not clear feature cache directory: {e}")
+
     gen_train = list(getattr(config, 'generator_train', config.train_generators))
     gen_test  = list(getattr(config, 'generator_test',  config.val_generators))
 
     experiments = [
         # (mask_mode, train_gens,  test_gens)
+        ('none',   gen_train, gen_train),   # in-distribution baseline
         ('ga',     gen_train, gen_train),   # in-distribution GA
         ('random', gen_train, gen_train),   # in-distribution random
+        ('none',   gen_train, gen_test),    # cross-generator baseline
         ('ga',     gen_train, gen_test),    # cross-generator GA
         ('random', gen_train, gen_test),    # cross-generator random
     ]
@@ -434,6 +584,7 @@ def run_all_experiments():
     return all_results
 
 
+
 # ---------------------------------------------------------------------------
 # Legacy helpers (kept for backward compatibility / predict mode)
 # ---------------------------------------------------------------------------
@@ -444,9 +595,8 @@ def evaluate_model(model_wrapper, test_ds):
     # Prepare the test dataset through the wrapper
     if model_wrapper.use_features:
         model_wrapper.precompute_features(test_ds, "test")
-        prepared_ds = model_wrapper.prepare_dataset(test_ds, "test")
-    else:
-        prepared_ds = test_ds
+    
+    prepared_ds = model_wrapper.prepare_dataset(test_ds, "test", is_training=False)
 
     # Evaluate using the inner Keras model on the already-prepared dataset
     results = model_wrapper.model.model.evaluate(prepared_ds, verbose=1)

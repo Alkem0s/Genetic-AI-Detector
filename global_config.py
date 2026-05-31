@@ -10,11 +10,12 @@ mask_mode = "ga"
 jpeg_quality_levels = [50, 75]
 cnn_batch_size = 64
 extraction_batch_size = 64
-max_images = 10000
+max_train_samples = None
+max_val_samples = None
 epochs = 50
 test_size = 0.2
 random_seed = 42
-model_path = "ai_detector_model.h5"
+model_path = "ai_detector_model.keras"
 mask_path = "optimized_patch_mask.npy"
 rules_path = "genetic_rules.pkl"
 feature_cache_dir = "feature_cache"
@@ -73,3 +74,20 @@ fitness_weights = {
 # Defaults to [0.2, 0.6] range.
 target_sparsity = 0.45
 sparsity_radius = 0.25
+
+# --- CNN Hyperparameters (Phase 3 HPO Defaults) ---
+cnn_learning_rate = 0.001
+cnn_dropout_1 = 0.5
+cnn_dropout_2 = 0.3
+cnn_dense_units = 256
+cnn_l2_reg = 0.0
+cnn_optimizer = "adam"
+cnn_early_stopping_patience = 10
+
+# --- Experiment Multi-Run Averaging ---
+num_experiment_runs = 3
+
+# --- Post-hoc Evaluation ---
+eval_jpeg_robustness = False
+
+

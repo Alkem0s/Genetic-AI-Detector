@@ -176,9 +176,9 @@ def evaluate_robustness(model_wrapper, test_ds, quality_levels=None, logger=None
     # ---- Baseline accuracy on clean images ----------------------------------------
     if model_wrapper.use_features:
         model_wrapper.precompute_features(test_ds, "robustness_clean")
-        clean_prepared = model_wrapper.prepare_dataset(test_ds, "robustness_clean")
+        clean_prepared = model_wrapper.prepare_dataset(test_ds, "robustness_clean", is_training=False)
     else:
-        clean_prepared = test_ds
+        clean_prepared = model_wrapper.prepare_dataset(test_ds, is_training=False)
 
     clean_results = model_wrapper.model.model.evaluate(clean_prepared, verbose=0)
     baseline_acc = clean_results[1] if len(clean_results) > 1 else float('nan')
@@ -187,23 +187,23 @@ def evaluate_robustness(model_wrapper, test_ds, quality_levels=None, logger=None
     results = {}
 
     for q in quality_levels:
-        # Apply JPEG compression to every image in the dataset
-        def compress_batch(images, labels, _q=q):
-            compressed = tf.map_fn(
-                lambda img: apply_jpeg_compression(img, _q),
-                images,
-                fn_output_signature=tf.float32,
-            )
-            return compressed, labels
+        # Apply JPEG compression to every image in the dataset (unbatched map)
+        def compress_single(img, label, _q=q):
+            compressed = apply_jpeg_compression(img, _q)
+            compressed.set_shape([_cfg.image_size, _cfg.image_size, 3])
+            return compressed, label
 
-        compressed_ds = test_ds.map(compress_batch, num_parallel_calls=tf.data.AUTOTUNE)
+        compressed_ds = test_ds.map(
+            lambda img, label: compress_single(img, label),
+            num_parallel_calls=tf.data.AUTOTUNE
+        )
 
         if model_wrapper.use_features:
             cache_name = f"robustness_q{q}"
             model_wrapper.precompute_features(compressed_ds, cache_name)
-            prepared = model_wrapper.prepare_dataset(compressed_ds, cache_name)
+            prepared = model_wrapper.prepare_dataset(compressed_ds, cache_name, is_training=False)
         else:
-            prepared = compressed_ds
+            prepared = model_wrapper.prepare_dataset(compressed_ds, is_training=False)
 
         eval_results = model_wrapper.model.model.evaluate(prepared, verbose=0)
         acc = eval_results[1] if len(eval_results) > 1 else float('nan')

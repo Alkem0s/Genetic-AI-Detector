@@ -67,6 +67,13 @@ class Visualizer:
         else:
             mask_np = np.asarray(patch_mask, dtype=np.float32)
 
+        # Squeeze out batch/channel dimension if 3D (e.g. shape (1, H, W) or (H, W, 1))
+        if len(mask_np.shape) == 3:
+            if mask_np.shape[0] == 1:
+                mask_np = np.squeeze(mask_np, axis=0)
+            elif mask_np.shape[-1] == 1:
+                mask_np = np.squeeze(mask_np, axis=-1)
+
         image_np = np.clip(image_np, 0.0, 1.0)
 
         h, w = image_np.shape[:2]
