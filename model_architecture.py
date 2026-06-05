@@ -54,6 +54,16 @@ class RandomMaskGenerator:
         binary = tf.cast(flat < self.target_sparsity, tf.int8)
         return binary
 
+    @tf.function
+    def generate_stateless(self, batch_size, n_patches_h, n_patches_w, seed) -> tf.Tensor:
+        """
+        Produce a batch of random binary masks statelessly (avoiding RNG lock contention).
+        """
+        shape = tf.stack([batch_size, n_patches_h, n_patches_w])
+        flat = tf.random.stateless_uniform(shape, seed=seed, dtype=tf.float32)
+        binary = tf.cast(flat < self.target_sparsity, tf.int8)
+        return binary
+
 
 # ---------------------------------------------------------------------------
 # Random Mask Pipeline  (FeaturePipeline subclass for mask_mode='random')
@@ -86,8 +96,14 @@ class _RandomMaskPipeline(FeaturePipeline):
         self._random_generator = random_generator
 
     def _generate_mask(self, patch_features: tf.Tensor) -> tf.Tensor:
-        """Override: produce a random binary mask instead of a GA-driven one."""
-        return self._random_generator.generate(self.n_patches_h, self.n_patches_w)
+        """Override: produce a batch of random binary masks statelessly."""
+        batch_size = tf.shape(patch_features)[0]
+        # Generate a seed from the patch features to make it stateless but pseudo-random per batch
+        feature_sum = tf.reduce_sum(patch_features)
+        seed_val = tf.cast(tf.abs(feature_sum * 1000.0), tf.int32)
+        base_seed = config.random_seed if config.random_seed is not None else 42
+        seed = tf.stack([seed_val + base_seed, seed_val + base_seed + 13])
+        return self._random_generator.generate_stateless(batch_size, self.n_patches_h, self.n_patches_w, seed)
 
 
 # Check if mixed precision is available and supported
@@ -138,19 +154,22 @@ class AIDetectorModel:
 
         logger.info(f"Using compute dtype: {compute_dtype}, variable dtype: {variable_dtype}")
 
+        # Setup L2 regularizer
+        reg = tf.keras.regularizers.l2(config.cnn_l2_reg) if config.cnn_l2_reg > 0 else None
+
         # Main input for the image - always use float32 for inputs
         image_input = layers.Input(shape=self.input_shape, name='image_input', dtype='float32')
 
         # Image processing branch
-        x = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(image_input)
+        x = layers.Conv2D(32, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(image_input)
         x = layers.MaxPooling2D((2, 2), dtype='float32')(x)
         x = layers.BatchNormalization()(x)
         
-        x = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+        x = layers.Conv2D(64, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(x)
         x = layers.MaxPooling2D((2, 2), dtype='float32')(x)
         x = layers.BatchNormalization()(x)
         
-        x = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(x)
+        x = layers.Conv2D(128, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(x)
         x = layers.MaxPooling2D((2, 2), dtype='float32')(x)
         x = layers.BatchNormalization()(x)
         
@@ -160,14 +179,14 @@ class AIDetectorModel:
             logger.info("Building model with feature extraction branch.")
             # Feature map input - always use float32 for inputs
             feature_input = layers.Input(shape=(self.input_shape[0], self.input_shape[1], self.feature_channels), 
-                                        name='feature_input', dtype='float32')
+                                         name='feature_input', dtype='float32')
             
              # Process feature maps
-            f = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(feature_input)
+            f = layers.Conv2D(32, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(feature_input)
             f = layers.MaxPooling2D((2, 2), dtype='float32')(f)
-            f = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(f)
+            f = layers.Conv2D(64, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(f)
             f = layers.MaxPooling2D((2, 2), dtype='float32')(f)
-            f = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(f)
+            f = layers.Conv2D(128, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(f)
             f = layers.MaxPooling2D((2, 2), dtype='float32')(f)
 
             # Resize feature maps to fixed spatial size
@@ -177,7 +196,7 @@ class AIDetectorModel:
             f = layers.Identity(dtype=compute_dtype)(f)
             
             # Global attention weights
-            attn_weights = layers.Conv2D(1, (1, 1), activation='sigmoid', padding='same')(x)
+            attn_weights = layers.Conv2D(1, (1, 1), activation='sigmoid', padding='same', kernel_regularizer=reg)(x)
             # Apply attention to feature maps
             f_weighted = layers.Multiply()([f, attn_weights])
             # Cross-attention
@@ -187,11 +206,11 @@ class AIDetectorModel:
             logger.debug("Attention mechanism applied.")
             
             # Continue with the CNN
-            x = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(enhanced)
+            x = layers.Conv2D(128, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(enhanced)
         else:
             logger.info("Building model without feature extraction branch.")
             # Without feature extraction, add an extra convolutional layer to maintain model capacity
-            x = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(x)
+            x = layers.Conv2D(128, (3, 3), activation='relu', padding='same', kernel_regularizer=reg)(x)
 
         # Common downstream layers
         x = layers.MaxPooling2D((2, 2), dtype='float32')(x)
@@ -199,12 +218,12 @@ class AIDetectorModel:
         
         # Global Average Pooling instead of Flatten to ensure fully defined shape
         x = layers.GlobalAveragePooling2D()(x)
-        x = layers.Dropout(0.5)(x)
-        x = layers.Dense(config.image_size, activation='relu')(x)
-        x = layers.Dropout(0.3)(x)
+        x = layers.Dropout(config.cnn_dropout_1)(x)
+        x = layers.Dense(config.cnn_dense_units, activation='relu', kernel_regularizer=reg)(x)
+        x = layers.Dropout(config.cnn_dropout_2)(x)
 
         # Output layer must use float32 for numerical stability
-        output = layers.Dense(1, activation='sigmoid', dtype='float32')(x)
+        output = layers.Dense(1, activation='sigmoid', dtype='float32', kernel_regularizer=reg)(x)
 
         # Create model with appropriate inputs
         if self.use_features:
@@ -212,8 +231,17 @@ class AIDetectorModel:
         else:
             model = Model(inputs=image_input, outputs=output)
 
-        # Simplified optimizer setup for mixed precision
-        optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+        # Dynamic optimizer setup based on HPO config
+        opt_name = config.cnn_optimizer.lower()
+        lr = config.cnn_learning_rate
+        if opt_name == 'adam':
+            optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+        elif opt_name == 'rmsprop':
+            optimizer = tf.keras.optimizers.RMSprop(learning_rate=lr)
+        elif opt_name == 'sgd':
+            optimizer = tf.keras.optimizers.SGD(learning_rate=lr)
+        else:
+            optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
         # Only use LossScaleOptimizer if we're actually using mixed precision
         if tf.keras.mixed_precision.global_policy().compute_dtype == 'float16':
@@ -524,13 +552,13 @@ class ModelWrapper:
                 self.precompute_features(validation_dataset, "val")
             
             # Prepare datasets
-            prepared_train = self.prepare_dataset(train_dataset, "train")
-            prepared_val = self.prepare_dataset(validation_dataset, "val") if validation_dataset else None
+            prepared_train = self.prepare_dataset(train_dataset, "train", is_training=True)
+            prepared_val = self.prepare_dataset(validation_dataset, "val", is_training=False) if validation_dataset else None
         else:
             # Fallback to on-the-fly
             logger.info("Using on-the-fly feature extraction (no disk cache).")
-            prepared_train = self.prepare_dataset(train_dataset)
-            prepared_val = self.prepare_dataset(validation_dataset) if validation_dataset else None
+            prepared_train = self.prepare_dataset(train_dataset, is_training=True)
+            prepared_val = self.prepare_dataset(validation_dataset, is_training=False) if validation_dataset else None
         
         # Train the model
         history = self.model.train(
@@ -554,7 +582,7 @@ class ModelWrapper:
                 prepared_test_ds = self.prepare_dataset(test_dataset)
         else:
             logger.info("Evaluating without genetic features.")
-            prepared_test_ds = test_dataset
+            prepared_test_ds = self.prepare_dataset(test_dataset, is_training=False)
         results = self.model.evaluate(prepared_test_ds)
         logger.info(f"Model wrapper evaluation complete. Loss: {results[0]:.4f}, Accuracy: {results[1]:.4f}")
         return results

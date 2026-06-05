@@ -5,6 +5,16 @@ import logging
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+import tensorflow as tf
+# Setup GPU memory growth before any other module imports tensorflow
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        pass
+
 from hyperparameter_optimizer import HyperparameterOptimizer
 import optuna_config as config
 import global_config
@@ -54,7 +64,7 @@ def main():
             
         # Run Phase 3: CNN Hyperparameters
         elif args.phase == 'cnn':
-            mask_modes = ['ga', 'random', 'none'] if args.mask_mode == 'all' else [args.mask_mode]
+            mask_modes = ['ga', 'none'] if args.mask_mode == 'all' else [args.mask_mode]
             for mode in mask_modes:
                 print(f"\nRUNNING PHASE 3: CNN Hyperparameter Optimization for mask_mode '{mode}'...")
                 optimizer.optimize_cnn(mode)

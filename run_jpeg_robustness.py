@@ -116,9 +116,9 @@ def main():
     data_loader = DataLoader()
     
     # Experiment generator splits
-    in_dist_train = ["ADM", "glide", "wukong"]
-    in_dist_test  = ["ADM", "glide", "wukong"]
-    cross_test    = ["sdv4", "vqdm"]
+    in_dist_train = list(config.train_generators)
+    in_dist_test  = list(config.train_generators)
+    cross_test    = list(config.val_generators)
     
     # Generate datasets
     logger.info("Loading In-distribution test dataset...")

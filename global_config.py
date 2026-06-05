@@ -24,7 +24,7 @@ predict = False
 predict_path = ""
 skip_training = False
 use_feature_extraction = True
-use_augmentation = True
+use_augmentation = False
 
 verbose = False 
 visualize = False
@@ -39,10 +39,6 @@ val_generators = ["sdv4", "vqdm"]
 dataset_sampled_dir = "dataset_sampled"
 max_train_per_gen = 10000  # Max AI/Real images to take from each train generator
 max_val_per_gen = 2500     # Max AI/Real images to take from each val generator
-
-# Explicit generator splits for run_experiment() calls (mirrors train/val by default)
-generator_train = ["ADM", "glide", "wukong"]
-generator_test  = ["sdv4", "vqdm"]
 
 # --- Unified Patch and Image Sizes ---
 image_size = 256

@@ -10,6 +10,16 @@ from pathlib import Path
 import sys
 from typing import Dict, Any, Tuple
 
+import tensorflow as tf
+# Setup GPU memory growth before any other module imports tensorflow
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        pass
+
 # Import your project modules
 from data_loader import DataLoader
 from genetic_algorithm import GeneticFeatureOptimizer
@@ -732,12 +742,19 @@ class HyperparameterOptimizer:
         # Optimize with a loop to release file locks between trials
         from tqdm import tqdm
         start_time = time.time()
-        for _ in tqdm(range(config.feature_weight_trials), desc="Optimizing Weights"):
-            study.optimize(
-                self.objective_feature_weights, 
-                n_trials=1,
-                show_progress_bar=False
-            )
+        completed_trials = len(study.trials)
+        remaining_trials = config.feature_weight_trials - completed_trials
+        
+        if remaining_trials <= 0:
+            logger.info(f"Feature weight optimization already has {completed_trials} trials (target: {config.feature_weight_trials}). Skipping optimization.")
+        else:
+            logger.info(f"Feature weight optimization starting with {completed_trials} existing trials. Running {remaining_trials} remaining trials.")
+            for _ in tqdm(range(remaining_trials), desc="Optimizing Weights"):
+                study.optimize(
+                    self.objective_feature_weights, 
+                    n_trials=1,
+                    show_progress_bar=False
+                )
         end_time = time.time()
         
         # Reconstruct best weights from stored trial params (deterministic — no re-sampling)
@@ -810,12 +827,19 @@ class HyperparameterOptimizer:
         # Optimize with a loop to release file locks between trials
         from tqdm import tqdm
         start_time = time.time()
-        for _ in tqdm(range(config.ga_config_trials), desc="Optimizing GA Config"):
-            study.optimize(
-                self.objective_ga_config, 
-                n_trials=1,
-                show_progress_bar=False
-            )
+        completed_trials = len(study.trials)
+        remaining_trials = config.ga_config_trials - completed_trials
+        
+        if remaining_trials <= 0:
+            logger.info(f"GA config optimization already has {completed_trials} trials (target: {config.ga_config_trials}). Skipping optimization.")
+        else:
+            logger.info(f"GA config optimization starting with {completed_trials} existing trials. Running {remaining_trials} remaining trials.")
+            for _ in tqdm(range(remaining_trials), desc="Optimizing GA Config"):
+                study.optimize(
+                    self.objective_ga_config, 
+                    n_trials=1,
+                    show_progress_bar=False
+                )
         end_time = time.time()
         
         # Reconstruct best GA config from stored trial params
@@ -1173,12 +1197,19 @@ class HyperparameterOptimizer:
         )
         
         num_trials = getattr(config, 'cnn_trials', 20)
-        for _ in tqdm(range(num_trials), desc=f"Optimizing CNN ({mask_mode})"):
-            study.optimize(
-                objective,
-                n_trials=1,
-                show_progress_bar=False
-            )
+        completed_trials = len(study.trials)
+        remaining_trials = num_trials - completed_trials
+        
+        if remaining_trials <= 0:
+            logger.info(f"CNN optimization ({mask_mode}) already has {completed_trials} trials (target: {num_trials}). Skipping optimization.")
+        else:
+            logger.info(f"CNN optimization ({mask_mode}) starting with {completed_trials} existing trials. Running {remaining_trials} remaining trials.")
+            for _ in tqdm(range(remaining_trials), desc=f"Optimizing CNN ({mask_mode})"):
+                study.optimize(
+                    objective,
+                    n_trials=1,
+                    show_progress_bar=False
+                )
             
         end_time = time.time()
         best_trial = study.best_trial
@@ -1198,6 +1229,11 @@ class HyperparameterOptimizer:
         output_data = best_trial.params.copy()
         output_data['validation_accuracy'] = best_trial.value
         self.save_json(output_data, output_file)
+        
+        if mask_mode == 'ga':
+            random_output_file = config.cnn_config_output_file_template.format(mask_mode='random')
+            self.save_json(output_data, random_output_file)
+            logger.info(f"Automatically duplicated GA CNN parameters to: {random_output_file}")
         
         # Clear TensorFlow and garbage collect
         import tensorflow as tf

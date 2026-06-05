@@ -131,7 +131,9 @@ def load_optimized_cnn_config(mask_mode: str):
     Load optimized CNN hyperparameters for the specific mask mode.
     If the file doesn't exist, fallback to default parameters.
     """
-    cnn_config_path = f"best_cnn_config_{mask_mode}.json"
+    # For random mask mode, use GA's optimized CNN parameters as a direct control
+    actual_mode = 'ga' if mask_mode == 'random' else mask_mode
+    cnn_config_path = f"best_cnn_config_{actual_mode}.json"
     if os.path.exists(cnn_config_path):
         try:
             with open(cnn_config_path, 'r') as f:
@@ -551,8 +553,8 @@ def run_all_experiments():
         except Exception as e:
             logger.warning(f"Could not clear feature cache directory: {e}")
 
-    gen_train = list(getattr(config, 'generator_train', config.train_generators))
-    gen_test  = list(getattr(config, 'generator_test',  config.val_generators))
+    gen_train = list(config.train_generators)
+    gen_test  = list(config.val_generators)
 
     experiments = [
         # (mask_mode, train_gens,  test_gens)
@@ -780,8 +782,8 @@ def main():
     if config.skip_training and model_state_exists:
         model_wrapper, best_rules = load_model_and_rules(model_base_path)
     else:
-        gen_train = list(getattr(config, 'generator_train', config.train_generators))
-        gen_test  = list(getattr(config, 'generator_test',  config.val_generators))
+        gen_train = list(config.train_generators)
+        gen_test  = list(config.val_generators)
         result = run_experiment(
             mask_mode=mask_mode,
             generator_train=gen_train,
