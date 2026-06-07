@@ -164,7 +164,9 @@ def generate_cnn_config_csv(paper_dir):
     configs = {}
     modes = [('none', 'No Mask (Baseline)'), ('ga', 'GA Evolved Mask'), ('random', 'Random Mask (Control)')]
     for mode, label in modes:
-        file_path = f"best_cnn_config_{mode}.json"
+        file_path = f"best_cnn_config_{mode}_scaled.json"
+        if not os.path.exists(file_path):
+            file_path = f"best_cnn_config_{mode}.json"
         if os.path.exists(file_path):
             try:
                 with open(file_path, 'r') as f:

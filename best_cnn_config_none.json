@@ -1,9 +1,9 @@
 {
-  "learning_rate": 0.0001329291894316216,
-  "dropout_1": 0.760571445127933,
-  "dropout_2": 0.585595153449124,
-  "dense_units": 640,
-  "l2_reg": 4.2079886696066345e-06,
-  "optimizer": "sgd",
-  "validation_accuracy": 0.762666642665863
+  "learning_rate": 0.0018804957639270163,
+  "dropout_1": 0.34312380528182995,
+  "dropout_2": 0.17218111956300308,
+  "dense_units": 448,
+  "l2_reg": 0.0002847047819587899,
+  "optimizer": "adam",
+  "validation_accuracy": 0.7889999747276306
 }

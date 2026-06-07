@@ -133,17 +133,17 @@ log_intermediate_results = True
 # =============================================================================
 # CNN HYPERPARAMETER OPTIMIZATION CONFIGURATION (Phase 3)
 # =============================================================================
-cnn_trials = 50
+cnn_trials = 12
 cnn_epochs = 40                  # Maximum epochs to train each CNN trial
 cnn_early_stopping_patience = 5  # Patience for early stopping during tuning
 num_cnn_runs_per_trial = 1       # Number of seeded runs to average per trial for stability
 
 # Max images in total during CNN HPO to speed up trials (distributed automatically)
-cnn_max_train_samples = 9000
-cnn_max_val_samples = 3000
+cnn_max_train_samples = 30000
+cnn_max_val_samples = 5000
 
 cnn_study_name_template = "cnn_optimization_{mask_mode}"
-cnn_config_output_file_template = "best_cnn_config_{mask_mode}.json"
+cnn_config_output_file_template = "best_cnn_config_{mask_mode}_scaled.json"
 
 # CNN HPO Search Spaces
 cnn_learning_rate_range = (1e-5, 1e-2)

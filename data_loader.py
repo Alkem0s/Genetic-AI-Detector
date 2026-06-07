@@ -202,7 +202,7 @@ class DataLoader:
         
         return result_df
 
-    def _process_path(self, file_path, label, use_center_crop=True):
+    def _process_path(self, file_path, label, use_center_crop=True, return_uint8=False):
         """
         Process a single image file path.
 
@@ -210,6 +210,7 @@ class DataLoader:
             file_path: Path to the image file
             label: Label for the image
             use_center_crop: If True, use center crop instead of letterboxing
+            return_uint8: If True, returns image as tf.uint8 instead of normalized tf.float32
 
         Returns:
             Tuple of (processed_image, label)
@@ -238,7 +239,10 @@ class DataLoader:
 
         if is_exact_match:
             # Already perfect
-            img = tf.cast(img, tf.float32) / 255.0
+            if return_uint8:
+                img = tf.cast(img, tf.uint8)
+            else:
+                img = tf.cast(img, tf.float32) / 255.0
             img.set_shape([self.image_size, self.image_size, 3])
             return img, label
 
@@ -261,17 +265,20 @@ class DataLoader:
             img = tf.image.resize(img, [self.image_size, self.image_size], preserve_aspect_ratio=True)
             img = tf.image.resize_with_crop_or_pad(img, self.image_size, self.image_size)
 
-        # Normalize to [0, 1]
-        img = tf.cast(img, tf.float32) / 255.0
+        # Normalize to [0, 1] if not returning uint8
+        if return_uint8:
+            img = tf.cast(img, tf.uint8)
+        else:
+            img = tf.cast(img, tf.float32) / 255.0
         img.set_shape([self.image_size, self.image_size, 3])
 
         return img, label
 
-    def process_path(self, file_path, label, use_center_crop=True):
+    def process_path(self, file_path, label, use_center_crop=True, return_uint8=False):
         """
         Public wrapper for _process_path.
         """
-        return self._process_path(file_path, label, use_center_crop)
+        return self._process_path(file_path, label, use_center_crop, return_uint8)
 
     def _configure_for_performance(self, dataset, is_training=False):
         """
@@ -401,29 +408,46 @@ class DataLoader:
         
         logger.info(f"Final setup: {len(train_df)} training and {len(test_df)} testing samples")
         
-        # Create TensorFlow datasets
-        train_ds = tf.data.Dataset.from_tensor_slices(
-            (train_df['file_name'].values, train_df['label'].values)
-        )
-        test_ds = tf.data.Dataset.from_tensor_slices(
-            (test_df['file_name'].values, test_df['label'].values)
-        )
-        
-        # Process paths and load images on-the-fly
-        train_ds = train_ds.map(
-            lambda path, label: self._process_path(path, label),
-            num_parallel_calls=tf.data.AUTOTUNE
-        )
-        
-        test_ds = test_ds.map(
-            lambda path, label: self._process_path(path, label),
-            num_parallel_calls=tf.data.AUTOTUNE
-        )
-        
-        # Configure for performance (kept unbatched and unshuffled; batching and shuffling
-        # are handled inside ModelWrapper / FeaturePipeline)
-        train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
-        test_ds = test_ds.prefetch(tf.data.AUTOTUNE)
+        # Create TensorFlow datasets on CPU to prevent GPU cache allocation
+        with tf.device('/CPU:0'):
+            train_ds = tf.data.Dataset.from_tensor_slices(
+                (train_df['file_name'].values, train_df['label'].values)
+            )
+            test_ds = tf.data.Dataset.from_tensor_slices(
+                (test_df['file_name'].values, test_df['label'].values)
+            )
+            
+            # Process paths and load images on-the-fly (as uint8 to save RAM cache space)
+            train_ds = train_ds.map(
+                lambda path, label: self._process_path(path, label, return_uint8=True),
+                num_parallel_calls=tf.data.AUTOTUNE
+            )
+            
+            test_ds = test_ds.map(
+                lambda path, label: self._process_path(path, label, return_uint8=True),
+                num_parallel_calls=tf.data.AUTOTUNE
+            )
+            
+            # Cache the uint8 dataset in memory (only ~2.36 GB RAM total) to avoid slow disk I/O
+            logger.info("Caching training and validation datasets in memory (as uint8) on CPU...")
+            train_ds = train_ds.cache()
+            test_ds = test_ds.cache()
+            
+            # Normalize to float32 [0.0, 1.0] after caching
+            train_ds = train_ds.map(
+                lambda img, label: (tf.cast(img, tf.float32) / 255.0, label),
+                num_parallel_calls=tf.data.AUTOTUNE
+            )
+            
+            test_ds = test_ds.map(
+                lambda img, label: (tf.cast(img, tf.float32) / 255.0, label),
+                num_parallel_calls=tf.data.AUTOTUNE
+            )
+            
+            # Configure for performance (kept unbatched and unshuffled; batching and shuffling
+            # are handled inside ModelWrapper / FeaturePipeline)
+            train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
+            test_ds = test_ds.prefetch(tf.data.AUTOTUNE)
         
         sample_images = np.array([])
         sample_labels = np.array([])

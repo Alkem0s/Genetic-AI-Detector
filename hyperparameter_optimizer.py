@@ -26,6 +26,207 @@ from genetic_algorithm import GeneticFeatureOptimizer
 import optuna_config as config
 import global_config
 
+def _run_single_trial_subprocess(study_name, mask_mode, genetic_rules_np, random_mask_sparsity):
+    """
+    Subprocess entrypoint to run a single HPO trial.
+    Spawning a new process for each trial guarantees that TensorFlow completely
+    releases all GPU memory back to the OS when the trial completes, preventing OOM leaks.
+    """
+    import optuna
+    from optuna.storages import JournalStorage, JournalFileStorage
+    import tensorflow as tf
+    import gc
+    
+    # 1. Enable memory growth in the subprocess
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass
+
+    # 2. Initialize optimizer and load datasets
+    from hyperparameter_optimizer import HyperparameterOptimizer
+    optimizer = HyperparameterOptimizer()
+    optimizer._init_cnn_datasets(mask_mode)
+    
+    # 3. Convert rules back to tensor if needed
+    genetic_rules = None
+    if genetic_rules_np is not None:
+        genetic_rules = tf.convert_to_tensor(genetic_rules_np, dtype=tf.float32)
+        
+    # 4. Load the study
+    storage = JournalStorage(JournalFileStorage("optuna_journal.log"))
+    study = optuna.load_study(
+        study_name=study_name,
+        storage=storage,
+        sampler=optimizer._sampler
+    )
+    
+    # 5. Define local objective
+    objective = lambda t: optimizer.objective_cnn(
+        trial=t,
+        mask_mode=mask_mode,
+        genetic_rules=genetic_rules,
+        random_mask_sparsity=random_mask_sparsity
+    )
+    
+    # 6. Run exactly 1 trial
+    study.optimize(objective, n_trials=1, show_progress_bar=False)
+    
+    # 7. Clean up
+    tf.keras.backend.clear_session()
+    gc.collect()
+
+
+def _run_cnn_prep_subprocess(mask_mode, json_ga_config, json_weights, output_queue):
+    """
+    Runs HPO CNN preparation (GA evolution and raw feature precomputation)
+    in a spawned subprocess to prevent GPU VRAM leaks in the parent process.
+    """
+    import tensorflow as tf
+    import gc
+    import logging
+    from model_architecture import ModelWrapper
+    
+    # 1. Enable memory growth
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass
+
+    # 2. Initialize optimizer and load datasets
+    from hyperparameter_optimizer import HyperparameterOptimizer
+    optimizer = HyperparameterOptimizer()
+    optimizer.json_ga_config = json_ga_config
+    optimizer.json_weights = json_weights
+    
+    sample_images, sample_labels = optimizer._init_cnn_datasets(mask_mode)
+    
+    genetic_rules = None
+    genetic_rules_np = None
+    random_mask_sparsity = None
+    
+    if mask_mode == 'ga':
+        from genetic_algorithm import GeneticFeatureOptimizer
+        base_config = optimizer.create_base_config()
+        optimizer.genetic_optimizer = GeneticFeatureOptimizer(
+            images=sample_images,
+            labels=sample_labels,
+            config=base_config
+        )
+        optimizer.update_optimizer_config(ga_params=json_ga_config)
+        ga_results = optimizer.genetic_optimizer.run(run_id="cnn_hpo_ga_prep")
+        genetic_rules_np = ga_results['best_individual'].rules_tensor.numpy()
+        genetic_rules = tf.convert_to_tensor(genetic_rules_np, dtype=tf.float32)
+    elif mask_mode == 'random':
+        random_mask_sparsity = json_ga_config.get('target_sparsity', 0.45)
+        
+    # 4. Precompute raw features once (ModelWrapper uses features)
+    model_wrapper = ModelWrapper(
+        genetic_rules=genetic_rules,
+        mask_mode=mask_mode,
+        random_mask_sparsity=random_mask_sparsity
+    )
+    
+    sub_logger = logging.getLogger(__name__)
+    sub_logger.info(f"Precomputing raw features inside CNN prep subprocess for mode '{mask_mode}'...")
+    model_wrapper.precompute_features(optimizer.train_ds, "train")
+    model_wrapper.precompute_features(optimizer.test_ds, "val")
+    model_wrapper.precompute_features(optimizer.test_ds, "test")
+    
+    # Put results into queue
+    output_queue.put((genetic_rules_np, random_mask_sparsity))
+    
+    # Clean up
+    tf.keras.backend.clear_session()
+    gc.collect()
+
+
+def _run_single_evaluation_subprocess(mask_mode, params, genetic_rules_np, random_mask_sparsity, output_queue):
+    """
+    Runs a single training/evaluation run for a given mask mode and set of hyperparameters,
+    and returns the validation accuracy. Runs in a subprocess to isolate GPU memory.
+    """
+    import tensorflow as tf
+    import gc
+    import os
+    import numpy as np
+    import global_config
+    import optuna_config as config
+    from model_architecture import ModelWrapper
+    
+    # 1. Enable memory growth
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass
+
+    # 2. Initialize optimizer and load datasets
+    from hyperparameter_optimizer import HyperparameterOptimizer
+    optimizer = HyperparameterOptimizer()
+    optimizer._init_cnn_datasets(mask_mode)
+    
+    # 3. Setup global config dynamically
+    for key, val in params.items():
+        setattr(global_config, f"cnn_{key}", val)
+        
+    global_config.epochs = getattr(config, 'cnn_epochs', 15)
+    global_config.use_feature_cache = mask_mode in ('ga', 'random')
+    
+    # Run seed
+    run_seed = getattr(config, 'optimization_seed', 42)
+    if run_seed is None:
+        run_seed = 42
+    global_config.random_seed = run_seed
+    np.random.seed(run_seed)
+    tf.random.set_seed(run_seed)
+    
+    genetic_rules = None
+    if genetic_rules_np is not None:
+        genetic_rules = tf.convert_to_tensor(genetic_rules_np, dtype=tf.float32)
+        
+    model_wrapper = ModelWrapper(
+        genetic_rules=genetic_rules,
+        mask_mode=mask_mode,
+        random_mask_sparsity=random_mask_sparsity
+    )
+    
+    temp_model_path = f"temp_eval_{mask_mode}.keras"
+    try:
+        model_wrapper.train(
+            train_dataset=optimizer.train_ds,
+            validation_dataset=optimizer.test_ds,
+            model_path=temp_model_path,
+            precompute_features=model_wrapper.use_features
+        )
+        if os.path.exists(temp_model_path):
+            model_wrapper.model.load(temp_model_path)
+            
+        eval_results = model_wrapper.evaluate(optimizer.test_ds)
+        val_acc = float(eval_results[1])
+        output_queue.put(val_acc)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Single evaluation failed: {e}")
+        output_queue.put(0.0)
+    finally:
+        if os.path.exists(temp_model_path):
+            try:
+                os.remove(temp_model_path)
+            except:
+                pass
+        tf.keras.backend.clear_session()
+        gc.collect()
+
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO if config.verbosity >= 1 else logging.WARNING,
@@ -1109,69 +1310,32 @@ class HyperparameterOptimizer:
         orig_use_cache = global_config.use_feature_cache
         orig_mask_mode = global_config.mask_mode
         
-        sample_images, sample_labels = self._init_cnn_datasets(mask_mode)
-        
         genetic_rules = None
         random_mask_sparsity = None
         
         # Setup specific properties based on mask mode
-        if mask_mode == 'ga':
-            logger.info("Setting up GA mode for CNN HPO...")
-            logger.info("Running Genetic Algorithm to obtain best rules...")
-            
-            if self.genetic_optimizer is None:
-                base_config = self.create_base_config()
-                self.genetic_optimizer = GeneticFeatureOptimizer(
-                    images=sample_images,
-                    labels=sample_labels,
-                    config=base_config
-                )
-            else:
-                self.genetic_optimizer.images = sample_images
-                self.genetic_optimizer.labels = sample_labels
-            
-            # Apply best GA config from JSON
-            self.update_optimizer_config(ga_params=self.json_ga_config)
-            
-            # Run optimizer
-            ga_results = self.genetic_optimizer.run(run_id="cnn_hpo_ga_prep")
-            genetic_rules = ga_results['best_individual'].rules_tensor
-            
-            # Clear optimizer images/labels to free memory
-            self.genetic_optimizer.images = None
-            import gc
-            gc.collect()
-            
-            # Precompute raw features once (ModelWrapper uses features)
-            from model_architecture import ModelWrapper
-            model_wrapper = ModelWrapper(
-                genetic_rules=genetic_rules,
-                mask_mode=mask_mode
+        if mask_mode in ('ga', 'random'):
+            logger.info(f"Running HPO initialization and feature precomputation for '{mask_mode}' in a subprocess...")
+            import multiprocessing
+            ctx = multiprocessing.get_context('spawn')
+            q = ctx.Queue()
+            p = ctx.Process(
+                target=_run_cnn_prep_subprocess,
+                args=(mask_mode, self.json_ga_config, self.json_weights, q)
             )
-            logger.info("Precomputing raw features for GA mode...")
-            model_wrapper.precompute_features(self.train_ds, "train")
-            model_wrapper.precompute_features(self.test_ds, "val")
-            model_wrapper.precompute_features(self.test_ds, "test")
+            p.start()
+            genetic_rules_np, random_mask_sparsity = q.get()
+            p.join()
             
-        elif mask_mode == 'random':
-            logger.info("Setting up Random mode for CNN HPO...")
-            # Retrieve target sparsity
-            random_mask_sparsity = self.json_ga_config.get('target_sparsity', 0.45)
-            logger.info(f"Using random mask target sparsity: {random_mask_sparsity}")
-            
-            # Precompute raw features once
-            from model_architecture import ModelWrapper
-            model_wrapper = ModelWrapper(
-                mask_mode=mask_mode,
-                random_mask_sparsity=random_mask_sparsity
-            )
-            logger.info("Precomputing raw features for Random mode...")
-            model_wrapper.precompute_features(self.train_ds, "train")
-            model_wrapper.precompute_features(self.test_ds, "val")
-            model_wrapper.precompute_features(self.test_ds, "test")
+            import tensorflow as tf
+            if genetic_rules_np is not None:
+                genetic_rules = tf.convert_to_tensor(genetic_rules_np, dtype=tf.float32)
+                
+            self._init_cnn_datasets(mask_mode)
             
         else:
             logger.info("Setting up None mode for CNN HPO (no feature extraction)...")
+            self._init_cnn_datasets(mask_mode)
             
         # Create Optuna study using JournalStorage to avoid locking
         study_name = config.cnn_study_name_template.format(mask_mode=mask_mode)
@@ -1189,13 +1353,6 @@ class HyperparameterOptimizer:
         from tqdm import tqdm
         start_time = time.time()
         
-        objective = lambda t: self.objective_cnn(
-            trial=t,
-            mask_mode=mask_mode,
-            genetic_rules=genetic_rules,
-            random_mask_sparsity=random_mask_sparsity
-        )
-        
         num_trials = getattr(config, 'cnn_trials', 20)
         completed_trials = len(study.trials)
         remaining_trials = num_trials - completed_trials
@@ -1204,14 +1361,30 @@ class HyperparameterOptimizer:
             logger.info(f"CNN optimization ({mask_mode}) already has {completed_trials} trials (target: {num_trials}). Skipping optimization.")
         else:
             logger.info(f"CNN optimization ({mask_mode}) starting with {completed_trials} existing trials. Running {remaining_trials} remaining trials.")
+            
+            import multiprocessing
+            ctx = multiprocessing.get_context('spawn')
+            genetic_rules_np = genetic_rules.numpy() if genetic_rules is not None else None
+            
             for _ in tqdm(range(remaining_trials), desc=f"Optimizing CNN ({mask_mode})"):
-                study.optimize(
-                    objective,
-                    n_trials=1,
-                    show_progress_bar=False
+                p = ctx.Process(
+                    target=_run_single_trial_subprocess,
+                    args=(study_name, mask_mode, genetic_rules_np, random_mask_sparsity)
                 )
+                p.start()
+                p.join()
+                
+                if p.exitcode != 0:
+                    raise RuntimeError(f"Subprocess for HPO trial exited with non-zero code {p.exitcode}. Aborting optimization.")
             
         end_time = time.time()
+        
+        # Reload the study to retrieve the best trial computed by the subprocesses
+        study = optuna.load_study(
+            study_name=study_name,
+            storage=storage,
+            sampler=self._sampler
+        )
         best_trial = study.best_trial
         
         logger.info(f"CNN optimization ({mask_mode}) completed in {end_time - start_time:.2f} seconds")
@@ -1232,8 +1405,33 @@ class HyperparameterOptimizer:
         
         if mask_mode == 'ga':
             random_output_file = config.cnn_config_output_file_template.format(mask_mode='random')
-            self.save_json(output_data, random_output_file)
-            logger.info(f"Automatically duplicated GA CNN parameters to: {random_output_file}")
+            
+            # Retrieve GA params (excluding validation_accuracy metadata)
+            ga_params = best_trial.params.copy()
+            
+            # Evaluate random mask mode on the validation set using these GA parameters
+            logger.info("\nEvaluating Random mask mode with GA parameters to obtain accurate validation accuracy...")
+            import multiprocessing
+            ctx = multiprocessing.get_context('spawn')
+            eval_q = ctx.Queue()
+            # Retrieve random sparsity target
+            target_sparsity = self.json_ga_config.get('target_sparsity', 0.45)
+            
+            p_eval = ctx.Process(
+                target=_run_single_evaluation_subprocess,
+                args=('random', ga_params, None, target_sparsity, eval_q)
+            )
+            p_eval.start()
+            random_val_acc = eval_q.get()
+            p_eval.join()
+            
+            logger.info(f"Actual validation accuracy for Random mask mode: {random_val_acc:.4f}")
+            
+            # Save random config with actual validation accuracy
+            random_output_data = ga_params.copy()
+            random_output_data['validation_accuracy'] = random_val_acc
+            self.save_json(random_output_data, random_output_file)
+            logger.info(f"Saved optimized CNN config for 'random' to {random_output_file}")
         
         # Clear TensorFlow and garbage collect
         import tensorflow as tf

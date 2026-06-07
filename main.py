@@ -133,7 +133,9 @@ def load_optimized_cnn_config(mask_mode: str):
     """
     # For random mask mode, use GA's optimized CNN parameters as a direct control
     actual_mode = 'ga' if mask_mode == 'random' else mask_mode
-    cnn_config_path = f"best_cnn_config_{actual_mode}.json"
+    cnn_config_path = f"best_cnn_config_{actual_mode}_scaled.json"
+    if not os.path.exists(cnn_config_path):
+        cnn_config_path = f"best_cnn_config_{actual_mode}.json"
     if os.path.exists(cnn_config_path):
         try:
             with open(cnn_config_path, 'r') as f:
