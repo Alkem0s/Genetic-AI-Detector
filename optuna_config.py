@@ -133,8 +133,8 @@ log_intermediate_results = True
 # =============================================================================
 # CNN HYPERPARAMETER OPTIMIZATION CONFIGURATION (Phase 3)
 # =============================================================================
-cnn_trials = 12
-cnn_epochs = 40                  # Maximum epochs to train each CNN trial
+cnn_trials = 30
+cnn_epochs = 15                  # Maximum epochs to train each CNN trial
 cnn_early_stopping_patience = 5  # Patience for early stopping during tuning
 num_cnn_runs_per_trial = 1       # Number of seeded runs to average per trial for stability
 
@@ -146,10 +146,10 @@ cnn_study_name_template = "cnn_optimization_{mask_mode}"
 cnn_config_output_file_template = "best_cnn_config_{mask_mode}_scaled.json"
 
 # CNN HPO Search Spaces
-cnn_learning_rate_range = (1e-5, 1e-2)
-cnn_dropout_1_range = (0.0, 0.8)
-cnn_dropout_2_range = (0.0, 0.8)
+cnn_learning_rate_range = (1e-4, 5e-3)
+cnn_dropout_1_range = (0.0, 0.6)
+cnn_dropout_2_range = (0.0, 0.6)
 cnn_dense_units_range = (64, 1024)
 cnn_l2_reg_range = (1e-6, 1e-2)
-cnn_optimizers = ['adam', 'rmsprop', 'sgd']
+cnn_optimizers = ['adam', 'rmsprop']
 

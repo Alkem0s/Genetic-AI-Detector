@@ -56,12 +56,22 @@ def _run_single_trial_subprocess(study_name, mask_mode, genetic_rules_np, random
     if genetic_rules_np is not None:
         genetic_rules = tf.convert_to_tensor(genetic_rules_np, dtype=tf.float32)
         
-    # 4. Load the study
+    # 4. Load the study with a dynamic sampler seed to prevent duplicate trials in process isolation
+    import optuna_config as config
     storage = JournalStorage(JournalFileStorage("optuna_journal.log"))
+    
+    # Load first with a temporary sampler to count completed trials
+    temp_study = optuna.load_study(study_name=study_name, storage=storage)
+    completed_trials = len([t for t in temp_study.trials if t.state.is_finished()])
+    
+    # Dynamically adjust the seed based on the number of completed trials
+    base_seed = getattr(config, 'optimization_seed', 42)
+    sampler_seed = (base_seed + completed_trials) if base_seed is not None else None
+    
     study = optuna.load_study(
         study_name=study_name,
         storage=storage,
-        sampler=optimizer._sampler
+        sampler=optuna.samplers.TPESampler(seed=sampler_seed)
     )
     
     # 5. Define local objective
