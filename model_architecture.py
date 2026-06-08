@@ -84,6 +84,7 @@ class _RandomMaskPipeline(FeaturePipeline):
         n_patches_w,
         feature_cache_dir: str,
         feature_channels: int = 8,
+        feature_scales: tf.Tensor = None,
     ):
         # Pass genetic_rules=None; it will never be used because we override _generate_mask.
         super().__init__(
@@ -92,6 +93,7 @@ class _RandomMaskPipeline(FeaturePipeline):
             n_patches_w=n_patches_w,
             feature_cache_dir=feature_cache_dir,
             feature_channels=feature_channels,
+            feature_scales=feature_scales,
         )
         self._random_generator = random_generator
 
@@ -407,6 +409,7 @@ class ModelWrapper:
         genetic_rules: tf.Tensor = None,
         mask_mode: str | None = None,
         random_mask_sparsity: float | None = None,
+        feature_scales: tf.Tensor = None,
     ):
         """
         Args:
@@ -418,6 +421,7 @@ class ModelWrapper:
             random_mask_sparsity: Fraction of patches to select when ``mask_mode == 'random'``.
                                   Must be provided (or be available on the config object) when
                                   ``mask_mode == 'random'``.
+            feature_scales:       Optional feature normalisation scales.
         """
         logger.info("Initializing ModelWrapper...")
 
@@ -444,6 +448,25 @@ class ModelWrapper:
             if genetic_rules is not None else None
         )
 
+        # Load feature scales if mask_mode in ('ga', 'random')
+        self.feature_scales = None
+        if self.use_features:
+            if feature_scales is not None:
+                self.feature_scales = tf.convert_to_tensor(feature_scales, dtype=tf.float32)
+            else:
+                # Try loading from feature_scales.json
+                scales_path = "feature_scales.json"
+                if os.path.exists(scales_path):
+                    try:
+                        with open(scales_path, 'r') as f:
+                            scales_dict = json.load(f)
+                        feature_names = list(config.feature_weights.keys())
+                        scales_list = [scales_dict[name] for name in feature_names]
+                        self.feature_scales = tf.convert_to_tensor(scales_list, dtype=tf.float32)
+                        logger.info(f"ModelWrapper loaded feature scales from {scales_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not load feature scales from {scales_path}: {e}")
+
         self.n_patches_h = tf.constant(self.input_shape[0] // self.patch_size, dtype=tf.int32)
         self.n_patches_w = tf.constant(self.input_shape[1] // self.patch_size, dtype=tf.int32)
 
@@ -469,6 +492,7 @@ class ModelWrapper:
                 n_patches_w=self.n_patches_w,
                 feature_cache_dir=self.feature_cache_dir,
                 feature_channels=feature_channels,
+                feature_scales=self.feature_scales,
             )
         else:
             self._random_generator = None
@@ -478,6 +502,7 @@ class ModelWrapper:
                 n_patches_w=self.n_patches_w,
                 feature_cache_dir=self.feature_cache_dir,
                 feature_channels=feature_channels,
+                feature_scales=self.feature_scales,
             )
 
         self.model = AIDetectorModel(feature_channels=feature_channels)
@@ -632,6 +657,7 @@ class ModelWrapper:
             'feature_channels': self.feature_channels,
             'mask_mode': self.mask_mode,
             'genetic_rules': self.genetic_rules.numpy().tolist() if self.genetic_rules is not None else None,
+            'feature_scales': self.feature_scales.numpy().tolist() if self.feature_scales is not None else None,
             'random_mask_sparsity': (
                 float(self._random_generator.target_sparsity.numpy())
                 if self._random_generator is not None else None
@@ -667,6 +693,10 @@ class ModelWrapper:
         genetic_rules = None
         if config_data.get('genetic_rules') is not None:
             genetic_rules = tf.convert_to_tensor(config_data['genetic_rules'], dtype=tf.float32)
+            
+        feature_scales = None
+        if config_data.get('feature_scales') is not None:
+            feature_scales = tf.convert_to_tensor(config_data['feature_scales'], dtype=tf.float32)
         
         # Create new ModelWrapper instance via the class (respects subclassing)
         model_wrapper = cls(
@@ -674,6 +704,7 @@ class ModelWrapper:
             genetic_rules=genetic_rules,
             mask_mode=config_data.get('mask_mode', 'ga'),
             random_mask_sparsity=config_data.get('random_mask_sparsity'),
+            feature_scales=feature_scales,
         )
         
         # Load the neural network model

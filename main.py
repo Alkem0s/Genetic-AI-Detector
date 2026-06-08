@@ -28,7 +28,7 @@ def setup_environment():
     """Setup environment variables and configurations"""
     # Set environment variables
     os.environ['TF_CUDNN_USE_AUTOTUNE'] = '1'
-    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+    # os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
     # Create output directory if it doesn't exist
     os.makedirs(config.output_dir, exist_ok=True)
@@ -200,60 +200,7 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
     train_ds, test_ds, sample_images, sample_labels = data_loader.create_datasets()
     logger.info("Created TensorFlow dataset pipeline for training and testing")
 
-    # --- Step 2: GA (only for "ga" mode) --------------------------------------
-    results = None
-    mask_sparsity_mean = None
-    mask_sparsity_std  = None
-
-    if mask_mode == 'ga':
-        logger.info("=== Step 2: Running genetic algorithm for feature optimisation ===")
-        genetic_optimizer = GeneticFeatureOptimizer(
-            images=sample_images,
-            labels=sample_labels,
-            config=config,
-        )
-        with tf.profiler.experimental.Trace('genetic_optimization_phase'):
-            results = genetic_optimizer.run()
-
-        mask_sparsity_mean = results.get('mask_sparsity_mean')
-        mask_sparsity_std  = results.get('mask_sparsity_std')
-        logger.info(
-            f"GA complete – sparsity mean={mask_sparsity_mean:.4f}, "
-            f"std={mask_sparsity_std:.4f}"
-        )
-
-    elif mask_mode == 'random':
-        logger.info(
-            "=== Step 2: Running GA first to obtain sparsity target "
-            "for random mask control ==="
-        )
-        genetic_optimizer = GeneticFeatureOptimizer(
-            images=sample_images,
-            labels=sample_labels,
-            config=config,
-        )
-        with tf.profiler.experimental.Trace('genetic_optimization_phase'):
-            results = genetic_optimizer.run()
-
-        mask_sparsity_mean = results['mask_sparsity_mean']
-        mask_sparsity_std  = results['mask_sparsity_std']
-        logger.info(
-            f"GA sparsity target for random masks: mean={mask_sparsity_mean:.4f}, "
-            f"std={mask_sparsity_std:.4f}"
-        )
-        # Store on config so ModelWrapper can pick it up
-        config._random_mask_sparsity = mask_sparsity_mean
-
-    else:  # mask_mode == 'none'
-        logger.info("=== Step 2: Skipping genetic algorithm (baseline mode) ===")
-
-    # --- Step 3: Build & train model ------------------------------------------
-    logger.info("=== Step 3: Building and training the model ===")
-
-    genetic_rules = None
-    if mask_mode == 'ga' and results is not None:
-        genetic_rules = results['best_individual'].rules_tensor
-
+    # --- Step 2 & 3: Run Multi-Seed Experiment Loop ---
     # Unique model base path per experiment
     gen_train_tag = "_".join(generator_train)
     gen_test_tag  = "_".join(generator_test)
@@ -262,77 +209,217 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
         config.output_dir, f"model_{experiment_tag}"
     )
 
-    num_runs = getattr(config, 'num_experiment_runs', 1)
+    num_rulesets = getattr(config, 'num_rulesets', 3)
+    num_seeds = getattr(config, 'num_seeds', 3)
+    total_runs = num_rulesets * num_seeds
     base_seed = getattr(config, 'random_seed', 42)
     if base_seed is None:
         base_seed = 42
 
     all_runs_metrics = []
     histories = []
+    mask_sparsity_mean_list = []
+    mask_sparsity_std_list = []
     
     best_acc_so_far = -1.0
     best_model_wrapper = None
     best_history = None
     best_run_idx = 0
+    best_results = None
+    best_mask_sparsity_mean = None
+    best_mask_sparsity_std = None
 
-    logger.info(f"Starting {num_runs} runs for experiment (mask_mode={mask_mode!r})...")
+    if mask_mode == 'none':
+        logger.info(f"Starting {total_runs} CNN baseline runs (flat structure)...")
+        for run_idx in range(total_runs):
+            run_seed = base_seed + run_idx * 100
+            logger.info(f"\n--- Baseline Run {run_idx + 1}/{total_runs} with seed {run_seed} ---")
+            
+            # Set seeds
+            np.random.seed(run_seed)
+            tf.random.set_seed(run_seed)
+            
+            model_wrapper = ModelWrapper(
+                genetic_rules=None,
+                mask_mode=mask_mode,
+                random_mask_sparsity=None,
+            )
+            
+            run_model_path = f"{model_base_path}_run_{run_idx}"
+            
+            # Train model
+            with tf.profiler.experimental.Trace(f'model_training_phase_run_{run_idx}'):
+                history = model_wrapper.train(
+                    train_dataset=train_ds,
+                    validation_dataset=test_ds,
+                    model_path=f"{run_model_path}.keras",
+                )
+            histories.append(history)
+            
+            # Save model wrapper state
+            model_wrapper.save(run_model_path)
+            
+            # Evaluate model
+            logger.info(f"Evaluating Run {run_idx + 1}...")
+            metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
+            
+            # JPEG robustness
+            robustness = {}
+            if getattr(config, 'eval_jpeg_robustness', False):
+                from utils import evaluate_robustness
+                logger.info(f"Evaluating JPEG robustness for Run {run_idx + 1}...")
+                robustness = evaluate_robustness(
+                    model_wrapper, test_ds,
+                    quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
+                    logger=logger,
+                )
+            
+            metrics['robustness'] = robustness
+            all_runs_metrics.append(metrics)
+            
+            acc = metrics.get('accuracy', 0.0)
+            logger.info(f"Run {run_idx + 1} Accuracy: {acc:.4f}  Loss: {metrics.get('loss', 0.0):.4f}")
+            
+            # Keep track of the best run
+            if acc > best_acc_so_far:
+                best_acc_so_far = acc
+                best_model_wrapper = model_wrapper
+                best_history = history
+                best_run_idx = run_idx
+                best_results = None
+                best_mask_sparsity_mean = None
+                best_mask_sparsity_std = None
 
-    for run_idx in range(num_runs):
-        run_seed = base_seed + run_idx * 100
-        logger.info(f"\n--- Run {run_idx + 1}/{num_runs} with seed {run_seed} ---")
-        
-        # Set seeds
-        np.random.seed(run_seed)
-        tf.random.set_seed(run_seed)
-        
-        # Build ModelWrapper
-        model_wrapper = ModelWrapper(
-            genetic_rules=genetic_rules,
-            mask_mode=mask_mode,
-            random_mask_sparsity=mask_sparsity_mean,
-        )
-        
-        run_model_path = f"{model_base_path}_run_{run_idx}"
-        
-        # Train model
-        with tf.profiler.experimental.Trace(f'model_training_phase_run_{run_idx}'):
-            history = model_wrapper.train(
-                train_dataset=train_ds,
-                validation_dataset=test_ds,
-                model_path=f"{run_model_path}.keras",
-            )
-        histories.append(history)
-        
-        # Save model wrapper state
-        model_wrapper.save(run_model_path)
-        
-        # Evaluate model
-        logger.info(f"Evaluating Run {run_idx + 1}...")
-        metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
-        
-        # JPEG robustness
-        robustness = {}
-        if getattr(config, 'eval_jpeg_robustness', False):
-            from utils import evaluate_robustness
-            logger.info(f"Evaluating JPEG robustness for Run {run_idx + 1}...")
-            robustness = evaluate_robustness(
-                model_wrapper, test_ds,
-                quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
-                logger=logger,
-            )
-        
-        metrics['robustness'] = robustness
-        all_runs_metrics.append(metrics)
-        
-        acc = metrics.get('accuracy', 0.0)
-        logger.info(f"Run {run_idx + 1} Accuracy: {acc:.4f}  Loss: {metrics.get('loss', 0.0):.4f}")
-        
-        # Keep track of the best run
-        if acc > best_acc_so_far:
-            best_acc_so_far = acc
-            best_model_wrapper = model_wrapper
-            best_history = history
-            best_run_idx = run_idx
+    else:
+        logger.info(f"Starting nested runs: {num_rulesets} rulesets x {num_seeds} seeds = {total_runs} total runs...")
+        for r_idx in range(num_rulesets):
+            # Seed for GA run (unique per ruleset)
+            ga_seed = base_seed + r_idx * 1000
+            logger.info(f"\n==================== Ruleset {r_idx + 1}/{num_rulesets} (GA Seed: {ga_seed}) ====================")
+            
+            np.random.seed(ga_seed)
+            tf.random.set_seed(ga_seed)
+            
+            results = None
+            mask_sparsity_mean = None
+            mask_sparsity_std  = None
+            genetic_rules = None
+            feature_scales = None
+
+            # --- Step 2: GA / Mask Sparsity Target Setup ---
+            if mask_mode == 'ga':
+                logger.info("=== Step 2: Running genetic algorithm for feature optimisation ===")
+                genetic_optimizer = GeneticFeatureOptimizer(
+                    images=sample_images,
+                    labels=sample_labels,
+                    config=config,
+                )
+                with tf.profiler.experimental.Trace(f'genetic_optimization_phase_ruleset_{r_idx}'):
+                    results = genetic_optimizer.run()
+                
+                # Save feature scales to disk so they are persisted
+                genetic_optimizer.save_feature_scales("feature_scales.json")
+                feature_scales = genetic_optimizer.feature_scales
+
+                mask_sparsity_mean = results.get('mask_sparsity_mean')
+                mask_sparsity_std  = results.get('mask_sparsity_std')
+                logger.info(
+                    f"GA complete – sparsity mean={mask_sparsity_mean:.4f}, "
+                    f"std={mask_sparsity_std:.4f}"
+                )
+                genetic_rules = results['best_individual'].rules_tensor
+                mask_sparsity_mean_list.append(mask_sparsity_mean)
+                mask_sparsity_std_list.append(mask_sparsity_std)
+
+            elif mask_mode == 'random':
+                logger.info(
+                    "=== Step 2: Running GA first to obtain sparsity target "
+                    "for random mask control ==="
+                )
+                genetic_optimizer = GeneticFeatureOptimizer(
+                    images=sample_images,
+                    labels=sample_labels,
+                    config=config,
+                )
+                with tf.profiler.experimental.Trace(f'genetic_optimization_phase_ruleset_{r_idx}'):
+                    results = genetic_optimizer.run()
+                
+                # Save feature scales to disk so they are persisted
+                genetic_optimizer.save_feature_scales("feature_scales.json")
+                feature_scales = genetic_optimizer.feature_scales
+
+                mask_sparsity_mean = results['mask_sparsity_mean']
+                mask_sparsity_std  = results['mask_sparsity_std']
+                logger.info(
+                    f"GA sparsity target for random masks: mean={mask_sparsity_mean:.4f}, "
+                    f"std={mask_sparsity_std:.4f}"
+                )
+                # Store on config so ModelWrapper can pick it up
+                config._random_mask_sparsity = mask_sparsity_mean
+                mask_sparsity_mean_list.append(mask_sparsity_mean)
+                mask_sparsity_std_list.append(mask_sparsity_std)
+
+            # --- Step 3: Train model for each CNN seed using the ruleset ---
+            for s_idx in range(num_seeds):
+                cnn_seed = base_seed + r_idx * 100 + s_idx * 10
+                run_idx = r_idx * num_seeds + s_idx
+                logger.info(f"\n--- Ruleset {r_idx + 1}, Seed {s_idx + 1}/{num_seeds} (CNN Seed: {cnn_seed}) ---")
+                
+                np.random.seed(cnn_seed)
+                tf.random.set_seed(cnn_seed)
+                
+                # Build ModelWrapper
+                model_wrapper = ModelWrapper(
+                    genetic_rules=genetic_rules,
+                    mask_mode=mask_mode,
+                    random_mask_sparsity=mask_sparsity_mean,
+                    feature_scales=feature_scales,
+                )
+                
+                run_model_path = f"{model_base_path}_run_{run_idx}"
+                
+                # Train model
+                with tf.profiler.experimental.Trace(f'model_training_phase_ruleset_{r_idx}_seed_{s_idx}'):
+                    history = model_wrapper.train(
+                        train_dataset=train_ds,
+                        validation_dataset=test_ds,
+                        model_path=f"{run_model_path}.keras",
+                    )
+                histories.append(history)
+                
+                # Save model wrapper state
+                model_wrapper.save(run_model_path)
+                
+                # Evaluate model
+                logger.info(f"Evaluating Run {run_idx + 1}...")
+                metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
+                
+                # JPEG robustness
+                robustness = {}
+                if getattr(config, 'eval_jpeg_robustness', False):
+                    from utils import evaluate_robustness
+                    logger.info(f"Evaluating JPEG robustness for Run {run_idx + 1}...")
+                    robustness = evaluate_robustness(
+                        model_wrapper, test_ds,
+                        quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
+                        logger=logger,
+                    )
+                
+                metrics['robustness'] = robustness
+                all_runs_metrics.append(metrics)
+                
+                acc = metrics.get('accuracy', 0.0)
+                logger.info(f"Run {run_idx + 1} Accuracy: {acc:.4f}  Loss: {metrics.get('loss', 0.0):.4f}")
+                
+                # Keep track of the best run
+                if acc > best_acc_so_far:
+                    best_acc_so_far = acc
+                    best_model_wrapper = model_wrapper
+                    best_history = history
+                    best_run_idx = run_idx
+                    best_results = results
+                    best_mask_sparsity_mean = mask_sparsity_mean
+                    best_mask_sparsity_std = mask_sparsity_std
 
     # Save the best model wrapper to model_base_path so it acts as standard model
     if best_model_wrapper is not None:
@@ -383,7 +470,7 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                     avg_robustness[q][field] = float(np.mean(vals))
 
     # Output aggregated evaluation logs
-    logger.info(f"\n{'='*30} experiment summary (averaged over {num_runs} runs) {'='*30}")
+    logger.info(f"\n{'='*30} experiment summary (averaged over {total_runs} runs) {'='*30}")
     logger.info(f"Test accuracy: {avg_metrics['accuracy']:.4f} (std={avg_metrics.get('accuracy_std', 0.0):.4f})")
     logger.info(f"Test loss:     {avg_metrics['loss']:.4f} (std={avg_metrics.get('loss_std', 0.0):.4f})")
     logger.info(f"Test F1:       {avg_metrics.get('f1', 0.0):.4f}")
@@ -393,16 +480,24 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
     robustness = avg_robustness
     history = best_history
 
+    # Average mask sparsity across all runs
+    if mask_mode in ('ga', 'random') and mask_sparsity_mean_list:
+        mask_sparsity_mean = float(np.mean(mask_sparsity_mean_list))
+        mask_sparsity_std = float(np.mean(mask_sparsity_std_list))
+    else:
+        mask_sparsity_mean = None
+        mask_sparsity_std = None
+
     # --- Step 5: Mask visualisation (10 sample images per model) --------------
     if mask_mode in ('ga', 'random') and len(sample_images) > 0:
         logger.info("=== Step 5: Generating mask visualisations ===")
         _visualize_masks_for_experiment(
-            model_wrapper=model_wrapper,
+            model_wrapper=best_model_wrapper if best_model_wrapper is not None else model_wrapper,
             sample_images=sample_images,
             mask_mode=mask_mode,
             experiment_tag=experiment_tag,
             n_samples=10,
-            ga_results=results,
+            ga_results=best_results,
         )
 
     # --- Step 6: Plot training curves -----------------------------------------
@@ -461,6 +556,10 @@ def _visualize_masks_for_experiment(
                 model_wrapper.pipeline._feature_extractor
                 .extract_patch_features(img_tensor[0])
             )
+            # Scale features if feature_scales is available
+            if model_wrapper.feature_scales is not None:
+                patch_features = patch_features / model_wrapper.feature_scales
+                
             patch_mask, _ = generate_dynamic_mask(
                 patch_features,
                 ga_results['best_individual'].rules_tensor,
@@ -768,6 +867,92 @@ def predict_image(image_path, model_wrapper):
 
 def main():
     """Main function to coordinate the workflow"""
+    import argparse
+    import subprocess
+
+    parser = argparse.ArgumentParser(description="Run Genetic AI Detector Experiments")
+    parser.add_argument('--mask-mode', type=str, choices=['none', 'ga', 'random'],
+                        help="Mask mode to use for experiment")
+    parser.add_argument('--train-generators', type=str,
+                        help="Comma-separated training generators")
+    parser.add_argument('--val-generators', type=str,
+                        help="Comma-separated validation/test generators")
+    parser.add_argument('--epochs', type=int,
+                        help="Number of epochs to train CNN")
+    parser.add_argument('--num-rulesets', type=int,
+                        help="Number of GA rulesets to generate (for ga/random modes)")
+    parser.add_argument('--num-seeds', type=int,
+                        help="Number of CNN seeds to train per ruleset")
+    parser.add_argument('--run-all', action='store_true',
+                        help="Execute the full 6-experiment matrix using subprocesses")
+    parser.add_argument('--predict-path', type=str,
+                        help="Path to image for prediction")
+    
+    args = parser.parse_args()
+
+    if args.run_all:
+        logger.info("=" * 70)
+        logger.info("STARTING SUBPROCESS MATRIX RUN FOR ALL 6 EXPERIMENTS")
+        logger.info("=" * 70)
+        
+        # Define the 6 experiments
+        in_dist_gens = ["ADM", "glide", "wukong"]
+        cross_gens_train = ["ADM", "glide", "wukong"]
+        cross_gens_test = ["sdv4", "vqdm"]
+        
+        experiments = [
+            # In-Distribution Setups
+            {"mask_mode": "none", "train": in_dist_gens, "val": in_dist_gens},
+            {"mask_mode": "ga", "train": in_dist_gens, "val": in_dist_gens},
+            {"mask_mode": "random", "train": in_dist_gens, "val": in_dist_gens},
+            # Cross-Generator Setups
+            {"mask_mode": "none", "train": cross_gens_train, "val": cross_gens_test},
+            {"mask_mode": "ga", "train": cross_gens_train, "val": cross_gens_test},
+            {"mask_mode": "random", "train": cross_gens_train, "val": cross_gens_test},
+        ]
+        
+        for i, exp in enumerate(experiments):
+            logger.info(f"\n[{i+1}/6] Launching subprocess: mask_mode={exp['mask_mode']} | train={exp['train']} | val={exp['val']}")
+            cmd = [
+                sys.executable, "main.py",
+                "--mask-mode", exp["mask_mode"],
+                "--train-generators", ",".join(exp["train"]),
+                "--val-generators", ",".join(exp["val"])
+            ]
+            if args.epochs:
+                cmd += ["--epochs", str(args.epochs)]
+            if args.num_rulesets:
+                cmd += ["--num-rulesets", str(args.num_rulesets)]
+            if args.num_seeds:
+                cmd += ["--num-seeds", str(args.num_seeds)]
+                
+            # Run the subprocess
+            res = subprocess.run(cmd, capture_output=False, text=True)
+            if res.returncode != 0:
+                logger.error(f"Subprocess for experiment {i+1} failed with exit code {res.returncode}")
+                sys.exit(res.returncode)
+                
+        logger.info("\n" + "="*70)
+        logger.info("ALL 6 EXPERIMENTS COMPLETED SUCCESSFULLY!")
+        logger.info("="*70)
+        return
+
+    # Override config defaults with parsed arguments if specified
+    if args.mask_mode:
+        config.mask_mode = args.mask_mode
+    if args.train_generators:
+        config.train_generators = [g.strip() for g in args.train_generators.split(',')]
+    if args.val_generators:
+        config.val_generators = [g.strip() for g in args.val_generators.split(',')]
+    if args.epochs is not None:
+        config.epochs = args.epochs
+    if args.num_rulesets is not None:
+        config.num_rulesets = args.num_rulesets
+    if args.num_seeds is not None:
+        config.num_seeds = args.num_seeds
+    if args.predict_path:
+        config.predict = True
+        config.predict_path = args.predict_path
 
     # Setup environment and get base path for model and rules
     model_base_path = setup_environment()

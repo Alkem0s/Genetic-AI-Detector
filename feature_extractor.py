@@ -146,6 +146,7 @@ class FeaturePipeline:
         n_patches_w: tf.Tensor,
         feature_cache_dir: str,
         feature_channels: int = 8,
+        feature_scales: tf.Tensor = None,
     ):
         """
         Args:
@@ -154,12 +155,14 @@ class FeaturePipeline:
             n_patches_w:        Number of patches along the width axis  (tf.int32 scalar).
             feature_cache_dir:  Directory used to persist pre-computed feature .npy files.
             feature_channels:   Number of feature channels produced by FeatureExtractor.
+            feature_scales:     Optional feature normalisation scales.
         """
         self.genetic_rules     = genetic_rules
         self.n_patches_h       = n_patches_h
         self.n_patches_w       = n_patches_w
         self.feature_cache_dir = feature_cache_dir
         self.feature_channels  = feature_channels
+        self.feature_scales    = feature_scales
 
         # Lazily initialised – created on first use.
         self._feature_extractor: FeatureExtractor | None = None
@@ -203,6 +206,10 @@ class FeaturePipeline:
 
         # (batch, n_patches_h, n_patches_w, n_features)
         patch_features = self._feature_extractor.extract_batch_patch_features(images)
+
+        # Scale features if feature_scales is available
+        if hasattr(self, 'feature_scales') and self.feature_scales is not None:
+            patch_features = patch_features / self.feature_scales
 
         # Build masks for the batch using vectorized operations directly
         batch_masks = self._generate_mask(patch_features)
@@ -355,10 +362,15 @@ class FeaturePipeline:
             _IN_MEMORY_FEATURE_CACHE[cache_key] = features_array
             logger.info(f"Loaded features array into RAM. Shape: {features_array.shape}")
 
-        feature_dataset = tf.data.Dataset.from_tensor_slices(features_array)
-        feature_dataset = feature_dataset.map(
-            lambda x: tf.ensure_shape(
-                x, [self.n_patches_h, self.n_patches_w, self.feature_channels]
+        def gen():
+            for slice_arr in features_array:
+                yield slice_arr
+
+        feature_dataset = tf.data.Dataset.from_generator(
+            gen,
+            output_signature=tf.TensorSpec(
+                shape=(h_val, w_val, self.feature_channels),
+                dtype=tf.float32
             )
         )
         return feature_dataset
@@ -408,6 +420,10 @@ class FeaturePipeline:
                 # inputs: (images, labels) or images
                 # feature_batch: [batch_size, n_patches_h, n_patches_w, feature_channels]
                 
+                # Scale features if feature_scales is available
+                if hasattr(self, 'feature_scales') and self.feature_scales is not None:
+                    feature_batch = feature_batch / self.feature_scales
+
                 # Apply mask to patch features
                 batch_masks = self._generate_mask(feature_batch) # [batch, n_ph, n_pw]
                 pixel_mask = utils.convert_patch_mask_to_pixel_mask(batch_masks) # [batch, H, W]

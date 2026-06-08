@@ -27,9 +27,16 @@ use_feature_extraction = True
 use_augmentation = False
 
 verbose = False 
-visualize = False
+visualize = True
 profile = False 
 profile_log_dir = "profiler_logs" 
+
+# --- Experiment Multi-Run Averaging ---
+num_rulesets = 1
+num_seeds = 1
+
+# --- Post-hoc Evaluation ---
+eval_jpeg_robustness = False
 
 # --- Cross-Generator Matrix ---
 # Generators used as training set (in-distribution experiment)
@@ -79,11 +86,5 @@ cnn_dense_units = 256
 cnn_l2_reg = 0.0
 cnn_optimizer = "adam"
 cnn_early_stopping_patience = 10
-
-# --- Experiment Multi-Run Averaging ---
-num_experiment_runs = 3
-
-# --- Post-hoc Evaluation ---
-eval_jpeg_robustness = False
 
 

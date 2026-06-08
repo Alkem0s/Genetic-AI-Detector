@@ -36,7 +36,9 @@ def parse_args():
     parser.add_argument('--max-samples', type=int, default=1000,
                         help="Maximum test samples per setup to speed up evaluation")
     parser.add_argument('--output-dir', type=str, default='output',
-                        help="Directory to save figures and JSON metrics")
+                        help="Directory to save JSON metrics")
+    parser.add_argument('--paper-dir', type=str, default='paper',
+                        help="Directory to save final comparison figures")
     return parser.parse_args()
 
 def evaluate_model_robustness(model_wrapper, test_ds, qualities, max_samples):
@@ -85,6 +87,7 @@ def evaluate_model_robustness(model_wrapper, test_ds, qualities, max_samples):
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.paper_dir, exist_ok=True)
 
     try:
         tf.keras.config.enable_unsafe_deserialization()
@@ -223,7 +226,7 @@ def main():
         ax.legend(loc="lower left", fontsize=10)
 
     plt.tight_layout()
-    plot_path = os.path.join(args.output_dir, 'jpeg_robustness_comparison.png')
+    plot_path = os.path.join(args.paper_dir, 'jpeg_robustness_comparison.png')
     plt.savefig(plot_path, bbox_inches='tight', dpi=150)
     plt.close()
     logger.info(f"Saved comparative robustness plot to {plot_path}")

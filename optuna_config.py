@@ -133,7 +133,7 @@ log_intermediate_results = True
 # =============================================================================
 # CNN HYPERPARAMETER OPTIMIZATION CONFIGURATION (Phase 3)
 # =============================================================================
-cnn_trials = 30
+cnn_trials = 8
 cnn_epochs = 15                  # Maximum epochs to train each CNN trial
 cnn_early_stopping_patience = 5  # Patience for early stopping during tuning
 num_cnn_runs_per_trial = 1       # Number of seeded runs to average per trial for stability

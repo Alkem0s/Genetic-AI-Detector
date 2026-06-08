@@ -13,7 +13,9 @@ logger = logging.getLogger('ExperimentsSummary')
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate Comparative Visualizations for the 6 Case Studies")
     parser.add_argument('--output-dir', type=str, default='output',
-                        help="Directory where results JSONs are stored and where comparison plot will be saved")
+                        help="Directory where results JSONs are stored")
+    parser.add_argument('--paper-dir', type=str, default='paper',
+                        help="Directory where the comparison plot will be saved")
     return parser.parse_args()
 
 def load_results(output_dir):
@@ -112,7 +114,7 @@ def generate_summary_table(results):
             
     print("="*80 + "\n")
 
-def plot_comparisons(results, output_dir):
+def plot_comparisons(results, paper_dir):
     """
     Generate grouped bar charts comparing accuracy and F1 score across the 6 case studies.
     """
@@ -196,7 +198,7 @@ def plot_comparisons(results, output_dir):
     ax_f1.legend(loc="lower left", fontsize=10)
 
     plt.tight_layout()
-    save_path = os.path.join(output_dir, 'experiments_summary_comparison.png')
+    save_path = os.path.join(paper_dir, 'experiments_summary_comparison.png')
     plt.savefig(save_path, bbox_inches='tight', dpi=150)
     plt.close()
     
@@ -209,13 +211,16 @@ def main():
     logger.info("COMPILING 6 CASE STUDIES VISUALIZATION SUMMARY")
     logger.info("="*70)
     
+    # Ensure paper directory exists
+    os.makedirs(args.paper_dir, exist_ok=True)
+    
     results = load_results(args.output_dir)
     
     # 1. Print Summary Table
     generate_summary_table(results)
     
     # 2. Plot Grouped Comparisons
-    plot_comparisons(results, args.output_dir)
+    plot_comparisons(results, args.paper_dir)
     
     logger.info("Summary compilation completed successfully!")
 

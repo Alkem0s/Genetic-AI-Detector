@@ -1,6 +1,6 @@
 {
   "population_size": 200,
-  "n_generations": 100,
+  "n_generations": 150,
   "rules_per_individual": 12,
   "max_possible_rules": 60,
   "crossover_prob": 0.8137113551172906,
