@@ -309,11 +309,22 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
             # --- Step 2: GA / Mask Sparsity Target Setup ---
             if mask_mode == 'ga':
                 logger.info("=== Step 2: Running genetic algorithm for feature optimisation ===")
+                # Temporarily override random_seed on config so GeneticFeatureOptimizer receives it
+                original_config_seed = config.random_seed
+                config.random_seed = ga_seed
+                
                 genetic_optimizer = GeneticFeatureOptimizer(
                     images=sample_images,
                     labels=sample_labels,
                     config=config,
                 )
+                # Restore original seed on config
+                config.random_seed = original_config_seed
+                
+                # Enable validation checkpointing by precomputing probe features
+                logger.info("Precomputing probe features for validation checkpointing...")
+                genetic_optimizer.precompute_probe_features()
+                
                 with tf.profiler.experimental.Trace(f'genetic_optimization_phase_ruleset_{r_idx}'):
                     results = genetic_optimizer.run()
                 
@@ -336,11 +347,22 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                     "=== Step 2: Running GA first to obtain sparsity target "
                     "for random mask control ==="
                 )
+                # Temporarily override random_seed on config so GeneticFeatureOptimizer receives it
+                original_config_seed = config.random_seed
+                config.random_seed = ga_seed
+                
                 genetic_optimizer = GeneticFeatureOptimizer(
                     images=sample_images,
                     labels=sample_labels,
                     config=config,
                 )
+                # Restore original seed on config
+                config.random_seed = original_config_seed
+                
+                # Enable validation checkpointing by precomputing probe features
+                logger.info("Precomputing probe features for validation checkpointing...")
+                genetic_optimizer.precompute_probe_features()
+                
                 with tf.profiler.experimental.Trace(f'genetic_optimization_phase_ruleset_{r_idx}'):
                     results = genetic_optimizer.run()
                 

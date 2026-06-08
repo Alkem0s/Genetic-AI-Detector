@@ -1,8 +1,8 @@
 {
   "population_size": 200,
-  "n_generations": 150,
-  "rules_per_individual": 12,
-  "max_possible_rules": 60,
+  "n_generations": 200,
+  "rules_per_individual": 10,
+  "max_possible_rules": 40,
   "crossover_prob": 0.8137113551172906,
   "mutation_prob": 0.21559339145580186,
   "tournament_size": 3,

@@ -12,7 +12,7 @@ cnn_batch_size = 64
 extraction_batch_size = 64
 max_train_samples = 30000
 max_val_samples = 5000
-epochs = 50
+epochs = 5
 test_size = 0.2
 random_seed = 42
 model_path = "ai_detector_model.keras"
@@ -53,8 +53,8 @@ patch_size = 8
 scale_factor = 1.0
 
 # --- Genetic Algorithm Environment ---
-sample_size = 6000
-probe_sample_size = 3000
+sample_size = 10000
+probe_sample_size = 5000
 use_multiprocessing = True
 use_feature_cache = True
 

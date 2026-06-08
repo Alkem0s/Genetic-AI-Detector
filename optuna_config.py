@@ -36,8 +36,8 @@ use_proxy_ga_config = True
 proxy_ga_config = {
     "population_size": 180,
     "n_generations": 120,
-    "rules_per_individual": 12,
-    "max_possible_rules": 50,
+    "rules_per_individual": 8,
+    "max_possible_rules": 30,
     "crossover_prob": 0.6,
     "mutation_prob": 0.35,
     "tournament_size": 4,
@@ -57,15 +57,12 @@ proxy_ga_config = {
 # ORDER MUST MATCH THE CANONICAL STACK IN FEATURE EXTRACTOR
 feature_weight_ranges = {
     'gradient': (0.5, 1.0),
-    'pattern': (0.0, 0.3),
     'noise': (0.5, 1.0),
     'symmetry': (0.1, 0.6),
     'texture': (0.1, 0.6),
     'color': (0.1, 0.6),
     'hash': (0.5, 1.0),
-    'dct': (0.0, 0.6),
     'glcm': (0.0, 0.6),
-    'noise_spectrum': (0.1, 0.6),
     'local_entropy': (0.0, 1.0)
 }
 
@@ -79,9 +76,9 @@ population_size_range = (100, 250)  # Expanded downwards to allow lighter GAs
 n_generations_range = (50, 200)    # Expanded downwards to allow faster convergence
 
 # Rule configuration
-# We have 11 features, so we want at least 11-12 rules for full coverage
-rules_per_individual_range = (12, 25)
-max_possible_rules_range = (30, 60)
+# We have 8 features, so we want at least 8 rules for full coverage
+rules_per_individual_range = (8, 20)
+max_possible_rules_range = (20, 50)
 
 # Mask coverage (Sparsity) targets
 target_sparsity_range = (0.25, 0.70)  # Expanded downwards to allow sparser/more efficient selective masks
