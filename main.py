@@ -759,10 +759,12 @@ def evaluate_model(model_wrapper, test_ds):
     if model_wrapper.use_features:
         model_wrapper.precompute_features(test_ds, "test")
     
-    prepared_ds, _ = model_wrapper.prepare_dataset(test_ds, "test", is_training=False)
+    prepared_ds, eval_steps = model_wrapper.prepare_dataset(test_ds, "test", is_training=False)
 
-    # Evaluate using the inner Keras model on the already-prepared dataset
-    results = model_wrapper.model.model.evaluate(prepared_ds, verbose=1)
+    # Evaluate using the inner Keras model on the already-prepared dataset.
+    # Pass steps=eval_steps so Keras knows exactly how many batches to run and
+    # does not rely on generator exhaustion (which fires a spurious warning).
+    results = model_wrapper.model.model.evaluate(prepared_ds, steps=eval_steps, verbose=1)
     metrics = {
         'loss': results[0],
         'accuracy': results[1] if len(results) > 1 else None

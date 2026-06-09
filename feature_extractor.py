@@ -406,16 +406,7 @@ class FeaturePipeline:
             zipped = tf.data.Dataset.zip((dataset, feature_dataset))
 
             if is_training:
-                # Make the zipped dataset infinite so Keras never sees it exhaust
-                # mid-run. Without .repeat(), zip(image_ds, generator_ds) has
-                # UNKNOWN cardinality and Keras 3 treats the whole multi-epoch
-                # run as one long stream; when the generator exhausts after
-                # epoch 1 it warns and resets inconsistently. With .repeat() we
-                # supply steps_per_epoch so Keras knows exactly when each epoch
-                # ends without relying on dataset exhaustion.
-                zipped = zipped.repeat()
-
-                # Apply data augmentation to images
+                # Apply data augmentation to images first
                 if config.use_augmentation:
                     def augment(inputs, features):
                         if isinstance(inputs, tuple):
@@ -424,9 +415,23 @@ class FeaturePipeline:
                         return _augment_image(inputs), features
                     zipped = zipped.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
 
-                # Shuffle the zipped dataset
+                # Shuffle BEFORE repeat() — critical for memory.
+                # With shuffle AFTER repeat() (infinite stream), TF permanently
+                # allocates the full buffer (~1.4 GB for 6400 items) in RAM for
+                # the life of training. With shuffle BEFORE repeat() (finite
+                # dataset), the buffer fills and drains each epoch, keeping peak
+                # memory bounded. Per-epoch shuffling is standard and sufficient.
                 buffer_size = min(10000, config.cnn_batch_size * 100)
                 zipped = zipped.shuffle(buffer_size=buffer_size, seed=config.random_seed)
+
+                # Make the zipped dataset infinite so Keras never sees it exhaust
+                # mid-run. Without .repeat(), zip(image_ds, generator_ds) has
+                # UNKNOWN cardinality and Keras 3 treats the whole multi-epoch
+                # run as one long stream; when the generator exhausts after
+                # epoch 1 it warns and resets inconsistently. With .repeat() we
+                # supply steps_per_epoch so Keras knows exactly when each epoch
+                # ends without relying on dataset exhaustion.
+                zipped = zipped.repeat()
 
             # Batch the zipped dataset
             zipped = zipped.batch(config.cnn_batch_size)

@@ -427,12 +427,20 @@ class DataLoader:
                 lambda path, label: self._process_path(path, label, return_uint8=True),
                 num_parallel_calls=tf.data.AUTOTUNE
             )
-            
-            # Cache the uint8 dataset in memory (only ~2.36 GB RAM total) to avoid slow disk I/O
-            logger.info("Caching training and validation datasets in memory (as uint8) on CPU...")
-            train_ds = train_ds.cache()
+
+            # train_ds is intentionally NOT cached in RAM.
+            # The cache fills progressively during epoch 1 and is fully committed
+            # (~5.5 GB for 30k uint8 images) by epoch 2, which together with the
+            # feature cache (~1 GB) pushes total RAM over the limit and triggers
+            # an OOM SIGKILL. Disk re-reads per epoch are acceptable: the feature
+            # cache in _IN_MEMORY_FEATURE_CACHE handles the expensive feature
+            # computation, and prefetch(AUTOTUNE) overlaps disk I/O with GPU work.
+            logger.info("Skipping training image cache to preserve RAM (feature cache handles repeat-epoch efficiency).")
+
+            # val/test images are small enough (~0.9 GB) to cache safely.
+            logger.info("Caching validation dataset in memory (as uint8) on CPU...")
             test_ds = test_ds.cache()
-            
+
             # Normalize to float32 [0.0, 1.0] after caching
             train_ds = train_ds.map(
                 lambda img, label: (tf.cast(img, tf.float32) / 255.0, label),

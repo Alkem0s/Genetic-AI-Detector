@@ -326,18 +326,21 @@ class AIDetectorModel:
         
         return history
     
-    def evaluate(self, test_dataset):
+    def evaluate(self, test_dataset, steps=None):
         """
         Evaluate the model on test data.
         
         Args:
             test_dataset (tf.data.Dataset): Test dataset
+            steps (int or None): Number of evaluation steps. Pass this when the
+                dataset is generator-backed (unknown cardinality) to prevent a
+                spurious "input ran out of data" warning from Keras.
             
         Returns:
             tuple: (test_loss, test_accuracy)
         """
         logger.info("Evaluating model on test dataset...")
-        results = self.model.evaluate(test_dataset)
+        results = self.model.evaluate(test_dataset, steps=steps)
         logger.info(f"Model evaluation complete. Loss: {results[0]:.4f}, Accuracy: {results[1]:.4f}")
         return results
     
@@ -623,14 +626,14 @@ class ModelWrapper:
             if use_cache:
                 logger.info("Precomputing and preparing test dataset with genetic features.")
                 self.precompute_features(test_dataset, "test")
-                prepared_test_ds, _ = self.prepare_dataset(test_dataset, "test")
+                prepared_test_ds, eval_steps = self.prepare_dataset(test_dataset, "test")
             else:
                 logger.info("Preparing test dataset with on-the-fly genetic features.")
-                prepared_test_ds, _ = self.prepare_dataset(test_dataset)
+                prepared_test_ds, eval_steps = self.prepare_dataset(test_dataset)
         else:
             logger.info("Evaluating without genetic features.")
-            prepared_test_ds, _ = self.prepare_dataset(test_dataset, is_training=False)
-        results = self.model.evaluate(prepared_test_ds)
+            prepared_test_ds, eval_steps = self.prepare_dataset(test_dataset, is_training=False)
+        results = self.model.evaluate(prepared_test_ds, steps=eval_steps)
         logger.info(f"Model wrapper evaluation complete. Loss: {results[0]:.4f}, Accuracy: {results[1]:.4f}")
         return results
         
