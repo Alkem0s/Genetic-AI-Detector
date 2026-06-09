@@ -385,7 +385,8 @@ class AIDetectorModel:
             tf.keras.config.enable_unsafe_deserialization()
         except AttributeError:
             pass
-        self.model = tf.keras.models.load_model(filepath)
+        self.model = tf.keras.models.load_model(filepath, compile=False)
+        self.model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
         # Determine if this is a feature-using model or not by checking the input shape
         self.use_features = len(self.model.inputs) > 1
         logger.info(f"Model loaded successfully. Use features: {self.use_features}")
