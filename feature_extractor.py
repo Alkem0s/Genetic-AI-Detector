@@ -354,6 +354,16 @@ class FeaturePipeline:
             _IN_MEMORY_FEATURE_CACHE[cache_key] = features_array
             logger.info(f"Loaded features array into RAM. Shape: {features_array.shape}")
 
+        # Store the sample count so prepare_dataset can compute steps_per_epoch.
+        self._last_loaded_n_samples = len(features_array)
+
+        # Use from_generator (factory pattern) instead of from_tensor_slices:
+        # from_tensor_slices converts the entire numpy array into a tf.constant,
+        # which TF allocates on GPU during graph compilation — causing OOM for
+        # large feature arrays (~937 MB for 30k train samples).
+        # The generator factory (a callable that returns a fresh generator each
+        # call) streams slices from CPU RAM on demand, so only one batch at a
+        # time ever lives on the GPU.
         def gen():
             for slice_arr in features_array:
                 yield slice_arr
@@ -372,7 +382,7 @@ class FeaturePipeline:
         dataset: tf.data.Dataset,
         dataset_name: str | None = None,
         is_training: bool = False,
-    ) -> tf.data.Dataset:
+    ) -> tuple:
         """
         Combine an image dataset with feature maps, either from the cache
         (when *dataset_name* is given) or computed on-the-fly.
@@ -383,15 +393,28 @@ class FeaturePipeline:
             is_training:  Whether to apply shuffling, batching, and data augmentation.
 
         Returns:
-            A Dataset yielding ({'image_input': …, 'feature_input': …}, labels).
+            Tuple of (prepared_dataset, steps_per_epoch). steps_per_epoch is an
+            int when the dataset uses the feature cache (so model.fit can bound
+            each epoch correctly), or None for on-the-fly / eval paths where
+            Keras infers the step count from the dataset cardinality.
         """
         if dataset_name:
             feature_dataset = self.load_features(dataset_name) # Unbatched
+            n_samples = getattr(self, '_last_loaded_n_samples', None)
 
             # Zip them unbatched so they are perfectly aligned in the original order!
             zipped = tf.data.Dataset.zip((dataset, feature_dataset))
 
             if is_training:
+                # Make the zipped dataset infinite so Keras never sees it exhaust
+                # mid-run. Without .repeat(), zip(image_ds, generator_ds) has
+                # UNKNOWN cardinality and Keras 3 treats the whole multi-epoch
+                # run as one long stream; when the generator exhausts after
+                # epoch 1 it warns and resets inconsistently. With .repeat() we
+                # supply steps_per_epoch so Keras knows exactly when each epoch
+                # ends without relying on dataset exhaustion.
+                zipped = zipped.repeat()
+
                 # Apply data augmentation to images
                 if config.use_augmentation:
                     def augment(inputs, features):
@@ -436,19 +459,28 @@ class FeaturePipeline:
                     return {"image_input": image, "feature_input": masked_features}, label
                 return {"image_input": inputs, "feature_input": masked_features}
 
-            return (
+            import math
+            # Always return steps regardless of is_training so the caller can
+            # use it to bound both training (steps_per_epoch) and validation
+            # (validation_steps) when wrapping the dataset with .repeat().
+            steps = math.ceil(n_samples / config.cnn_batch_size) if n_samples else None
+            prepared = (
                 zipped
                 .map(combine, num_parallel_calls=tf.data.AUTOTUNE)
                 .prefetch(tf.data.AUTOTUNE)
             )
+            return prepared, steps
 
-        return self._prepare_dataset_on_the_fly(dataset, is_training=is_training)
+        ds, _ = self._prepare_dataset_on_the_fly(dataset, is_training=is_training)
+        return ds, None
 
     def _prepare_dataset_on_the_fly(
         self, dataset: tf.data.Dataset, is_training: bool = False
-    ) -> tf.data.Dataset:
+    ) -> tuple:
         """
         Fallback: compute features for each batch as it is consumed.
+        Returns (dataset, None) — steps_per_epoch is None because the
+        dataset's cardinality is known to Keras from the image dataset itself.
         """
         import logging
         logging.getLogger(__name__).info(
@@ -476,7 +508,10 @@ class FeaturePipeline:
             features = pipeline.extract_batch_features(images)
             return {"image_input": images, "feature_input": features}, labels
 
-        return dataset.map(
-            add_features_on_the_fly,
-            num_parallel_calls=tf.data.AUTOTUNE,
-        ).prefetch(tf.data.AUTOTUNE)
+        return (
+            dataset.map(
+                add_features_on_the_fly,
+                num_parallel_calls=tf.data.AUTOTUNE,
+            ).prefetch(tf.data.AUTOTUNE),
+            None
+        )

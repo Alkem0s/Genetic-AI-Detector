@@ -565,3 +565,45 @@ class DataLoader:
             raise RuntimeError("Val sample pipeline produced no images.")
 
         return np.concatenate(images_list, axis=0), np.concatenate(labels_list, axis=0)
+
+    def create_val_dataset(
+        self,
+        sample_size: int = None,
+        generators: list = None,
+        batch_size: int = 64
+    ):
+        """
+        Create a lazy-loaded tf.data.Dataset from validation generators
+        without loading the entire batch into RAM. Useful to prevent OOM.
+        """
+        gens = generators if generators is not None else config.val_generators
+        if not gens:
+            raise ValueError(
+                "config.val_generators is empty — cannot create validation dataset."
+            )
+
+        val_df = self._crawl_generators(
+            gens,
+            split_type="val",
+            limit_per_cls=config.max_val_per_gen,
+        )
+
+        if val_df.empty:
+            raise ValueError(
+                f"No validation images found for generators: {gens}."
+            )
+
+        val_df = self._balance_generators(val_df, "ValSample")
+
+        default_size = config.max_val_per_gen * len(gens) * 2
+        n = sample_size if sample_size is not None else default_size
+        val_df = self._stratified_subsample(val_df, n)
+
+        val_ds = tf.data.Dataset.from_tensor_slices(
+            (val_df["file_name"].values, val_df["label"].values)
+        ).map(
+            lambda path, label: self._process_path(path, label, use_center_crop=True),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        ).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+        return val_ds

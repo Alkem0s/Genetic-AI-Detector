@@ -228,6 +228,9 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
     best_results = None
     best_mask_sparsity_mean = None
     best_mask_sparsity_std = None
+    best_y_true = None
+    best_y_pred = None
+    visualization_images = []
 
     if mask_mode == 'none':
         logger.info(f"Starting {total_runs} CNN baseline runs (flat structure)...")
@@ -289,23 +292,31 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 best_results = None
                 best_mask_sparsity_mean = None
                 best_mask_sparsity_std = None
+                best_y_true = y_true
+                best_y_pred = y_pred
 
     else:
         logger.info(f"Starting nested runs: {num_rulesets} rulesets x {num_seeds} seeds = {total_runs} total runs...")
+        
+        # Keep 10 images for visualization before clearing
+        visualization_images = sample_images[:10] if sample_images is not None and len(sample_images) > 0 else []
+        
+        # Phase 1: GA Ruleset Evolving Phase (Memory-heavy on images)
+        rulesets_data = []
         for r_idx in range(num_rulesets):
             # Seed for GA run (unique per ruleset)
             ga_seed = base_seed + r_idx * 1000
-            logger.info(f"\n==================== Ruleset {r_idx + 1}/{num_rulesets} (GA Seed: {ga_seed}) ====================")
+            logger.info(f"\n==================== GA Evolving Ruleset {r_idx + 1}/{num_rulesets} (GA Seed: {ga_seed}) ====================")
             
             np.random.seed(ga_seed)
             tf.random.set_seed(ga_seed)
             
             results = None
-            mask_sparsity_mean = None
-            mask_sparsity_std  = None
             genetic_rules = None
             feature_scales = None
-
+            mask_sparsity_mean = None
+            mask_sparsity_std = None
+            
             # --- Step 2: GA / Mask Sparsity Target Setup ---
             if mask_mode == 'ga':
                 logger.info("=== Step 2: Running genetic algorithm for feature optimisation ===")
@@ -380,6 +391,31 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 config._random_mask_sparsity = mask_sparsity_mean
                 mask_sparsity_mean_list.append(mask_sparsity_mean)
                 mask_sparsity_std_list.append(mask_sparsity_std)
+                genetic_rules = results['best_individual'].rules_tensor if 'best_individual' in results else None
+
+            rulesets_data.append({
+                'genetic_rules': genetic_rules,
+                'feature_scales': feature_scales,
+                'results': results,
+                'mask_sparsity_mean': mask_sparsity_mean,
+                'mask_sparsity_std': mask_sparsity_std,
+            })
+
+        # Clear large training image arrays completely from RAM before starting CNN phase
+        logger.info("GA ruleset evolution phase complete. Clearing raw sample images from memory...")
+        sample_images = None
+        sample_labels = None
+        import gc
+        gc.collect()
+
+        # Phase 2: CNN Training Phase using Evolved Rulesets
+        for r_idx in range(num_rulesets):
+            data = rulesets_data[r_idx]
+            genetic_rules = data['genetic_rules']
+            feature_scales = data['feature_scales']
+            results = data['results']
+            mask_sparsity_mean = data['mask_sparsity_mean']
+            mask_sparsity_std = data['mask_sparsity_std']
 
             # --- Step 3: Train model for each CNN seed using the ruleset ---
             for s_idx in range(num_seeds):
@@ -442,6 +478,8 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                     best_results = results
                     best_mask_sparsity_mean = mask_sparsity_mean
                     best_mask_sparsity_std = mask_sparsity_std
+                    best_y_true = y_true
+                    best_y_pred = y_pred
 
     # Save the best model wrapper to model_base_path so it acts as standard model
     if best_model_wrapper is not None:
@@ -511,11 +549,11 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
         mask_sparsity_std = None
 
     # --- Step 5: Mask visualisation (10 sample images per model) --------------
-    if mask_mode in ('ga', 'random') and len(sample_images) > 0:
+    if mask_mode in ('ga', 'random') and len(visualization_images) > 0:
         logger.info("=== Step 5: Generating mask visualisations ===")
         _visualize_masks_for_experiment(
             model_wrapper=best_model_wrapper if best_model_wrapper is not None else model_wrapper,
-            sample_images=sample_images,
+            sample_images=visualization_images,
             mask_mode=mask_mode,
             experiment_tag=experiment_tag,
             n_samples=10,
@@ -526,8 +564,8 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
     if config.visualize:
         vis = Visualizer()
         vis.plot_training_history(history, filename=f"training_history_{experiment_tag}.png")
-        if y_true is not None and y_pred is not None:
-            vis.plot_confusion_matrix(y_true, y_pred, filename=f"confusion_matrix_{experiment_tag}.png")
+        if best_y_true is not None and best_y_pred is not None:
+            vis.plot_confusion_matrix(best_y_true, best_y_pred, filename=f"confusion_matrix_{experiment_tag}.png")
 
     # --- Step 7: Save metrics to JSON -----------------------------------------
     out_json = _save_experiment_results(
@@ -721,7 +759,7 @@ def evaluate_model(model_wrapper, test_ds):
     if model_wrapper.use_features:
         model_wrapper.precompute_features(test_ds, "test")
     
-    prepared_ds = model_wrapper.prepare_dataset(test_ds, "test", is_training=False)
+    prepared_ds, _ = model_wrapper.prepare_dataset(test_ds, "test", is_training=False)
 
     # Evaluate using the inner Keras model on the already-prepared dataset
     results = model_wrapper.model.model.evaluate(prepared_ds, verbose=1)

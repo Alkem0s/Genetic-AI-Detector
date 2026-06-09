@@ -259,7 +259,7 @@ class AIDetectorModel:
 
         return model
 
-    def train(self, train_dataset, validation_dataset=None, output_model_path='human_ai_detector_model.h5'):
+    def train(self, train_dataset, validation_dataset=None, output_model_path='human_ai_detector_model.h5', steps_per_epoch=None, validation_steps=None):
         """
         Train the model with callbacks for early stopping and learning rate reduction.
         
@@ -267,6 +267,12 @@ class AIDetectorModel:
             train_dataset (tf.data.Dataset): Training dataset
             validation_dataset (tf.data.Dataset): Validation dataset
             output_model_path (str): Path to save the best model
+            steps_per_epoch (int or None): Steps per epoch. Required when the
+                training dataset uses .repeat() (generator + feature cache path).
+                If None, Keras infers from dataset cardinality (finite datasets).
+            validation_steps (int or None): Validation steps per epoch. Required
+                when the validation dataset uses .repeat().
+                If None, Keras runs validation until dataset exhaustion.
 
         Returns:
             dict: Training history
@@ -312,6 +318,8 @@ class AIDetectorModel:
             train_dataset,
             validation_data=validation_dataset,
             epochs=config.epochs,
+            steps_per_epoch=steps_per_epoch,
+            validation_steps=validation_steps,
             callbacks=callbacks_list
         )
         logger.info("Model training complete.")
@@ -557,9 +565,9 @@ class ModelWrapper:
                 buffer_size = min(10000, config.cnn_batch_size * 100)
                 dataset = dataset.shuffle(buffer_size=buffer_size, seed=config.random_seed)
             dataset = dataset.batch(config.cnn_batch_size)
-            return dataset.prefetch(tf.data.AUTOTUNE)
+            return dataset.prefetch(tf.data.AUTOTUNE), None
 
-        # If using features, delegate to pipeline
+        # If using features, delegate to pipeline (returns (dataset, steps_per_epoch))
         return self.pipeline.prepare_dataset(dataset, dataset_name, is_training=is_training)
 
     def train(self, train_dataset, validation_dataset=None, model_path='ai_detector_model.keras', precompute_features=None):
@@ -576,20 +584,34 @@ class ModelWrapper:
             if validation_dataset:
                 self.precompute_features(validation_dataset, "val")
             
-            # Prepare datasets
-            prepared_train = self.prepare_dataset(train_dataset, "train", is_training=True)
-            prepared_val = self.prepare_dataset(validation_dataset, "val", is_training=False) if validation_dataset else None
+            # Prepare datasets — returns (dataset, steps_per_epoch/validation_steps)
+            prepared_train, steps_per_epoch = self.prepare_dataset(train_dataset, "train", is_training=True)
+            prepared_val, val_steps = self.prepare_dataset(validation_dataset, "val", is_training=False) if validation_dataset else (None, None)
         else:
             # Fallback to on-the-fly
             logger.info("Using on-the-fly feature extraction (no disk cache).")
-            prepared_train = self.prepare_dataset(train_dataset, is_training=True)
-            prepared_val = self.prepare_dataset(validation_dataset, is_training=False) if validation_dataset else None
+            prepared_train, steps_per_epoch = self.prepare_dataset(train_dataset, is_training=True)
+            prepared_val, val_steps = self.prepare_dataset(validation_dataset, is_training=False) if validation_dataset else (None, None)
+        
+        # For the fit() call only: wrap the validation dataset with .repeat() and
+        # provide validation_steps so Keras never sees the val generator exhaust
+        # mid-epoch (which triggers a spurious "input ran out of data" warning).
+        # The .repeat() here is safe because model.fit() respects validation_steps
+        # to bound each epoch's validation phase to exactly val_steps batches.
+        if prepared_val is not None and val_steps is not None:
+            fit_val = prepared_val.repeat()
+            validation_steps = val_steps
+        else:
+            fit_val = prepared_val
+            validation_steps = None
         
         # Train the model
         history = self.model.train(
             prepared_train,
-            validation_dataset=prepared_val,
-            output_model_path=model_path
+            validation_dataset=fit_val,
+            output_model_path=model_path,
+            steps_per_epoch=steps_per_epoch,
+            validation_steps=validation_steps
         )
         return history
 
@@ -601,13 +623,13 @@ class ModelWrapper:
             if use_cache:
                 logger.info("Precomputing and preparing test dataset with genetic features.")
                 self.precompute_features(test_dataset, "test")
-                prepared_test_ds = self.prepare_dataset(test_dataset, "test")
+                prepared_test_ds, _ = self.prepare_dataset(test_dataset, "test")
             else:
                 logger.info("Preparing test dataset with on-the-fly genetic features.")
-                prepared_test_ds = self.prepare_dataset(test_dataset)
+                prepared_test_ds, _ = self.prepare_dataset(test_dataset)
         else:
             logger.info("Evaluating without genetic features.")
-            prepared_test_ds = self.prepare_dataset(test_dataset, is_training=False)
+            prepared_test_ds, _ = self.prepare_dataset(test_dataset, is_training=False)
         results = self.model.evaluate(prepared_test_ds)
         logger.info(f"Model wrapper evaluation complete. Loss: {results[0]:.4f}, Accuracy: {results[1]:.4f}")
         return results

@@ -49,7 +49,7 @@ def evaluate_model_robustness(model_wrapper, test_ds, qualities, max_samples):
         test_ds = test_ds.take(max_samples)
 
     # 1. Baseline accuracy on clean images
-    clean_prepared = model_wrapper.prepare_dataset(test_ds, is_training=False)
+    clean_prepared, _ = model_wrapper.prepare_dataset(test_ds, is_training=False)
     clean_results = model_wrapper.model.model.evaluate(clean_prepared, verbose=0)
     baseline_acc = clean_results[1] if len(clean_results) > 1 else 0.5
     logger.info(f"  Clean baseline accuracy: {baseline_acc:.4f}")
@@ -73,7 +73,7 @@ def evaluate_model_robustness(model_wrapper, test_ds, qualities, max_samples):
             num_parallel_calls=tf.data.AUTOTUNE
         )
 
-        prepared = model_wrapper.prepare_dataset(compressed_ds, is_training=False)
+        prepared, _ = model_wrapper.prepare_dataset(compressed_ds, is_training=False)
         eval_results = model_wrapper.model.model.evaluate(prepared, verbose=0)
         acc = eval_results[1] if len(eval_results) > 1 else 0.5
         drop = baseline_acc - acc

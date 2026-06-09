@@ -176,9 +176,9 @@ def evaluate_robustness(model_wrapper, test_ds, quality_levels=None, logger=None
     # ---- Baseline accuracy on clean images ----------------------------------------
     if model_wrapper.use_features:
         model_wrapper.precompute_features(test_ds, "robustness_clean")
-        clean_prepared = model_wrapper.prepare_dataset(test_ds, "robustness_clean", is_training=False)
+        clean_prepared, _ = model_wrapper.prepare_dataset(test_ds, "robustness_clean", is_training=False)
     else:
-        clean_prepared = model_wrapper.prepare_dataset(test_ds, is_training=False)
+        clean_prepared, _ = model_wrapper.prepare_dataset(test_ds, is_training=False)
 
     clean_results = model_wrapper.model.model.evaluate(clean_prepared, verbose=0)
     baseline_acc = clean_results[1] if len(clean_results) > 1 else float('nan')
@@ -201,9 +201,9 @@ def evaluate_robustness(model_wrapper, test_ds, quality_levels=None, logger=None
         if model_wrapper.use_features:
             cache_name = f"robustness_q{q}"
             model_wrapper.precompute_features(compressed_ds, cache_name)
-            prepared = model_wrapper.prepare_dataset(compressed_ds, cache_name, is_training=False)
+            prepared, _ = model_wrapper.prepare_dataset(compressed_ds, cache_name, is_training=False)
         else:
-            prepared = model_wrapper.prepare_dataset(compressed_ds, is_training=False)
+            prepared, _ = model_wrapper.prepare_dataset(compressed_ds, is_training=False)
 
         eval_results = model_wrapper.model.model.evaluate(prepared, verbose=0)
         acc = eval_results[1] if len(eval_results) > 1 else float('nan')

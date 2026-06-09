@@ -221,6 +221,11 @@ class GeneticFeatureOptimizer:
         self.precomputed_features = raw_features / self.feature_scales
         self.features_computed = True
         
+        # Clear raw training images to free up RAM
+        self.images = None
+        import gc
+        gc.collect()
+        
         end_time = time.time()
         logger.info(f"Feature precomputation and auto-calibration complete in {end_time - start_time:.2f} seconds")
         logger.info(f"Final normalized features shape: {self.precomputed_features.shape}")
@@ -264,41 +269,50 @@ class GeneticFeatureOptimizer:
                 "Call _precompute_features() first."
             )
 
+        # Reset session to ensure fresh workspace
+        tf.keras.backend.clear_session()
+        start_time = time.time()
+
         if images is None or labels is None:
             from data_loader import DataLoader
             dl = DataLoader()
-            logger.info("Loading probe images for precomputation via DataLoader...")
-            images, labels = dl.create_val_sample(sample_size=self.config.probe_sample_size)
-        
-        self.probe_labels = tf.convert_to_tensor(labels, dtype=tf.float32)
-        
-        logger.info(f"Extracting probe features for {len(images)} images...")
-        start_time = time.time()
-        
-        batch_size = self.config.extraction_batch_size
-        all_probe_features = []
-        
-        # Reset session to ensure fresh workspace
-        tf.keras.backend.clear_session()
-        
-        num_samples = len(images)
-        for i in range(0, num_samples, batch_size):
-            batch_end = min(i + batch_size, num_samples)
-            batch_imgs = images[i:batch_end]
+            logger.info("Loading probe features batch-by-batch via Dataset to save RAM...")
+            val_ds = dl.create_val_dataset(
+                sample_size=self.config.probe_sample_size,
+                batch_size=self.config.extraction_batch_size
+            )
             
-            # Extract features for this batch
-            batch_features = self.feature_extractor.extract_batch_patch_features(batch_imgs)
-            all_probe_features.append(batch_features)
+            all_probe_features = []
+            probe_labels_list = []
             
-        # Concatenate and normalize using the training scales
-        raw_probe_features = tf.concat(all_probe_features, axis=0)
-        self.precomputed_probe_features = raw_probe_features / self.feature_scales
-        
-        # Clear temporary images to free RAM if they were loaded here
-        if 'dl' in locals():
-            del images
+            for batch_imgs, batch_lbls in val_ds:
+                # Extract features for this batch
+                batch_features = self.feature_extractor.extract_batch_patch_features(batch_imgs)
+                all_probe_features.append(batch_features)
+                probe_labels_list.append(batch_lbls)
+                
+            self.probe_labels = tf.cast(tf.concat(probe_labels_list, axis=0), tf.float32)
+            raw_probe_features = tf.concat(all_probe_features, axis=0)
+            self.precomputed_probe_features = raw_probe_features / self.feature_scales
+            
+            del all_probe_features
+            del probe_labels_list
             import gc
             gc.collect()
+        else:
+            self.probe_labels = tf.convert_to_tensor(labels, dtype=tf.float32)
+            logger.info(f"Extracting probe features for {len(images)} images (passed numpy array)...")
+            batch_size = self.config.extraction_batch_size
+            all_probe_features = []
+            num_samples = len(images)
+            for i in range(0, num_samples, batch_size):
+                batch_end = min(i + batch_size, num_samples)
+                batch_imgs = images[i:batch_end]
+                batch_features = self.feature_extractor.extract_batch_patch_features(batch_imgs)
+                all_probe_features.append(batch_features)
+                
+            raw_probe_features = tf.concat(all_probe_features, axis=0)
+            self.precomputed_probe_features = raw_probe_features / self.feature_scales
             
         logger.info(
             f"Probe features precomputed in {time.time() - start_time:.2f}s  "
