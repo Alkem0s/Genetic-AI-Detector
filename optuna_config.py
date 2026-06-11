@@ -10,7 +10,15 @@ Modify these values to control the optimization process.
 
 # Number of trials for each optimization phase
 feature_weight_trials = 100  # Trials for optimizing feature weights
-ga_config_trials = 150       # Trials for optimizing GA configuration
+ga_config_trials = 100       # Trials for optimizing GA configuration
+
+# Sparsity-only Phase 2 mode (used after the soft-mask change).
+# When True, suggest_ga_config pins all non-sparsity GA params to the best known
+# values from best_ga_config.json and only searches target_sparsity + sparsity_radius.
+# This is much faster than a full Phase 2 re-run while correcting the one parameter
+# group whose semantics changed when switching from binary to soft masks.
+sparsity_only_phase2 = True
+ga_config_sparsity_only_trials = 30  # Fewer trials suffice for a 2-param search
 
 # Study names (for organization/logging)
 feature_weight_study_name = "feature_weights_optimization"
@@ -23,7 +31,7 @@ optimization_seed = 42
 verbosity = 1
 
 # Multi-run averaging for robust objective evaluation
-num_ga_runs_per_trial = 3
+num_ga_runs_per_trial = 1
 deterministic_trial_seeding = True
 
 # Feature weight usage regularization/penalty
@@ -130,7 +138,7 @@ log_intermediate_results = True
 # =============================================================================
 # CNN HYPERPARAMETER OPTIMIZATION CONFIGURATION (Phase 3)
 # =============================================================================
-cnn_trials = 8
+cnn_trials = 50
 cnn_epochs = 15                  # Maximum epochs to train each CNN trial
 cnn_early_stopping_patience = 5  # Patience for early stopping during tuning
 num_cnn_runs_per_trial = 1       # Number of seeded runs to average per trial for stability

@@ -615,8 +615,13 @@ class GeneticFeatureOptimizer:
         mutation_rate = 0.1
         mutation_mask = tf.random.uniform([self.max_possible_rules]) < mutation_rate
         
-        # Mutate thresholds
-        threshold_noise = tf.random.uniform([self.max_possible_rules], -0.1, 0.1)
+        # Adaptive threshold mutation: 80% fine-tune (±0.1), 20% large-jump (±0.5).
+        # Large jumps allow the GA to escape the centre of threshold space and discover
+        # discriminative thresholds near 0 or 1 that incremental nudges can never reach.
+        use_large_jump  = tf.random.uniform([self.max_possible_rules]) < 0.2
+        fine_noise  = tf.random.uniform([self.max_possible_rules], -0.1,  0.1)
+        large_noise = tf.random.uniform([self.max_possible_rules], -0.5,  0.5)
+        threshold_noise = tf.where(use_large_jump, large_noise, fine_noise)
         new_thresholds = tf.clip_by_value(rules[:, 1] + threshold_noise, 0.0, 1.0)
         
         # Mutate operators (flip some)

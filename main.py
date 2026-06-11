@@ -209,9 +209,8 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
         config.output_dir, f"model_{experiment_tag}"
     )
 
-    num_rulesets = getattr(config, 'num_rulesets', 3)
-    num_seeds = getattr(config, 'num_seeds', 3)
-    total_runs = num_rulesets * num_seeds
+    num_seeds = getattr(config, 'num_seeds', 1)
+    total_runs = num_seeds
     base_seed = getattr(config, 'random_seed', 42)
     if base_seed is None:
         base_seed = 42
@@ -296,17 +295,24 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 best_y_pred = y_pred
 
     else:
-        logger.info(f"Starting nested runs: {num_rulesets} rulesets x {num_seeds} seeds = {total_runs} total runs...")
+        num_ga_prep_runs = getattr(config, 'num_ga_prep_runs', 3)
+        logger.info(f"Starting experiment: 1 best ruleset (chosen from {num_ga_prep_runs} runs) x {num_seeds} seeds = {num_seeds} total runs...")
         
         # Keep 10 images for visualization before clearing
         visualization_images = sample_images[:10] if sample_images is not None and len(sample_images) > 0 else []
         
         # Phase 1: GA Ruleset Evolving Phase (Memory-heavy on images)
-        rulesets_data = []
-        for r_idx in range(num_rulesets):
-            # Seed for GA run (unique per ruleset)
-            ga_seed = base_seed + r_idx * 1000
-            logger.info(f"\n==================== GA Evolving Ruleset {r_idx + 1}/{num_rulesets} (GA Seed: {ga_seed}) ====================")
+        best_overall_ruleset = None
+        best_overall_fitness = -float('inf')
+        best_overall_results = None
+        best_overall_scales = None
+        best_mask_sparsity_mean = None
+        best_mask_sparsity_std = None
+        
+        logger.info(f"Running {num_ga_prep_runs} GA runs to find the best ruleset...")
+        for i in range(num_ga_prep_runs):
+            ga_seed = base_seed + i * 100
+            logger.info(f"\n==================== GA Evolving Ruleset Search Run {i + 1}/{num_ga_prep_runs} (GA Seed: {ga_seed}) ====================")
             
             np.random.seed(ga_seed)
             tf.random.set_seed(ga_seed)
@@ -336,7 +342,7 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 logger.info("Precomputing probe features for validation checkpointing...")
                 genetic_optimizer.precompute_probe_features()
                 
-                with tf.profiler.experimental.Trace(f'genetic_optimization_phase_ruleset_{r_idx}'):
+                with tf.profiler.experimental.Trace(f'genetic_optimization_phase_search_run_{i}'):
                     results = genetic_optimizer.run()
                 
                 # Save feature scales to disk so they are persisted
@@ -345,13 +351,15 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
 
                 mask_sparsity_mean = results.get('mask_sparsity_mean')
                 mask_sparsity_std  = results.get('mask_sparsity_std')
-                logger.info(
-                    f"GA complete – sparsity mean={mask_sparsity_mean:.4f}, "
-                    f"std={mask_sparsity_std:.4f}"
-                )
-                genetic_rules = results['best_individual'].rules_tensor
-                mask_sparsity_mean_list.append(mask_sparsity_mean)
-                mask_sparsity_std_list.append(mask_sparsity_std)
+                
+                fitness = results['best_fitness']
+                if fitness > best_overall_fitness:
+                    best_overall_fitness = fitness
+                    best_overall_ruleset = results['best_individual'].rules_tensor
+                    best_overall_results = results
+                    best_overall_scales = feature_scales
+                    best_mask_sparsity_mean = mask_sparsity_mean
+                    best_mask_sparsity_std = mask_sparsity_std
 
             elif mask_mode == 'random':
                 logger.info(
@@ -374,7 +382,7 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 logger.info("Precomputing probe features for validation checkpointing...")
                 genetic_optimizer.precompute_probe_features()
                 
-                with tf.profiler.experimental.Trace(f'genetic_optimization_phase_ruleset_{r_idx}'):
+                with tf.profiler.experimental.Trace(f'genetic_optimization_phase_search_run_{i}'):
                     results = genetic_optimizer.run()
                 
                 # Save feature scales to disk so they are persisted
@@ -383,23 +391,39 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
 
                 mask_sparsity_mean = results['mask_sparsity_mean']
                 mask_sparsity_std  = results['mask_sparsity_std']
-                logger.info(
-                    f"GA sparsity target for random masks: mean={mask_sparsity_mean:.4f}, "
-                    f"std={mask_sparsity_std:.4f}"
-                )
-                # Store on config so ModelWrapper can pick it up
-                config._random_mask_sparsity = mask_sparsity_mean
-                mask_sparsity_mean_list.append(mask_sparsity_mean)
-                mask_sparsity_std_list.append(mask_sparsity_std)
-                genetic_rules = results['best_individual'].rules_tensor if 'best_individual' in results else None
+                
+                fitness = results['best_fitness']
+                if fitness > best_overall_fitness:
+                    best_overall_fitness = fitness
+                    best_overall_ruleset = results['best_individual'].rules_tensor if 'best_individual' in results else None
+                    best_overall_results = results
+                    best_overall_scales = feature_scales
+                    best_mask_sparsity_mean = mask_sparsity_mean
+                    best_mask_sparsity_std = mask_sparsity_std
 
-            rulesets_data.append({
-                'genetic_rules': genetic_rules,
-                'feature_scales': feature_scales,
-                'results': results,
-                'mask_sparsity_mean': mask_sparsity_mean,
-                'mask_sparsity_std': mask_sparsity_std,
-            })
+        # Extract best parameters
+        genetic_rules = best_overall_ruleset
+        feature_scales = best_overall_scales
+        results = best_overall_results
+        mask_sparsity_mean = best_mask_sparsity_mean
+        mask_sparsity_std = best_mask_sparsity_std
+        
+        if mask_mode == 'ga':
+            logger.info(
+                f"GA best ruleset selected – fitness={best_overall_fitness:.4f}, "
+                f"sparsity mean={mask_sparsity_mean:.4f}, std={mask_sparsity_std:.4f}"
+            )
+            mask_sparsity_mean_list.append(mask_sparsity_mean)
+            mask_sparsity_std_list.append(mask_sparsity_std)
+        elif mask_mode == 'random':
+            logger.info(
+                f"GA sparsity target selected for random masks – fitness={best_overall_fitness:.4f}, "
+                f"sparsity mean={mask_sparsity_mean:.4f}, std={mask_sparsity_std:.4f}"
+            )
+            # Store on config so ModelWrapper can pick it up
+            config._random_mask_sparsity = mask_sparsity_mean
+            mask_sparsity_mean_list.append(mask_sparsity_mean)
+            mask_sparsity_std_list.append(mask_sparsity_std)
 
         # Clear large training image arrays completely from RAM before starting CNN phase
         logger.info("GA ruleset evolution phase complete. Clearing raw sample images from memory...")
@@ -408,78 +432,70 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
         import gc
         gc.collect()
 
-        # Phase 2: CNN Training Phase using Evolved Rulesets
-        for r_idx in range(num_rulesets):
-            data = rulesets_data[r_idx]
-            genetic_rules = data['genetic_rules']
-            feature_scales = data['feature_scales']
-            results = data['results']
-            mask_sparsity_mean = data['mask_sparsity_mean']
-            mask_sparsity_std = data['mask_sparsity_std']
-
-            # --- Step 3: Train model for each CNN seed using the ruleset ---
-            for s_idx in range(num_seeds):
-                cnn_seed = base_seed + r_idx * 100 + s_idx * 10
-                run_idx = r_idx * num_seeds + s_idx
-                logger.info(f"\n--- Ruleset {r_idx + 1}, Seed {s_idx + 1}/{num_seeds} (CNN Seed: {cnn_seed}) ---")
-                
-                np.random.seed(cnn_seed)
-                tf.random.set_seed(cnn_seed)
-                
-                # Build ModelWrapper
-                model_wrapper = ModelWrapper(
-                    genetic_rules=genetic_rules,
-                    mask_mode=mask_mode,
-                    random_mask_sparsity=mask_sparsity_mean,
-                    feature_scales=feature_scales,
+        # Phase 2: CNN Training Phase using the single Best Ruleset
+        # --- Step 3: Train model for each CNN seed using the ruleset ---
+        for s_idx in range(num_seeds):
+            cnn_seed = base_seed + s_idx * 10
+            run_idx = s_idx
+            logger.info(f"\n--- CNN Seed {s_idx + 1}/{num_seeds} (CNN Seed: {cnn_seed}) ---")
+            
+            np.random.seed(cnn_seed)
+            tf.random.set_seed(cnn_seed)
+            
+            # Build ModelWrapper
+            model_wrapper = ModelWrapper(
+                genetic_rules=genetic_rules,
+                mask_mode=mask_mode,
+                random_mask_sparsity=mask_sparsity_mean,
+                feature_scales=feature_scales,
+            )
+            
+            run_model_path = f"{model_base_path}_run_{run_idx}"
+            
+            # Train model
+            with tf.profiler.experimental.Trace(f'model_training_phase_seed_{s_idx}'):
+                history = model_wrapper.train(
+                    train_dataset=train_ds,
+                    validation_dataset=test_ds,
+                    model_path=f"{run_model_path}.keras",
                 )
-                
-                run_model_path = f"{model_base_path}_run_{run_idx}"
-                
-                # Train model
-                with tf.profiler.experimental.Trace(f'model_training_phase_ruleset_{r_idx}_seed_{s_idx}'):
-                    history = model_wrapper.train(
-                        train_dataset=train_ds,
-                        validation_dataset=test_ds,
-                        model_path=f"{run_model_path}.keras",
-                    )
-                histories.append(history)
-                
-                # Save model wrapper state
-                model_wrapper.save(run_model_path)
-                
-                # Evaluate model
-                logger.info(f"Evaluating Run {run_idx + 1}...")
-                metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
-                
-                # JPEG robustness
-                robustness = {}
-                if getattr(config, 'eval_jpeg_robustness', False):
-                    from utils import evaluate_robustness
-                    logger.info(f"Evaluating JPEG robustness for Run {run_idx + 1}...")
-                    robustness = evaluate_robustness(
-                        model_wrapper, test_ds,
-                        quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
-                        logger=logger,
-                    )
-                
-                metrics['robustness'] = robustness
-                all_runs_metrics.append(metrics)
-                
-                acc = metrics.get('accuracy', 0.0)
-                logger.info(f"Run {run_idx + 1} Accuracy: {acc:.4f}  Loss: {metrics.get('loss', 0.0):.4f}")
-                
-                # Keep track of the best run
-                if acc > best_acc_so_far:
-                    best_acc_so_far = acc
-                    best_model_wrapper = model_wrapper
-                    best_history = history
-                    best_run_idx = run_idx
-                    best_results = results
-                    best_mask_sparsity_mean = mask_sparsity_mean
-                    best_mask_sparsity_std = mask_sparsity_std
-                    best_y_true = y_true
-                    best_y_pred = y_pred
+            histories.append(history)
+            
+            # Save model wrapper state
+            model_wrapper.save(run_model_path)
+            
+            # Evaluate model
+            logger.info(f"Evaluating Run {run_idx + 1}...")
+            metrics, y_true, y_pred = evaluate_model(model_wrapper, test_ds)
+            
+            # JPEG robustness
+            robustness = {}
+            if getattr(config, 'eval_jpeg_robustness', False):
+                from utils import evaluate_robustness
+                logger.info(f"Evaluating JPEG robustness for Run {run_idx + 1}...")
+                robustness = evaluate_robustness(
+                    model_wrapper, test_ds,
+                    quality_levels=getattr(config, 'jpeg_quality_levels', [50, 75]),
+                    logger=logger,
+                )
+            
+            metrics['robustness'] = robustness
+            all_runs_metrics.append(metrics)
+            
+            acc = metrics.get('accuracy', 0.0)
+            logger.info(f"Run {run_idx + 1} Accuracy: {acc:.4f}  Loss: {metrics.get('loss', 0.0):.4f}")
+            
+            # Keep track of the best run
+            if acc > best_acc_so_far:
+                best_acc_so_far = acc
+                best_model_wrapper = model_wrapper
+                best_history = history
+                best_run_idx = run_idx
+                best_results = results
+                best_mask_sparsity_mean = mask_sparsity_mean
+                best_mask_sparsity_std = mask_sparsity_std
+                best_y_true = y_true
+                best_y_pred = y_pred
 
     # Save the best model wrapper to model_base_path so it acts as standard model
     if best_model_wrapper is not None:
@@ -941,8 +957,8 @@ def main():
                         help="Comma-separated validation/test generators")
     parser.add_argument('--epochs', type=int,
                         help="Number of epochs to train CNN")
-    parser.add_argument('--num-rulesets', type=int,
-                        help="Number of GA rulesets to generate (for ga/random modes)")
+    parser.add_argument('--num-ga-prep-runs', type=int,
+                        help="Number of GA prep runs to perform to find the best ruleset (for ga/random modes)")
     parser.add_argument('--num-seeds', type=int,
                         help="Number of CNN seeds to train per ruleset")
     parser.add_argument('--run-all', action='store_true',
@@ -951,7 +967,7 @@ def main():
                         help="Path to image for prediction")
     
     args = parser.parse_args()
-
+ 
     if args.run_all:
         logger.info("=" * 70)
         logger.info("STARTING SUBPROCESS MATRIX RUN FOR ALL 6 EXPERIMENTS")
@@ -983,8 +999,8 @@ def main():
             ]
             if args.epochs:
                 cmd += ["--epochs", str(args.epochs)]
-            if args.num_rulesets:
-                cmd += ["--num-rulesets", str(args.num_rulesets)]
+            if args.num_ga_prep_runs:
+                cmd += ["--num-ga-prep-runs", str(args.num_ga_prep_runs)]
             if args.num_seeds:
                 cmd += ["--num-seeds", str(args.num_seeds)]
                 
@@ -998,7 +1014,7 @@ def main():
         logger.info("ALL 6 EXPERIMENTS COMPLETED SUCCESSFULLY!")
         logger.info("="*70)
         return
-
+ 
     # Override config defaults with parsed arguments if specified
     if args.mask_mode:
         config.mask_mode = args.mask_mode
@@ -1008,8 +1024,8 @@ def main():
         config.val_generators = [g.strip() for g in args.val_generators.split(',')]
     if args.epochs is not None:
         config.epochs = args.epochs
-    if args.num_rulesets is not None:
-        config.num_rulesets = args.num_rulesets
+    if args.num_ga_prep_runs is not None:
+        config.num_ga_prep_runs = args.num_ga_prep_runs
     if args.num_seeds is not None:
         config.num_seeds = args.num_seeds
     if args.predict_path:

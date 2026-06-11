@@ -1,9 +1,9 @@
 {
-  "learning_rate": 0.0030368215865085495,
-  "dropout_1": 0.463879764445715,
-  "dropout_2": 0.11905784493600746,
-  "dense_units": 320,
-  "l2_reg": 2.6061953097150093e-06,
-  "optimizer": "rmsprop",
-  "validation_accuracy": 0.7918000221252441
+  "learning_rate": 0.0010927159763666227,
+  "dropout_1": 0.16775727351607025,
+  "dropout_2": 0.3440874100478203,
+  "dense_units": 960,
+  "l2_reg": 0.0007565311865382789,
+  "optimizer": "adam",
+  "validation_accuracy": 0.79339998960495
 }

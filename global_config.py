@@ -32,7 +32,6 @@ profile = False
 profile_log_dir = "profiler_logs" 
 
 # --- Experiment Multi-Run Averaging ---
-num_rulesets = 1
 num_seeds = 1
 
 # --- Post-hoc Evaluation ---
@@ -57,6 +56,7 @@ sample_size = 10000
 probe_sample_size = 5000
 use_multiprocessing = True
 use_feature_cache = True
+num_ga_prep_runs = 3  # Number of GA runs to perform to find the best ruleset for Phase 3 and main execution
 
 # --- Fitness Weights ---
 # divergence_score replaces the old balanced_accuracy + f1 components.

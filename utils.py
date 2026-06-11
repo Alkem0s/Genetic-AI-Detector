@@ -64,7 +64,9 @@ def convert_patch_mask_to_pixel_mask(patch_mask):
             lambda: pixel_mask
         )
     
-    return tf.cast(pixel_mask >= 0.5, tf.float32)
+    # Do NOT binarize here — soft mask values (GA) must pass through as-is.
+    # Random masks already emit 0.0/1.0 floats, so this is a no-op for them.
+    return tf.cast(pixel_mask, tf.float32)
 
 
 @tf.function

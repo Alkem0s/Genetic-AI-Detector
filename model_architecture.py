@@ -47,21 +47,25 @@ class RandomMaskGenerator:
         Each call is independently random (different per image).
 
         Returns:
-            int8 tensor of shape (n_patches_h, n_patches_w).
+            float32 tensor of shape (n_patches_h, n_patches_w) with values 0.0 or 1.0.
+            (float32 for dtype parity with GA soft masks.)
         """
         shape = tf.stack([n_patches_h, n_patches_w])
         flat = tf.random.uniform(shape, seed=self.random_seed, dtype=tf.float32)
-        binary = tf.cast(flat < self.target_sparsity, tf.int8)
+        binary = tf.cast(flat < self.target_sparsity, tf.float32)
         return binary
 
     @tf.function
     def generate_stateless(self, batch_size, n_patches_h, n_patches_w, seed) -> tf.Tensor:
         """
         Produce a batch of random binary masks statelessly (avoiding RNG lock contention).
+
+        Returns:
+            float32 tensor of shape (batch_size, n_patches_h, n_patches_w) with values 0.0 or 1.0.
         """
         shape = tf.stack([batch_size, n_patches_h, n_patches_w])
         flat = tf.random.stateless_uniform(shape, seed=seed, dtype=tf.float32)
-        binary = tf.cast(flat < self.target_sparsity, tf.int8)
+        binary = tf.cast(flat < self.target_sparsity, tf.float32)
         return binary
 
 

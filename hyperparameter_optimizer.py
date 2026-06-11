@@ -130,8 +130,25 @@ def _run_cnn_prep_subprocess(mask_mode, json_ga_config, json_weights, output_que
             config=base_config
         )
         optimizer.update_optimizer_config(ga_params=json_ga_config)
-        ga_results = optimizer.genetic_optimizer.run(run_id="cnn_hpo_ga_prep")
-        genetic_rules_np = ga_results['best_individual'].rules_tensor.numpy()
+        
+        import global_config
+        num_prep_runs = getattr(global_config, 'num_ga_prep_runs', 3)
+        best_overall_ruleset = None
+        best_overall_fitness = -float('inf')
+        
+        sub_logger = logging.getLogger(__name__)
+        sub_logger.info(f"Running {num_prep_runs} GA runs to find the best ruleset for Phase 3 CNN prep...")
+        for i in range(num_prep_runs):
+            run_seed = (global_config.random_seed or 42) + i * 100
+            optimizer.genetic_optimizer.set_random_seed(run_seed)
+            ga_results = optimizer.genetic_optimizer.run(run_id=f"cnn_hpo_ga_prep_run_{i}")
+            
+            fitness = ga_results['best_fitness']
+            if fitness > best_overall_fitness:
+                best_overall_fitness = fitness
+                best_overall_ruleset = ga_results['best_individual'].rules_tensor.numpy()
+                
+        genetic_rules_np = best_overall_ruleset
         genetic_rules = tf.convert_to_tensor(genetic_rules_np, dtype=tf.float32)
     elif mask_mode == 'random':
         random_mask_sparsity = json_ga_config.get('target_sparsity', 0.45)
@@ -291,12 +308,8 @@ class HyperparameterOptimizer:
             with open(config.ga_config_output_file, 'r') as f:
                 self.json_ga_config = json.load(f)
                 
-            # Override with Proxy GA config if requested in optuna_config
-            if getattr(config, 'use_proxy_ga_config', False):
-                logger.info("Overriding baseline GA config with Proxy GA config from optuna_config.py")
-                proxy_config = getattr(config, 'proxy_ga_config', {})
-                for key, value in proxy_config.items():
-                    self.json_ga_config[key] = value
+            # Proxy GA config overrides are now applied on-the-fly in Phase 1 (objective_feature_weights) 
+            # to prevent polluting the base configuration for Phase 2.
                     
         except Exception as e:
             logger.error(f"FATAL: Could not load baseline configuration from JSON: {e}")
@@ -531,59 +544,108 @@ class HyperparameterOptimizer:
     def suggest_ga_config(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
         Suggest GA configuration parameters for optimization trial.
-        
+
+        When ``config.sparsity_only_phase2`` is True, all structural GA params are pinned
+        to the current best_ga_config.json values and only target_sparsity and
+        sparsity_radius are optimised.  This is used after the soft-mask change where the
+        semantic meaning of target_sparsity changed but the rest of the GA search space
+        remains valid.
+
         Args:
             trial: Optuna trial object
-            
+
         Returns:
             Dictionary of suggested GA parameters
         """
+        sparsity_only = getattr(config, 'sparsity_only_phase2', False)
+
+        if sparsity_only:
+            # --- Sparsity-only mode: pin everything from best known config ---
+            ga_config = {k: v for k, v in self.json_ga_config.items()
+                         if k not in ('fitness',)}
+            # Ensure required numeric types are preserved for pinned params
+            for int_key in ('population_size', 'n_generations', 'rules_per_individual',
+                            'max_possible_rules'):
+                if int_key in ga_config:
+                    ga_config[int_key] = int(ga_config[int_key])
+            for float_key in ('crossover_prob', 'mutation_prob',
+                              'inactive_weight_penalty'):
+                if float_key in ga_config:
+                    ga_config[float_key] = float(ga_config[float_key])
+
+            # Search: sparsity targets + selection pressure params
+            ga_config['target_sparsity'] = float(trial.suggest_float(
+                'target_sparsity',
+                float(config.target_sparsity_range[0]),
+                float(config.target_sparsity_range[1])
+            ))
+            ga_config['sparsity_radius'] = float(trial.suggest_float(
+                'sparsity_radius',
+                float(config.sparsity_radius_range[0]),
+                float(config.sparsity_radius_range[1])
+            ))
+            ga_config['tournament_size'] = int(trial.suggest_int(
+                'tournament_size',
+                int(config.tournament_size_range[0]),
+                int(config.tournament_size_range[1])
+            ))
+            ga_config['num_elites'] = int(trial.suggest_int(
+                'num_elites',
+                int(config.num_elites_range[0]),
+                int(config.num_elites_range[1])
+            ))
+            # Keep fixed overrides
+            ga_config['random_seed'] = config.optimization_seed
+            ga_config['verbose'] = False
+            return ga_config
+
+        # --- Full Phase 2 mode (original behaviour) ---
         ga_config = {}
-        
+
         ga_config['population_size'] = int(trial.suggest_int(
-            'population_size', 
-            int(config.population_size_range[0]), 
+            'population_size',
+            int(config.population_size_range[0]),
             int(config.population_size_range[1])
         ))
-        
+
         ga_config['n_generations'] = int(trial.suggest_int(
-            'n_generations', 
-            int(config.n_generations_range[0]), 
+            'n_generations',
+            int(config.n_generations_range[0]),
             int(config.n_generations_range[1])
         ))
-        
+
         ga_config['rules_per_individual'] = int(trial.suggest_int(
-            'rules_per_individual', 
-            int(config.rules_per_individual_range[0]), 
+            'rules_per_individual',
+            int(config.rules_per_individual_range[0]),
             int(config.rules_per_individual_range[1])
         ))
-        
+
         ga_config['max_possible_rules'] = int(config.max_possible_rules_range[1])
-        
+
         ga_config['crossover_prob'] = float(trial.suggest_float(
-            'crossover_prob', 
-            float(config.crossover_prob_range[0]), 
+            'crossover_prob',
+            float(config.crossover_prob_range[0]),
             float(config.crossover_prob_range[1])
         ))
-        
+
         ga_config['mutation_prob'] = float(trial.suggest_float(
-            'mutation_prob', 
-            float(config.mutation_prob_range[0]), 
+            'mutation_prob',
+            float(config.mutation_prob_range[0]),
             float(config.mutation_prob_range[1])
         ))
-        
+
         ga_config['tournament_size'] = int(trial.suggest_int(
-            'tournament_size', 
-            int(config.tournament_size_range[0]), 
+            'tournament_size',
+            int(config.tournament_size_range[0]),
             int(config.tournament_size_range[1])
         ))
-        
+
         ga_config['num_elites'] = int(trial.suggest_int(
-            'num_elites', 
-            int(config.num_elites_range[0]), 
+            'num_elites',
+            int(config.num_elites_range[0]),
             int(config.num_elites_range[1])
         ))
-        
+
         if getattr(config, 'optimize_weight_penalty', False):
             ga_config['inactive_weight_penalty'] = float(trial.suggest_float(
                 'inactive_weight_penalty',
@@ -592,28 +654,28 @@ class HyperparameterOptimizer:
             ))
         else:
             ga_config['inactive_weight_penalty'] = float(getattr(config, 'inactive_weight_penalty', 0.0))
-        
+
         # Fixed parameters
         ga_config['random_seed'] = config.optimization_seed
         ga_config['verbose'] = False  # Keep quiet during optimization
-        
+
         # Ensure max_possible_rules >= rules_per_individual
         if ga_config['max_possible_rules'] < ga_config['rules_per_individual']:
             ga_config['max_possible_rules'] = ga_config['rules_per_individual']
-        
+
         # Mask coverage (Sparsity) targets
         ga_config['target_sparsity'] = float(trial.suggest_float(
             'target_sparsity',
             float(config.target_sparsity_range[0]),
             float(config.target_sparsity_range[1])
         ))
-        
+
         ga_config['sparsity_radius'] = float(trial.suggest_float(
             'sparsity_radius',
             float(config.sparsity_radius_range[0]),
             float(config.sparsity_radius_range[1])
         ))
-        
+
         return ga_config
     
     def objective_feature_weights(self, trial: optuna.Trial) -> float:
@@ -631,10 +693,17 @@ class HyperparameterOptimizer:
             # Suggest feature weights
             feature_weights = self.suggest_feature_weights(trial)
             
+            # Use baseline GA config, overridden by Proxy config if requested
+            ga_config = self.json_ga_config.copy()
+            if getattr(config, 'use_proxy_ga_config', False):
+                proxy_config = getattr(config, 'proxy_ga_config', {})
+                for key, value in proxy_config.items():
+                    ga_config[key] = value
+
             # Update the existing optimizer with new feature weights
             self.update_optimizer_config(
                 feature_weights=feature_weights,
-                ga_params=self.json_ga_config  # Use baseline GA config for Phase 1
+                ga_params=ga_config
             )
             
             if config.verbosity >= 2:
@@ -649,7 +718,7 @@ class HyperparameterOptimizer:
                 t_fit, _, _, _, _, _, _, _ = self.genetic_optimizer.get_fitness_breakdown(best_ind)
                 # p_fit (probe) - use penalized probe for pruning in Phase 1
                 p_fit = self.genetic_optimizer.eval_on_probe(best_ind, penalized=True)
-                blended = 0.7 * t_fit + 0.3 * p_fit
+                blended = 0.3 * t_fit + 0.7 * p_fit
                 
                 if blended > best_blended_so_far[0]:
                     best_blended_so_far[0] = blended
@@ -697,7 +766,7 @@ class HyperparameterOptimizer:
                 # Penalize probe as well to maintain consistency in Phase 1
                 probe_fitness = self.genetic_optimizer.eval_on_probe(best_ind, penalized=True)
                 
-                run_fit = 0.7 * train_fitness + 0.3 * probe_fitness
+                run_fit = 0.3 * train_fitness + 0.7 * probe_fitness
                 run_fitnesses.append(run_fit)
                 
                 if config.verbosity >= 1:
@@ -801,7 +870,7 @@ class HyperparameterOptimizer:
                 if getattr(config, 'optimize_weight_penalty', False):
                     blended = p_fit
                 else:
-                    blended = 0.7 * t_fit + 0.3 * p_fit
+                    blended = 0.3 * t_fit + 0.7 * p_fit
                 
                 if blended > best_blended_so_far[0]:
                     best_blended_so_far[0] = blended
@@ -852,7 +921,7 @@ class HyperparameterOptimizer:
                 if getattr(config, 'optimize_weight_penalty', False):
                     run_fit = probe_fitness
                 else:
-                    run_fit = 0.7 * train_fitness + 0.3 * probe_fitness
+                    run_fit = 0.3 * train_fitness + 0.7 * probe_fitness
                     
                 run_fitnesses.append(run_fit)
                 
@@ -1039,12 +1108,25 @@ class HyperparameterOptimizer:
         from tqdm import tqdm
         start_time = time.time()
         completed_trials = len(study.trials)
-        remaining_trials = config.ga_config_trials - completed_trials
-        
+        sparsity_only = getattr(config, 'sparsity_only_phase2', False)
+        target_trials = (
+            getattr(config, 'ga_config_sparsity_only_trials', 50)
+            if sparsity_only else config.ga_config_trials
+        )
+        remaining_trials = target_trials - completed_trials
+
         if remaining_trials <= 0:
-            logger.info(f"GA config optimization already has {completed_trials} trials (target: {config.ga_config_trials}). Skipping optimization.")
+            logger.info(
+                f"GA config optimization already has {completed_trials} trials "
+                f"(target: {target_trials}{'  [sparsity-only]' if sparsity_only else ''}). "
+                "Skipping optimization."
+            )
         else:
-            logger.info(f"GA config optimization starting with {completed_trials} existing trials. Running {remaining_trials} remaining trials.")
+            mode_tag = '  [sparsity-only: target_sparsity + sparsity_radius only]' if sparsity_only else ''
+            logger.info(
+                f"GA config optimization starting with {completed_trials} existing trials. "
+                f"Running {remaining_trials} remaining trials.{mode_tag}"
+            )
             for _ in tqdm(range(remaining_trials), desc="Optimizing GA Config"):
                 study.optimize(
                     self.objective_ga_config, 
@@ -1053,21 +1135,41 @@ class HyperparameterOptimizer:
                 )
         end_time = time.time()
         
-        # Reconstruct best GA config from stored trial params
+        # Reconstruct best GA config from stored trial params.
+        # In sparsity-only mode, only target_sparsity and sparsity_radius are trial params;
+        # the rest were pinned from json_ga_config — merge them back in here.
+        sparsity_only = getattr(config, 'sparsity_only_phase2', False)
         best_trial = study.best_trial
-        best_ga_config = {
-            'population_size':      int(best_trial.params['population_size']),
-            'n_generations':        int(best_trial.params['n_generations']),
-            'rules_per_individual': int(best_trial.params['rules_per_individual']),
-            'max_possible_rules':   int(best_trial.params.get('max_possible_rules', config.max_possible_rules_range[1])),
-            'crossover_prob':       float(best_trial.params['crossover_prob']),
-            'mutation_prob':        float(best_trial.params['mutation_prob']),
-            'tournament_size':      int(best_trial.params['tournament_size']),
-            'num_elites':           int(best_trial.params['num_elites']),
-            'inactive_weight_penalty': float(best_trial.params.get('inactive_weight_penalty', getattr(config, 'inactive_weight_penalty', 0.0))),
-            'target_sparsity':      float(best_trial.params.get('target_sparsity', getattr(config, 'target_sparsity', 0.4))),
-            'sparsity_radius':      float(best_trial.params.get('sparsity_radius', getattr(config, 'sparsity_radius', 0.2))),
-        }
+
+        if sparsity_only:
+            best_ga_config = {k: v for k, v in self.json_ga_config.items()
+                              if k not in ('fitness',)}
+            for int_key in ('population_size', 'n_generations', 'rules_per_individual',
+                            'max_possible_rules'):
+                if int_key in best_ga_config:
+                    best_ga_config[int_key] = int(best_ga_config[int_key])
+            for float_key in ('crossover_prob', 'mutation_prob',
+                              'inactive_weight_penalty'):
+                if float_key in best_ga_config:
+                    best_ga_config[float_key] = float(best_ga_config[float_key])
+            best_ga_config['target_sparsity'] = float(best_trial.params['target_sparsity'])
+            best_ga_config['sparsity_radius']  = float(best_trial.params['sparsity_radius'])
+            best_ga_config['tournament_size']  = int(best_trial.params['tournament_size'])
+            best_ga_config['num_elites']        = int(best_trial.params['num_elites'])
+        else:
+            best_ga_config = {
+                'population_size':      int(best_trial.params['population_size']),
+                'n_generations':        int(best_trial.params['n_generations']),
+                'rules_per_individual': int(best_trial.params['rules_per_individual']),
+                'max_possible_rules':   int(best_trial.params.get('max_possible_rules', config.max_possible_rules_range[1])),
+                'crossover_prob':       float(best_trial.params['crossover_prob']),
+                'mutation_prob':        float(best_trial.params['mutation_prob']),
+                'tournament_size':      int(best_trial.params['tournament_size']),
+                'num_elites':           int(best_trial.params['num_elites']),
+                'inactive_weight_penalty': float(best_trial.params.get('inactive_weight_penalty', getattr(config, 'inactive_weight_penalty', 0.0))),
+                'target_sparsity':      float(best_trial.params.get('target_sparsity', getattr(config, 'target_sparsity', 0.4))),
+                'sparsity_radius':      float(best_trial.params.get('sparsity_radius', getattr(config, 'sparsity_radius', 0.2))),
+            }
         
         # Ensure max_possible_rules >= rules_per_individual
         best_ga_config['max_possible_rules'] = max(

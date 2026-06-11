@@ -4,9 +4,14 @@ import metrics
 @tf.function(reduce_retracing=True)
 def generate_dynamic_mask(patch_features, rule_tensor):
     """
-    Fully vectorized mask generation for a batch of images.
+    Fully vectorized soft mask generation for a batch of images.
     patch_features: [Batch, H, W, F]
     rule_tensor: [Rules, 4] (feature_idx, threshold, operator, action)
+
+    Returns a soft float32 mask in [0, 1] instead of a hard binary int8 mask.
+    Each patch weight = fraction_of_include_rules_fired - fraction_of_exclude_rules_fired,
+    clipped to [0, 1].  Patches unanimously selected get 1.0; patches with mixed
+    signals get fractional weights; excluded patches get 0.0.
     """
     # Extract rule components from tensor
     feature_indices = tf.cast(rule_tensor[:, 0], tf.int32)
@@ -17,42 +22,45 @@ def generate_dynamic_mask(patch_features, rule_tensor):
     # Filter rules by action: 1 = Include, 0 = Exclude
     include_mask = tf.logical_and(feature_indices >= 0, actions == 1)
     exclude_mask = tf.logical_and(feature_indices >= 0, actions == 0)
-    
+
     # 1. Compute for ALL rules to keep shapes static
     max_f = tf.shape(patch_features)[-1] - 1
     safe_indices = tf.clip_by_value(feature_indices, 0, max_f)
-    
+
     # [Batch, H, W, Rules]
     selected_features = tf.gather(patch_features, safe_indices, axis=-1)
-    
+
     # Broadcast thresholds and operators
     is_greater = tf.logical_and(tf.equal(operators, 0), selected_features > thresholds)
     is_less    = tf.logical_and(tf.equal(operators, 1), selected_features < thresholds)
-    
+
     # rule_results: [Batch, H, W, Rules]
     rule_results = tf.logical_or(is_greater, is_less)
-    
-    def evaluate_rules(v_mask):
-        # v_mask: [Rules] -> reshape to [1, 1, 1, Rules]
-        v_mask_reshaped = tf.reshape(v_mask, [1, 1, 1, -1])
-        valid_rule_results = tf.logical_and(rule_results, v_mask_reshaped)
-        # Reduce over the Rules dimension
-        return tf.reduce_any(valid_rule_results, axis=-1)
+    rule_results_f = tf.cast(rule_results, tf.float32)
 
-    # Final mask = (Any Include Rule matches) AND NOT (Any Exclude Rule matches)
-    final_include = evaluate_rules(include_mask)
-    final_exclude = evaluate_rules(exclude_mask)
-    
-    final_mask = tf.logical_and(final_include, tf.logical_not(final_exclude))
-    
+    # --- Soft Aggregation ---
+    # Count effective include/exclude rules (valid = index >= 0 AND correct action)
+    n_include = tf.reduce_sum(tf.cast(include_mask, tf.float32))  # scalar
+    n_exclude = tf.reduce_sum(tf.cast(exclude_mask, tf.float32))  # scalar
+
+    # Broadcast validity masks: [1, 1, 1, Rules]
+    include_mask_r = tf.reshape(tf.cast(include_mask, tf.float32), [1, 1, 1, -1])
+    exclude_mask_r = tf.reshape(tf.cast(exclude_mask, tf.float32), [1, 1, 1, -1])
+
+    # Vote fractions per patch: [Batch, H, W]
+    include_votes = tf.reduce_sum(rule_results_f * include_mask_r, axis=-1) / tf.maximum(n_include, 1.0)
+    exclude_votes = tf.reduce_sum(rule_results_f * exclude_mask_r, axis=-1) / tf.maximum(n_exclude, 1.0)
+
+    # Soft mask: positive = net include preference, clipped to [0, 1]
+    soft_mask = tf.clip_by_value(include_votes - exclude_votes, 0.0, 1.0)
+
     # --- Anti-Dummy Rule Check ---
     # A rule is considered 'active' if it actually discriminates with significant coverage.
     # It must have between 1% and 99% mean activation across all patches in the batch.
-    # rule_results shape: [Batch, H, W, Rules]
-    rule_means = tf.reduce_mean(tf.cast(rule_results, tf.float32), axis=[0, 1, 2])
+    rule_means = tf.reduce_mean(rule_results_f, axis=[0, 1, 2])
     rule_activity_mask = tf.logical_and(rule_means > 0.01, rule_means < 0.99)
-    
-    return tf.cast(final_mask, tf.int8), tf.cast(rule_activity_mask, tf.int8)
+
+    return soft_mask, tf.cast(rule_activity_mask, tf.int8)
 
 
 @tf.function
@@ -154,41 +162,46 @@ def compute_batch_divergence_score(masked_feature_vectors, labels, feature_weigh
 def compute_image_scores(precomputed_features, feature_weights, individual_rule_tensor):
     """
     Process all images in a single vectorized pass.
+    patch_mask is now a soft float32 mask in [0, 1] (from generate_dynamic_mask).
     """
     # 1. Generate masks for the entire batch at once
-    # patch_mask: [Batch, H, W], rule_activity: [Rules]
+    # patch_mask: [Batch, H, W] float32 in [0,1], rule_activity: [Rules] int8
     patch_mask, rule_activity = generate_dynamic_mask(precomputed_features, individual_rule_tensor)
-    
+
     # 2. Calculate connectivity for the entire batch
+    # calculate_connectivity already accepts float masks via tf.cast internally
     # [Batch]
     connectivity_scores = calculate_connectivity(patch_mask)
-    
-    # 3. Calculate active patch counts
-    # [Batch]
-    active_patches_per_image = tf.reduce_sum(tf.cast(patch_mask, tf.int32), axis=[-2, -1])
-    
-    # 4. Calculate mean feature vectors for the batch
+
+    # 3. Effective active patch count = sum of soft weights per image
+    # For soft masks this gives fractional coverage; for binary masks it equals patch count
+    # [Batch] — float32 (sum of weights per image)
+    active_patches_per_image = tf.reduce_sum(patch_mask, axis=[-2, -1])
+
+    # 4. Calculate soft-weighted mean feature vectors for the batch
+    # patch_mask is already float32 — no cast needed
     # [Batch, H, W, 1]
-    patch_mask_f = tf.expand_dims(tf.cast(patch_mask, tf.float32), axis=-1)
+    patch_mask_f = tf.expand_dims(patch_mask, axis=-1)
     # [Batch, H, W, F]
     masked_features = precomputed_features * patch_mask_f
-    
-    active_f = tf.cast(active_patches_per_image, tf.float32)
+
+    # Normalise by effective patch count (sum of weights)
     # [Batch, F]
     sum_features = tf.reduce_sum(masked_features, axis=[1, 2])
-    masked_feature_vectors = sum_features / (tf.expand_dims(active_f, -1) + 1e-8)
+    masked_feature_vectors = sum_features / (tf.expand_dims(active_patches_per_image, -1) + 1e-8)
     masked_feature_vectors = tf.clip_by_value(masked_feature_vectors, 0.0, 1.0)
 
     return masked_feature_vectors, active_patches_per_image, connectivity_scores, rule_activity
 
 
 @tf.function(reduce_retracing=True)
-def evaluate_ga_individual(precomputed_features, labels, feature_weights, 
+def evaluate_ga_individual(precomputed_features, labels, feature_weights,
                            individual_rule_tensor, n_patches_h, n_patches_w,
                            fitness_weights, max_possible_rules, inactive_penalty,
                            target_sparsity, sparsity_radius):
     """
     Vectorized evaluation of a single GA individual.
+    active_patches is now a float32 sum-of-weights per image (soft mask semantics).
     """
     # --- Image Scoring ---
     masked_feature_vectors, active_patches, connectivity_scores, rule_activity = compute_image_scores(
@@ -197,7 +210,8 @@ def evaluate_ga_individual(precomputed_features, labels, feature_weights,
 
     # --- Component Scores ---
     n_total_patches = tf.cast(n_patches_h * n_patches_w, tf.float32)
-    mean_active = tf.reduce_mean(tf.cast(active_patches, tf.float32))
+    # active_patches is already float32 (sum of soft weights per image)
+    mean_active = tf.reduce_mean(active_patches)
     sparsity = mean_active / (n_total_patches + 1e-8)
 
     # 1. Divergence with Sparsity Gate (Prevents overfitting to tiny patch samples)
