@@ -340,7 +340,7 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 
                 # Enable validation checkpointing by precomputing probe features
                 logger.info("Precomputing probe features for validation checkpointing...")
-                genetic_optimizer.precompute_probe_features()
+                genetic_optimizer.precompute_probe_features(generators=config.train_generators)
                 
                 with tf.profiler.experimental.Trace(f'genetic_optimization_phase_search_run_{i}'):
                     results = genetic_optimizer.run()
@@ -352,7 +352,9 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 mask_sparsity_mean = results.get('mask_sparsity_mean')
                 mask_sparsity_std  = results.get('mask_sparsity_std')
                 
-                fitness = results['best_fitness']
+                fitness = results.get('best_probe_fitness')
+                if fitness is None:
+                    fitness = results['best_fitness']
                 if fitness > best_overall_fitness:
                     best_overall_fitness = fitness
                     best_overall_ruleset = results['best_individual'].rules_tensor
@@ -380,7 +382,7 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 
                 # Enable validation checkpointing by precomputing probe features
                 logger.info("Precomputing probe features for validation checkpointing...")
-                genetic_optimizer.precompute_probe_features()
+                genetic_optimizer.precompute_probe_features(generators=config.train_generators)
                 
                 with tf.profiler.experimental.Trace(f'genetic_optimization_phase_search_run_{i}'):
                     results = genetic_optimizer.run()
@@ -392,7 +394,9 @@ def run_experiment(mask_mode: str, generator_train: list, generator_test: list) 
                 mask_sparsity_mean = results['mask_sparsity_mean']
                 mask_sparsity_std  = results['mask_sparsity_std']
                 
-                fitness = results['best_fitness']
+                fitness = results.get('best_probe_fitness')
+                if fitness is None:
+                    fitness = results['best_fitness']
                 if fitness > best_overall_fitness:
                     best_overall_fitness = fitness
                     best_overall_ruleset = results['best_individual'].rules_tensor if 'best_individual' in results else None

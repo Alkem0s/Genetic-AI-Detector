@@ -308,7 +308,7 @@ class HyperparameterOptimizer:
             with open(config.ga_config_output_file, 'r') as f:
                 self.json_ga_config = json.load(f)
                 
-            # Proxy GA config overrides are now applied on-the-fly in Phase 1 (objective_feature_weights) 
+            # Probe GA config overrides are now applied on-the-fly in Phase 1 (objective_feature_weights) 
             # to prevent polluting the base configuration for Phase 2.
                     
         except Exception as e:
@@ -693,11 +693,11 @@ class HyperparameterOptimizer:
             # Suggest feature weights
             feature_weights = self.suggest_feature_weights(trial)
             
-            # Use baseline GA config, overridden by Proxy config if requested
+            # Use baseline GA config, overridden by Probe config if requested
             ga_config = self.json_ga_config.copy()
-            if getattr(config, 'use_proxy_ga_config', False):
-                proxy_config = getattr(config, 'proxy_ga_config', {})
-                for key, value in proxy_config.items():
+            if getattr(config, 'use_probe_ga_config', False):
+                probe_config = getattr(config, 'probe_ga_config', {})
+                for key, value in probe_config.items():
                     ga_config[key] = value
 
             # Update the existing optimizer with new feature weights
@@ -786,12 +786,17 @@ class HyperparameterOptimizer:
                             logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} < {config.min_fitness_threshold})")
                         raise optuna.TrialPruned()
                     
-                    if self.best_fitness > 0 and run_fit < self.best_fitness * 0.85:
+                    # Compute average fitness of all completed trials so far as the baseline reference
+                    completed_values = [t.value for t in trial.study.trials if t.value is not None]
+                    reference_fitness = float(np.mean(completed_values)) if completed_values else 0.0
+                    
+                    if reference_fitness > 0 and run_fit < reference_fitness * getattr(config, 'fast_fail_tolerance', 0.85):
                         if config.verbosity >= 1:
-                            logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} << best {self.best_fitness:.4f})")
+                            logger.info(f"Trial {trial.number}: Fast failing after Run 0 (fit {run_fit:.4f} << avg {reference_fitness:.4f})")
                         raise optuna.TrialPruned()
             
-            fitness = float(np.mean(run_fitnesses))
+            # Prioritize the best run's fitness (max) instead of the mean to match the training behavior
+            fitness = float(best_fit_overall)
             best_ind = best_ind_overall
             # -----------------------------------------------------------
             
@@ -803,7 +808,7 @@ class HyperparameterOptimizer:
             fitness = float(np.nan_to_num(fitness, nan=-1.0, posinf=-1.0, neginf=-1.0))
             
             if config.verbosity >= 1:
-                logger.info(f"Trial {trial.number}: Averaged Fitness = {fitness:.4f}")
+                logger.info(f"Trial {trial.number}: Best Run Fitness = {fitness:.4f}")
             
             # Update internal best for tracking
             if fitness > self.best_fitness:
@@ -942,12 +947,17 @@ class HyperparameterOptimizer:
                             logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} < {config.min_fitness_threshold})")
                         raise optuna.TrialPruned()
                     
-                    if self.best_fitness > 0 and run_fit < self.best_fitness * 0.85:
+                    # Compute average fitness of all completed trials so far as the baseline reference
+                    completed_values = [t.value for t in trial.study.trials if t.value is not None]
+                    reference_fitness = float(np.mean(completed_values)) if completed_values else 0.0
+                    
+                    if reference_fitness > 0 and run_fit < reference_fitness * getattr(config, 'fast_fail_tolerance', 0.85):
                         if config.verbosity >= 1:
-                            logger.info(f"Trial {trial.number}: Fast failing after Run 0 (probe {probe_fitness:.4f} << best {self.best_fitness:.4f})")
+                            logger.info(f"Trial {trial.number}: Fast failing after Run 0 (fit {run_fit:.4f} << avg {reference_fitness:.4f})")
                         raise optuna.TrialPruned()
             
-            fitness = float(np.mean(run_fitnesses))
+            # Prioritize the best run's fitness (max) instead of the mean to match the training behavior
+            fitness = float(best_fit_overall)
             best_ind = best_ind_overall
             
             # Calculate compute effort penalty to discourage bloated runs

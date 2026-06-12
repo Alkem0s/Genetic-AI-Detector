@@ -9,7 +9,7 @@ Modify these values to control the optimization process.
 # =============================================================================
 
 # Number of trials for each optimization phase
-feature_weight_trials = 100  # Trials for optimizing feature weights
+feature_weight_trials = 60  # Trials for optimizing feature weights
 ga_config_trials = 100       # Trials for optimizing GA configuration
 
 # Sparsity-only Phase 2 mode (used after the soft-mask change).
@@ -31,17 +31,17 @@ optimization_seed = 42
 verbosity = 1
 
 # Multi-run averaging for robust objective evaluation
-num_ga_runs_per_trial = 1
+num_ga_runs_per_trial = 3
 deterministic_trial_seeding = True
 
 # Feature weight usage regularization/penalty
 optimize_weight_penalty = True
 inactive_weight_penalty = 0.2  # Used as fixed penalty if optimize_weight_penalty is False
 
-# Proxy GA Configuration used DURING Phase 1 optimization
-# These will override best_ga_config.json for Phase 1.
-use_proxy_ga_config = True
-proxy_ga_config = {
+# Probe GA Configuration used DURING Phase 1 optimization
+# If True, Phase 1 uses this probe configuration; if False, it uses the best config (best_ga_config.json).
+use_probe_ga_config = False
+probe_ga_config = {
     "population_size": 180,
     "n_generations": 120,
     "rules_per_individual": 8,
@@ -109,7 +109,7 @@ compute_penalty_coefficient = 5e-7  # Halved from 1e-6 (0.005 penalty per 10,000
 
 # Enable pruning for faster optimization
 enable_pruning = True
-pruning_warmup_steps = 50  # Number of generations before pruning can occur
+pruning_warmup_steps = 40  # Number of generations before pruning can occur
 pruning_interval = 5      # Check for pruning every N generations
 
 # The percentile of trials to KEEP. Optuna's PercentilePruner keeps the top X%
@@ -121,6 +121,11 @@ prune_percentile = 75.0
 # Set to 0 initially — the divergence score starts near 0 for random rule sets
 # and the scale differs from the old balanced_accuracy + f1 scheme.
 min_fitness_threshold = 0.0
+
+# Tolerance factor for the fast fail mechanism.
+# A trial will only fast fail after Run 0 if its fitness is below this fraction of the best fitness so far.
+# Set to a lower value (e.g. 0.60) for high-variance GA objectives to prevent premature pruning.
+fast_fail_tolerance = 0.75
 
 # =============================================================================
 # OUTPUT CONFIGURATION  

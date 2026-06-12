@@ -85,6 +85,6 @@ cnn_dropout_2 = 0.3
 cnn_dense_units = 256
 cnn_l2_reg = 0.0
 cnn_optimizer = "adam"
-cnn_early_stopping_patience = 10
+cnn_early_stopping_patience = 20
 
 

@@ -247,7 +247,7 @@ class GeneticFeatureOptimizer:
         else:
             logger.info("Features already computed. Use force=True to recompute.")
 
-    def precompute_probe_features(self, images=None, labels=None):
+    def precompute_probe_features(self, images=None, labels=None, generators=None):
         """
         Precompute and cache features for the probe dataset once.
         Processes in batches to avoid GPU OOM.
@@ -259,6 +259,7 @@ class GeneticFeatureOptimizer:
         Args:
             images: Optional numpy array of images. If None, loaded via DataLoader.
             labels: Optional numpy array of labels. If None, loaded via DataLoader.
+            generators: Optional list of generator names. If None, loaded via DataLoader.
         """
         if hasattr(self, 'precomputed_probe_features') and self.precomputed_probe_features is not None:
             return
@@ -277,9 +278,11 @@ class GeneticFeatureOptimizer:
             from data_loader import DataLoader
             dl = DataLoader()
             logger.info("Loading probe features batch-by-batch via Dataset to save RAM...")
+            target_gens = generators if generators is not None else self.config.val_generators
             val_ds = dl.create_val_dataset(
                 sample_size=self.config.probe_sample_size,
-                batch_size=self.config.extraction_batch_size
+                batch_size=self.config.extraction_batch_size,
+                generators=target_gens
             )
             
             all_probe_features = []
@@ -1001,6 +1004,13 @@ class GeneticFeatureOptimizer:
         # Get components for the final best individual
         best_penalized, div, eff, conn, simp, best_true, inactive, p_amt = self.get_fitness_breakdown(best_ind)
         
+        # Calculate probe fitness if available
+        probe_fitness = None
+        if hasattr(self, 'precomputed_probe_features') and self.precomputed_probe_features is not None:
+            # Match the penalization setup to get generalizable features
+            probe_fitness = self.eval_on_probe(best_ind, penalized=(self.inactive_penalty_tf > 0.0))
+            logger.info(f"[{run_id}] Validation Probe Fitness: {probe_fitness:.4f}")
+
         logger.info(f"Best fitness: {best_ind.fitness.values[0]:.4f} (True Fit={best_true:.4f})")
         if p_amt > 0:
             logger.info(f"Inactive Penalty: -{p_amt:.4f} (Missing: {', '.join(inactive)})")
@@ -1019,6 +1029,7 @@ class GeneticFeatureOptimizer:
             'best_individual': best_ind,
             'best_fitness': best_ind.fitness.values[0],
             'best_true_fitness': self.get_unpenalized_fitness(best_ind),
+            'best_probe_fitness': probe_fitness,
             'best_rules_tensor': best_ind.rules_tensor.numpy().tolist(),
             'best_feature_importance': self.get_feature_importance(best_ind),
             'rule_count': best_ind.num_active_rules,
