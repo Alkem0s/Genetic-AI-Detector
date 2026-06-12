@@ -102,14 +102,28 @@ class _RandomMaskPipeline(FeaturePipeline):
         self._random_generator = random_generator
 
     def _generate_mask(self, patch_features: tf.Tensor) -> tf.Tensor:
-        """Override: produce a batch of random binary masks statelessly."""
+        """Override: produce a batch of random binary masks statelessly and batch-independently."""
         batch_size = tf.shape(patch_features)[0]
-        # Generate a seed from the patch features to make it stateless but pseudo-random per batch
-        feature_sum = tf.reduce_sum(patch_features)
-        seed_val = tf.cast(tf.abs(feature_sum * 1000.0), tf.int32)
+        
+        # Calculate per-image sums across all patches and feature channels: shape [batch_size]
+        per_image_sums = tf.reduce_sum(patch_features, axis=[1, 2, 3])
+        
+        # Generate individual seed integers: shape [batch_size]
         base_seed = config.random_seed if config.random_seed is not None else 42
-        seed = tf.stack([seed_val + base_seed, seed_val + base_seed + 13])
-        return self._random_generator.generate_stateless(batch_size, self.n_patches_h, self.n_patches_w, seed)
+        seed_ints = tf.cast(tf.abs(per_image_sums * 1000.0), tf.int32)
+        
+        # Create a [batch_size, 2] tensor of seeds
+        seeds = tf.stack([seed_ints + base_seed, seed_ints + base_seed + 13], axis=1)
+        
+        # Helper to generate a stateless random mask for a single image's seed
+        def generate_single_mask(seed):
+            shape = tf.stack([self.n_patches_h, self.n_patches_w])
+            flat = tf.random.stateless_uniform(shape, seed=seed, dtype=tf.float32)
+            binary = tf.cast(flat < self._random_generator.target_sparsity, tf.float32)
+            return binary
+            
+        # Map stateless mask generation over each individual seed in the batch
+        return tf.map_fn(generate_single_mask, seeds, fn_output_signature=tf.float32)
 
 
 # Check if mixed precision is available and supported
