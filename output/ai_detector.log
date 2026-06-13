@@ -1,0 +1,1438 @@
+2026-06-13 06:02:01,396 - ai_detector_main - INFO - Console output will also be saved to output/ai_detector.log
+2026-06-13 06:02:01,397 - ai_detector_main - ERROR - Error setting up GPU: Physical devices cannot be modified after being initialized
+2026-06-13 06:02:01,398 - ai_detector_main - INFO - Mixed precision enabled (float16)
+2026-06-13 06:02:01,398 - ai_detector_main - INFO - === Running in mask_mode='none' ===
+2026-06-13 06:02:01,399 - ai_detector_main - INFO - 
+======================================================================
+  run_experiment  mask_mode='none'
+  train=['ADM', 'glide', 'wukong']  test=['ADM', 'glide', 'wukong']
+======================================================================
+2026-06-13 06:02:01,432 - ai_detector_main - INFO - Successfully loaded GA parameters from best_ga_config.json
+2026-06-13 06:02:01,439 - ai_detector_main - INFO - Loading optimized CNN parameters for mask_mode 'none' from best_cnn_config_none_scaled.json:
+2026-06-13 06:02:01,439 - ai_detector_main - INFO -   cnn_learning_rate = 0.002146385137578536
+2026-06-13 06:02:01,440 - ai_detector_main - INFO -   cnn_dropout_1 = 0.38090022363163806
+2026-06-13 06:02:01,440 - ai_detector_main - INFO -   cnn_dropout_2 = 0.14942585490944932
+2026-06-13 06:02:01,441 - ai_detector_main - INFO -   cnn_dense_units = 832
+2026-06-13 06:02:01,441 - ai_detector_main - INFO -   cnn_l2_reg = 1.787753934560751e-05
+2026-06-13 06:02:01,442 - ai_detector_main - INFO -   cnn_optimizer = adam
+2026-06-13 06:02:01,442 - ai_detector_main - INFO - === Step 1: Loading and preparing datasets ===
+2026-06-13 06:02:01,442 - data_loader - INFO - Using folder-based dataset discovery...
+2026-06-13 06:02:01,513 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 06:02:01,654 - data_loader - INFO -     Found 9101 valid images in train/real
+2026-06-13 06:02:01,847 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 06:02:01,966 - data_loader - INFO -     Found 8988 valid images in train/real
+2026-06-13 06:02:02,037 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 06:02:02,091 - data_loader - INFO -     Found 8983 valid images in train/real
+2026-06-13 06:02:02,128 - data_loader - INFO - Crawled 54144 images from 3 generators (balanced per-generator).
+2026-06-13 06:02:02,163 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:02:02,198 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 06:02:02,255 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:02:02,306 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 06:02:02,362 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:02:02,407 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 06:02:02,415 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 06:02:02,426 - data_loader - INFO -   [Training] Balancing generators to 8983 images per class/model...
+2026-06-13 06:02:02,447 - data_loader - INFO -   [Validation/Test] Balancing generators to 2425 images per class/model...
+2026-06-13 06:02:02,452 - data_loader - INFO - Subsampling balanced training dataset from 53898 to 30000 total samples...
+2026-06-13 06:02:02,475 - data_loader - INFO - Stratified sampling allocated 30000 samples:
+2026-06-13 06:02:02,479 - data_loader - INFO -   Group ADM/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,479 - data_loader - INFO -   Group ADM/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,479 - data_loader - INFO -   Group glide/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,480 - data_loader - INFO -   Group glide/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,480 - data_loader - INFO -   Group wukong/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,480 - data_loader - INFO -   Group wukong/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,482 - data_loader - INFO - Subsampling balanced validation dataset from 14550 to 5000 total samples...
+2026-06-13 06:02:02,496 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 06:02:02,498 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,498 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,499 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,499 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,499 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,500 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:02:02,500 - data_loader - INFO - Final setup: 30000 training and 5000 testing samples
+2026-06-13 06:02:02,929 - data_loader - INFO - Skipping training image cache to preserve RAM (feature cache handles repeat-epoch efficiency).
+2026-06-13 06:02:02,930 - data_loader - INFO - Caching validation dataset in memory (as uint8) on CPU...
+2026-06-13 06:02:02,993 - data_loader - INFO - Creating sample dataset of 10000 images for feature extraction
+2026-06-13 06:02:03,008 - data_loader - INFO - Stratified sampling allocated 10000 samples:
+2026-06-13 06:02:03,011 - data_loader - INFO -   Group ADM/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:02:03,011 - data_loader - INFO -   Group ADM/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:02:03,012 - data_loader - INFO -   Group glide/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:02:03,012 - data_loader - INFO -   Group glide/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:02:03,013 - data_loader - INFO -   Group wukong/0: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 06:02:03,013 - data_loader - INFO -   Group wukong/1: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 06:02:03,014 - data_loader - INFO - Sample dataset label distribution:
+2026-06-13 06:02:03,016 - data_loader - INFO -   Label 0: 5000 images (50.0%)
+2026-06-13 06:02:03,016 - data_loader - INFO -   Label 1: 5000 images (50.0%)
+2026-06-13 06:02:03,017 - ai_detector_main - INFO - Created TensorFlow dataset pipeline for training and testing
+2026-06-13 06:02:03,018 - ai_detector_main - INFO - Starting 1 CNN baseline runs (flat structure)...
+2026-06-13 06:02:03,018 - ai_detector_main - INFO - 
+--- Baseline Run 1/1 with seed 42 ---
+2026-06-13 06:02:03,019 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 06:02:03,022 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 06:02:03,023 - model_architecture - INFO - Building model architecture. Use features: False
+2026-06-13 06:02:03,023 - model_architecture - INFO - Using compute dtype: float16, variable dtype: float32
+2026-06-13 06:02:03,725 - model_architecture - INFO - Building model without feature extraction branch.
+2026-06-13 06:02:03,769 - model_architecture - INFO - Using LossScaleOptimizer for mixed precision training
+2026-06-13 06:02:03,772 - model_architecture - INFO - Model compilation complete.
+2026-06-13 06:02:03,772 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 06:02:03,773 - model_architecture - INFO - ModelWrapper initialized. mask_mode='none'
+2026-06-13 06:02:03,773 - model_architecture - INFO - Starting model wrapper training.
+2026-06-13 06:02:03,773 - model_architecture - INFO - Using on-the-fly feature extraction (no disk cache).
+2026-06-13 06:02:04,438 - model_architecture - INFO - Starting model training...
+2026-06-13 06:53:40,728 - model_architecture - INFO - Model training complete.
+2026-06-13 06:53:40,729 - model_architecture - INFO - Saving complete model state to output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.*
+2026-06-13 06:53:40,729 - model_architecture - INFO - Saving model to output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.keras...
+2026-06-13 06:53:40,879 - model_architecture - INFO - Model saved successfully.
+2026-06-13 06:53:40,883 - model_architecture - INFO - Model state saved: output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.keras, output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0_config.json
+2026-06-13 06:53:40,884 - ai_detector_main - INFO - Evaluating Run 1...
+2026-06-13 06:53:46,017 - ai_detector_main - INFO - 
+Classification Report:
+2026-06-13 06:53:46,017 - ai_detector_main - INFO -             precision     recall   f1-score    support
+2026-06-13 06:53:46,018 - ai_detector_main - INFO -      Human     0.9863     0.9800     0.9831       2500
+2026-06-13 06:53:46,018 - ai_detector_main - INFO -         AI     0.9801     0.9864     0.9833       2500
+2026-06-13 06:53:46,018 - ai_detector_main - INFO - 
+balanced_accuracy: 0.9832
+2026-06-13 06:53:46,018 - ai_detector_main - INFO - 
+Confusion Matrix (rows=actual, cols=predicted):
+2026-06-13 06:53:46,018 - ai_detector_main - INFO -               Predicted Human  Predicted AI
+2026-06-13 06:53:46,019 - ai_detector_main - INFO - Actual Human            2450            50
+2026-06-13 06:53:46,019 - ai_detector_main - INFO - Actual AI                 34          2466
+2026-06-13 06:53:46,019 - ai_detector_main - INFO - Run 1 Accuracy: 0.9832  Loss: 0.0821
+2026-06-13 06:53:46,020 - model_architecture - INFO - Saving complete model state to output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 06:53:46,020 - model_architecture - INFO - Saving model to output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.keras...
+2026-06-13 06:53:46,181 - model_architecture - INFO - Model saved successfully.
+2026-06-13 06:53:46,183 - model_architecture - INFO - Model state saved: output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.keras, output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong_config.json
+2026-06-13 06:53:46,328 - ai_detector_main - INFO - Saved best model (accuracy: 0.9832) to output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 06:53:46,329 - ai_detector_main - INFO - 
+============================== experiment summary (averaged over 1 runs) ==============================
+2026-06-13 06:53:46,330 - ai_detector_main - INFO - Test accuracy: 0.9832 (std=0.0000)
+2026-06-13 06:53:46,332 - ai_detector_main - INFO - Test loss:     0.0821 (std=0.0000)
+2026-06-13 06:53:46,334 - ai_detector_main - INFO - Test F1:       0.9833
+2026-06-13 06:53:46,971 - Visualizer - INFO - Saved figure to output/training_history_none__train_ADM_glide_wukong__test_ADM_glide_wukong.png
+2026-06-13 06:53:47,170 - Visualizer - INFO - Saved figure to output/confusion_matrix_none__train_ADM_glide_wukong__test_ADM_glide_wukong.png
+2026-06-13 06:53:47,173 - ai_detector_main - INFO - Results saved → output/results_none__train_ADM_glide_wukong__test_ADM_glide_wukong.json
+2026-06-13 06:53:47,180 - ai_detector_main - INFO - Loading existing model and rules from output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 06:53:47,181 - model_architecture - INFO - Loading complete model state from output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 06:53:47,191 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 06:53:47,194 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 06:53:47,194 - model_architecture - INFO - Building model architecture. Use features: False
+2026-06-13 06:53:47,194 - model_architecture - INFO - Using compute dtype: float16, variable dtype: float32
+2026-06-13 06:53:47,231 - model_architecture - INFO - Building model without feature extraction branch.
+2026-06-13 06:53:47,267 - model_architecture - INFO - Using LossScaleOptimizer for mixed precision training
+2026-06-13 06:53:47,271 - model_architecture - INFO - Model compilation complete.
+2026-06-13 06:53:47,272 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 06:53:47,272 - model_architecture - INFO - ModelWrapper initialized. mask_mode='none'
+2026-06-13 06:53:47,275 - model_architecture - INFO - Loading model from output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.keras...
+2026-06-13 06:53:47,427 - model_architecture - INFO - Model loaded successfully. Use features: False
+2026-06-13 06:53:47,427 - model_architecture - INFO - Model state loaded from: output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong.keras, output/model_none__train_ADM_glide_wukong__test_ADM_glide_wukong_config.json
+2026-06-13 06:53:47,428 - ai_detector_main - INFO - Model state loaded successfully.
+2026-06-13 06:53:47,429 - ai_detector_main - INFO - AI detector pipeline completed successfully
+2026-06-13 06:53:53,203 - ai_detector_main - INFO - Console output will also be saved to output/ai_detector.log
+2026-06-13 06:53:53,204 - ai_detector_main - ERROR - Error setting up GPU: Physical devices cannot be modified after being initialized
+2026-06-13 06:53:53,205 - ai_detector_main - INFO - Mixed precision enabled (float16)
+2026-06-13 06:53:53,206 - ai_detector_main - INFO - === Running in mask_mode='ga' ===
+2026-06-13 06:53:53,206 - ai_detector_main - INFO - 
+======================================================================
+  run_experiment  mask_mode='ga'
+  train=['ADM', 'glide', 'wukong']  test=['ADM', 'glide', 'wukong']
+======================================================================
+2026-06-13 06:53:53,219 - ai_detector_main - INFO - Successfully loaded GA parameters from best_ga_config.json
+2026-06-13 06:53:53,243 - ai_detector_main - INFO - Loading optimized CNN parameters for mask_mode 'ga' from best_cnn_config_ga_scaled.json:
+2026-06-13 06:53:53,244 - ai_detector_main - INFO -   cnn_learning_rate = 0.0010927159763666227
+2026-06-13 06:53:53,244 - ai_detector_main - INFO -   cnn_dropout_1 = 0.16775727351607025
+2026-06-13 06:53:53,245 - ai_detector_main - INFO -   cnn_dropout_2 = 0.3440874100478203
+2026-06-13 06:53:53,246 - ai_detector_main - INFO -   cnn_dense_units = 960
+2026-06-13 06:53:53,246 - ai_detector_main - INFO -   cnn_l2_reg = 0.0007565311865382789
+2026-06-13 06:53:53,247 - ai_detector_main - INFO -   cnn_optimizer = adam
+2026-06-13 06:53:53,310 - ai_detector_main - INFO - Cleared feature cache directory at output/feature_cache for fresh GA experiment.
+2026-06-13 06:53:53,311 - ai_detector_main - INFO - === Step 1: Loading and preparing datasets ===
+2026-06-13 06:53:53,311 - data_loader - INFO - Using folder-based dataset discovery...
+2026-06-13 06:53:53,402 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 06:53:53,533 - data_loader - INFO -     Found 9101 valid images in train/real
+2026-06-13 06:53:53,805 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 06:53:53,898 - data_loader - INFO -     Found 8988 valid images in train/real
+2026-06-13 06:53:54,010 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 06:53:54,089 - data_loader - INFO -     Found 8983 valid images in train/real
+2026-06-13 06:53:54,136 - data_loader - INFO - Crawled 54144 images from 3 generators (balanced per-generator).
+2026-06-13 06:53:54,205 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:53:54,261 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 06:53:54,338 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:53:54,402 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 06:53:54,471 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:53:54,532 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 06:53:54,544 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 06:53:54,550 - data_loader - INFO -   [Training] Balancing generators to 8983 images per class/model...
+2026-06-13 06:53:54,579 - data_loader - INFO -   [Validation/Test] Balancing generators to 2425 images per class/model...
+2026-06-13 06:53:54,586 - data_loader - INFO - Subsampling balanced training dataset from 53898 to 30000 total samples...
+2026-06-13 06:53:54,616 - data_loader - INFO - Stratified sampling allocated 30000 samples:
+2026-06-13 06:53:54,620 - data_loader - INFO -   Group ADM/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,621 - data_loader - INFO -   Group ADM/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,621 - data_loader - INFO -   Group glide/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,622 - data_loader - INFO -   Group glide/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,623 - data_loader - INFO -   Group wukong/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,623 - data_loader - INFO -   Group wukong/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,626 - data_loader - INFO - Subsampling balanced validation dataset from 14550 to 5000 total samples...
+2026-06-13 06:53:54,638 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 06:53:54,641 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,642 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,643 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,644 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,644 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,645 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:53:54,645 - data_loader - INFO - Final setup: 30000 training and 5000 testing samples
+2026-06-13 06:53:55,243 - data_loader - INFO - Skipping training image cache to preserve RAM (feature cache handles repeat-epoch efficiency).
+2026-06-13 06:53:55,243 - data_loader - INFO - Caching validation dataset in memory (as uint8) on CPU...
+2026-06-13 06:53:55,327 - data_loader - INFO - Creating sample dataset of 10000 images for feature extraction
+2026-06-13 06:53:55,348 - data_loader - INFO - Stratified sampling allocated 10000 samples:
+2026-06-13 06:53:55,352 - data_loader - INFO -   Group ADM/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:53:55,352 - data_loader - INFO -   Group ADM/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:53:55,354 - data_loader - INFO -   Group glide/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:53:55,355 - data_loader - INFO -   Group glide/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 06:53:55,355 - data_loader - INFO -   Group wukong/0: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 06:53:55,356 - data_loader - INFO -   Group wukong/1: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 06:53:55,356 - data_loader - INFO - Sample dataset label distribution:
+2026-06-13 06:53:55,357 - data_loader - INFO -   Label 0: 5000 images (50.0%)
+2026-06-13 06:53:55,358 - data_loader - INFO -   Label 1: 5000 images (50.0%)
+2026-06-13 06:54:37,888 - ai_detector_main - INFO - Created TensorFlow dataset pipeline for training and testing
+2026-06-13 06:54:37,890 - ai_detector_main - INFO - Starting experiment: 1 best ruleset (chosen from 3 runs) x 1 seeds = 1 total runs...
+2026-06-13 06:54:37,891 - ai_detector_main - INFO - Running 3 GA runs to find the best ruleset...
+2026-06-13 06:54:37,891 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 1/3 (GA Seed: 42) ====================
+2026-06-13 06:54:37,892 - ai_detector_main - INFO - === Step 2: Running genetic algorithm for feature optimisation ===
+2026-06-13 06:54:37,893 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 06:54:37,897 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 06:54:37,898 - genetic_algorithm - INFO - Random seed set to 42
+2026-06-13 06:54:37,905 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 06:54:37,905 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 06:54:37,906 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 06:55:09,127 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 06:55:10,817 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 32.91 seconds
+2026-06-13 06:55:10,818 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 06:55:10,820 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 06:55:10,820 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 06:55:10,904 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 06:55:10,965 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:55:11,026 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 06:55:11,104 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:55:11,168 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 06:55:11,249 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:55:11,292 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 06:55:11,309 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 06:55:11,313 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 06:55:11,336 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 06:55:11,338 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:55:11,339 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:55:11,339 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:55:11,340 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:55:11,340 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:55:11,341 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:55:23,964 - genetic_algorithm - INFO - Probe features precomputed in 13.06s  shape=(5000, 32, 32, 8)
+2026-06-13 06:58:58,304 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3623)
+2026-06-13 06:58:58,304 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 06:58:58,457 - genetic_algorithm - INFO - Rule 1 [DUMMY]: if color > 1.00 → include patch
+2026-06-13 06:58:58,459 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if symmetry > 0.76 → include patch
+2026-06-13 06:58:58,462 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if color > 0.89 → exclude patch
+2026-06-13 06:58:58,466 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.64 → include patch
+2026-06-13 06:58:58,469 - genetic_algorithm - INFO - Rule 5 [DUMMY]: if noise < 0.86 → exclude patch
+2026-06-13 06:58:58,473 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if hash > 0.17 → include patch
+2026-06-13 06:58:58,476 - genetic_algorithm - INFO - Rule 7 [ACTIVE]: if color < 0.08 → exclude patch
+2026-06-13 06:58:58,479 - genetic_algorithm - INFO - Rule 8 [DUMMY]: if gradient > 0.89 → include patch
+2026-06-13 06:58:58,482 - genetic_algorithm - INFO - Rule 9 [ACTIVE]: if glcm > 0.77 → exclude patch
+2026-06-13 06:58:58,485 - genetic_algorithm - INFO - Rule 10 [ACTIVE]: if local_entropy < 0.80 → exclude patch
+2026-06-13 06:58:58,504 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1663, std=0.1202 (over 10000 images)
+2026-06-13 06:58:58,703 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3561
+2026-06-13 06:58:58,704 - genetic_algorithm - INFO - Best fitness: 0.3649 (True Fit=0.3696)
+2026-06-13 06:58:58,705 - genetic_algorithm - INFO - Inactive Penalty: -0.0047 (Missing: )
+2026-06-13 06:58:58,706 - genetic_algorithm - INFO - Best Ind Components: Div=0.2161, Eff=1.0000, Conn=0.2760, Simp=0.9375
+2026-06-13 06:58:58,706 - genetic_algorithm - INFO - Rules: 10
+2026-06-13 06:58:58,707 - genetic_algorithm - INFO - Average active patches: 170.3 (16.6%) out of 1024
+2026-06-13 06:58:58,890 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 06:58:58,890 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 2/3 (GA Seed: 142) ====================
+2026-06-13 06:59:00,006 - ai_detector_main - INFO - === Step 2: Running genetic algorithm for feature optimisation ===
+2026-06-13 06:59:00,008 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 06:59:00,029 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 06:59:00,035 - genetic_algorithm - INFO - Random seed set to 142
+2026-06-13 06:59:00,419 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 06:59:00,420 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 06:59:00,420 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 06:59:28,654 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 06:59:30,541 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 30.12 seconds
+2026-06-13 06:59:30,541 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 06:59:30,544 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 06:59:30,544 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 06:59:30,636 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 06:59:30,674 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:59:30,707 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 06:59:30,758 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:59:30,785 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 06:59:30,827 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 06:59:30,848 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 06:59:30,866 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 06:59:30,872 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 06:59:30,895 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 06:59:30,903 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:59:30,903 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 06:59:30,904 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:59:30,904 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:59:30,904 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:59:30,905 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 06:59:45,916 - genetic_algorithm - INFO - Probe features precomputed in 15.28s  shape=(5000, 32, 32, 8)
+2026-06-13 07:02:37,486 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3608)
+2026-06-13 07:02:37,487 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 07:02:37,680 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if texture > 0.51 → include patch
+2026-06-13 07:02:37,685 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if local_entropy < 0.47 → exclude patch
+2026-06-13 07:02:37,688 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.14 → exclude patch
+2026-06-13 07:02:37,692 - genetic_algorithm - INFO - Rule 4 [DUMMY]: if symmetry > 0.00 → exclude patch
+2026-06-13 07:02:37,698 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.73 → include patch
+2026-06-13 07:02:37,716 - genetic_algorithm - INFO - Rule 6 [DUMMY]: if local_entropy < 0.00 → exclude patch
+2026-06-13 07:02:37,724 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if texture < 0.11 → exclude patch
+2026-06-13 07:02:37,730 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1644, std=0.1241 (over 10000 images)
+2026-06-13 07:02:37,967 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3583
+2026-06-13 07:02:37,967 - genetic_algorithm - INFO - Best fitness: 0.3619 (True Fit=0.3675)
+2026-06-13 07:02:37,968 - genetic_algorithm - INFO - Inactive Penalty: -0.0056 (Missing: gradient, noise, color, glcm)
+2026-06-13 07:02:37,968 - genetic_algorithm - INFO - Best Ind Components: Div=0.2028, Eff=1.0000, Conn=0.3083, Simp=1.0000
+2026-06-13 07:02:37,968 - genetic_algorithm - INFO - Rules: 6
+2026-06-13 07:02:37,968 - genetic_algorithm - INFO - Average active patches: 168.4 (16.4%) out of 1024
+2026-06-13 07:02:38,157 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 07:02:38,158 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 3/3 (GA Seed: 242) ====================
+2026-06-13 07:02:39,388 - ai_detector_main - INFO - === Step 2: Running genetic algorithm for feature optimisation ===
+2026-06-13 07:02:39,389 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 07:02:39,906 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 07:02:39,907 - genetic_algorithm - INFO - Random seed set to 242
+2026-06-13 07:02:39,911 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 07:02:39,911 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 07:02:39,912 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 07:03:08,295 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 07:03:09,690 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 29.78 seconds
+2026-06-13 07:03:09,690 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 07:03:09,692 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 07:03:09,693 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 07:03:09,780 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 07:03:09,799 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 07:03:09,823 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 07:03:09,848 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 07:03:09,868 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 07:03:09,895 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 07:03:09,911 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 07:03:09,927 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 07:03:09,930 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 07:03:09,951 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 07:03:09,955 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 07:03:09,955 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 07:03:09,956 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 07:03:09,957 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 07:03:09,957 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 07:03:09,958 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 07:03:23,256 - genetic_algorithm - INFO - Probe features precomputed in 13.48s  shape=(5000, 32, 32, 8)
+2026-06-13 07:06:25,455 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3418)
+2026-06-13 07:06:25,455 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 07:06:25,617 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if local_entropy > 0.27 → include patch
+2026-06-13 07:06:25,620 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if hash < 0.44 → exclude patch
+2026-06-13 07:06:25,623 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.37 → exclude patch
+2026-06-13 07:06:25,629 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.74 → exclude patch
+2026-06-13 07:06:25,631 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 07:06:25,634 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 07:06:25,654 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if gradient < 0.01 → exclude patch
+2026-06-13 07:06:25,658 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1317, std=0.1087 (over 10000 images)
+2026-06-13 07:06:25,857 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3499
+2026-06-13 07:06:25,858 - genetic_algorithm - INFO - Best fitness: 0.3383 (True Fit=0.3431)
+2026-06-13 07:06:25,858 - genetic_algorithm - INFO - Inactive Penalty: -0.0048 (Missing: noise, symmetry, color, glcm)
+2026-06-13 07:06:25,858 - genetic_algorithm - INFO - Best Ind Components: Div=0.1731, Eff=0.9966, Conn=0.2726, Simp=1.0000
+2026-06-13 07:06:25,858 - genetic_algorithm - INFO - Rules: 7
+2026-06-13 07:06:25,859 - genetic_algorithm - INFO - Average active patches: 134.9 (13.2%) out of 1024
+2026-06-13 07:06:26,026 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 07:06:26,026 - ai_detector_main - INFO - GA best ruleset selected – fitness=0.3583, sparsity mean=0.1644, std=0.1241
+2026-06-13 07:06:26,026 - ai_detector_main - INFO - GA ruleset evolution phase complete. Clearing raw sample images from memory...
+2026-06-13 07:06:26,109 - ai_detector_main - INFO - 
+--- CNN Seed 1/1 (CNN Seed: 42) ---
+2026-06-13 07:06:27,131 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 07:06:27,136 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 07:06:27,137 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 07:06:27,138 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 07:06:28,157 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 07:06:28,239 - model_architecture - INFO - Model compilation complete.
+2026-06-13 07:06:28,240 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 07:06:28,240 - model_architecture - INFO - ModelWrapper initialized. mask_mode='ga'
+2026-06-13 07:06:28,240 - model_architecture - INFO - Starting model wrapper training.
+2026-06-13 07:06:28,241 - feature_extractor - INFO - Precomputing patch features for train
+2026-06-13 07:07:58,456 - feature_extractor - INFO - Saved 30000 patch features to output/feature_cache/train/features.npy
+2026-06-13 07:07:58,476 - feature_extractor - INFO - Precomputing patch features for val
+2026-06-13 07:08:14,086 - feature_extractor - INFO - Saved 5000 patch features to output/feature_cache/val/features.npy
+2026-06-13 07:08:14,090 - feature_extractor - INFO - Loading precomputed patch features for train into RAM...
+2026-06-13 07:08:18,286 - feature_extractor - INFO - Loaded features array into RAM. Shape: (30000, 32, 32, 8)
+2026-06-13 07:08:19,240 - feature_extractor - INFO - Loading precomputed patch features for val into RAM...
+2026-06-13 07:08:19,804 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 07:08:19,854 - model_architecture - INFO - Starting model training...
+2026-06-13 08:42:38,648 - model_architecture - INFO - Model training complete.
+2026-06-13 08:42:38,800 - model_architecture - INFO - Saving complete model state to output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.*
+2026-06-13 08:42:38,803 - model_architecture - INFO - Saving model to output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.keras...
+2026-06-13 08:42:38,936 - model_architecture - INFO - Model saved successfully.
+2026-06-13 08:42:38,943 - model_architecture - INFO - Model state saved: output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.keras, output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0_config.json
+2026-06-13 08:42:38,945 - ai_detector_main - INFO - Evaluating Run 1...
+2026-06-13 08:42:38,960 - feature_extractor - INFO - Precomputing patch features for test
+2026-06-13 08:42:59,994 - feature_extractor - INFO - Saved 5000 patch features to output/feature_cache/test/features.npy
+2026-06-13 08:42:59,999 - feature_extractor - INFO - Loading precomputed patch features for test into RAM...
+2026-06-13 08:43:04,302 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 08:43:18,875 - ai_detector_main - INFO - 
+Classification Report:
+2026-06-13 08:43:18,876 - ai_detector_main - INFO -             precision     recall   f1-score    support
+2026-06-13 08:43:18,876 - ai_detector_main - INFO -      Human     0.9760     0.9928     0.9843       2500
+2026-06-13 08:43:18,876 - ai_detector_main - INFO -         AI     0.9927     0.9756     0.9841       2500
+2026-06-13 08:43:18,877 - ai_detector_main - INFO - 
+balanced_accuracy: 0.9842
+2026-06-13 08:43:18,877 - ai_detector_main - INFO - 
+Confusion Matrix (rows=actual, cols=predicted):
+2026-06-13 08:43:18,877 - ai_detector_main - INFO -               Predicted Human  Predicted AI
+2026-06-13 08:43:18,878 - ai_detector_main - INFO - Actual Human            2482            18
+2026-06-13 08:43:18,878 - ai_detector_main - INFO - Actual AI                 61          2439
+2026-06-13 08:43:18,879 - ai_detector_main - INFO - Run 1 Accuracy: 0.9842  Loss: 0.0869
+2026-06-13 08:43:18,880 - model_architecture - INFO - Saving complete model state to output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 08:43:18,880 - model_architecture - INFO - Saving model to output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.keras...
+2026-06-13 08:43:19,041 - model_architecture - INFO - Model saved successfully.
+2026-06-13 08:43:19,044 - model_architecture - INFO - Model state saved: output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.keras, output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_config.json
+2026-06-13 08:43:19,193 - ai_detector_main - INFO - Saved best model (accuracy: 0.9842) to output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 08:43:19,196 - ai_detector_main - INFO - 
+============================== experiment summary (averaged over 1 runs) ==============================
+2026-06-13 08:43:19,197 - ai_detector_main - INFO - Test accuracy: 0.9842 (std=0.0000)
+2026-06-13 08:43:19,200 - ai_detector_main - INFO - Test loss:     0.0869 (std=0.0000)
+2026-06-13 08:43:19,207 - ai_detector_main - INFO - Test F1:       0.9841
+2026-06-13 08:43:19,211 - ai_detector_main - INFO - === Step 5: Generating mask visualisations ===
+2026-06-13 08:43:21,233 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample000.png
+2026-06-13 08:43:21,657 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample001.png
+2026-06-13 08:43:22,039 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample002.png
+2026-06-13 08:43:22,443 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample003.png
+2026-06-13 08:43:22,921 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample004.png
+2026-06-13 08:43:23,298 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample005.png
+2026-06-13 08:43:23,776 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample006.png
+2026-06-13 08:43:24,180 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample007.png
+2026-06-13 08:43:24,563 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample008.png
+2026-06-13 08:43:25,099 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_sample009.png
+2026-06-13 08:43:25,733 - Visualizer - INFO - Saved figure to output/training_history_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.png
+2026-06-13 08:43:26,105 - Visualizer - INFO - Saved figure to output/confusion_matrix_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.png
+2026-06-13 08:43:26,112 - ai_detector_main - INFO - Results saved → output/results_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.json
+2026-06-13 08:43:26,487 - ai_detector_main - INFO - Loading existing model and rules from output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 08:43:26,489 - model_architecture - INFO - Loading complete model state from output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 08:43:26,501 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 08:43:26,509 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 08:43:26,509 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 08:43:26,510 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 08:43:26,596 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 08:43:26,700 - model_architecture - INFO - Model compilation complete.
+2026-06-13 08:43:26,701 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 08:43:26,701 - model_architecture - INFO - ModelWrapper initialized. mask_mode='ga'
+2026-06-13 08:43:26,703 - model_architecture - INFO - Loading model from output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.keras...
+2026-06-13 08:43:26,961 - model_architecture - INFO - Model loaded successfully. Use features: True
+2026-06-13 08:43:26,961 - model_architecture - INFO - Model state loaded from: output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong.keras, output/model_ga__train_ADM_glide_wukong__test_ADM_glide_wukong_config.json
+2026-06-13 08:43:26,962 - ai_detector_main - INFO - Model state loaded successfully.
+2026-06-13 08:43:26,962 - ai_detector_main - INFO - AI detector pipeline completed successfully
+2026-06-13 08:43:42,097 - ai_detector_main - INFO - Console output will also be saved to output/ai_detector.log
+2026-06-13 08:43:42,098 - ai_detector_main - ERROR - Error setting up GPU: Physical devices cannot be modified after being initialized
+2026-06-13 08:43:42,099 - ai_detector_main - INFO - Mixed precision enabled (float16)
+2026-06-13 08:43:42,099 - ai_detector_main - INFO - === Running in mask_mode='random' ===
+2026-06-13 08:43:42,100 - ai_detector_main - INFO - 
+======================================================================
+  run_experiment  mask_mode='random'
+  train=['ADM', 'glide', 'wukong']  test=['ADM', 'glide', 'wukong']
+======================================================================
+2026-06-13 08:43:42,142 - ai_detector_main - INFO - Successfully loaded GA parameters from best_ga_config.json
+2026-06-13 08:43:42,165 - ai_detector_main - INFO - Loading optimized CNN parameters for mask_mode 'random' from best_cnn_config_ga_scaled.json:
+2026-06-13 08:43:42,167 - ai_detector_main - INFO -   cnn_learning_rate = 0.0010927159763666227
+2026-06-13 08:43:42,168 - ai_detector_main - INFO -   cnn_dropout_1 = 0.16775727351607025
+2026-06-13 08:43:42,169 - ai_detector_main - INFO -   cnn_dropout_2 = 0.3440874100478203
+2026-06-13 08:43:42,169 - ai_detector_main - INFO -   cnn_dense_units = 960
+2026-06-13 08:43:42,169 - ai_detector_main - INFO -   cnn_l2_reg = 0.0007565311865382789
+2026-06-13 08:43:42,170 - ai_detector_main - INFO -   cnn_optimizer = adam
+2026-06-13 08:43:42,170 - ai_detector_main - INFO - === Step 1: Loading and preparing datasets ===
+2026-06-13 08:43:42,170 - data_loader - INFO - Using folder-based dataset discovery...
+2026-06-13 08:43:42,268 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 08:43:42,358 - data_loader - INFO -     Found 9101 valid images in train/real
+2026-06-13 08:43:42,662 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 08:43:42,739 - data_loader - INFO -     Found 8988 valid images in train/real
+2026-06-13 08:43:42,853 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 08:43:42,967 - data_loader - INFO -     Found 8983 valid images in train/real
+2026-06-13 08:43:43,054 - data_loader - INFO - Crawled 54144 images from 3 generators (balanced per-generator).
+2026-06-13 08:43:43,101 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:43:43,163 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 08:43:43,236 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:43:43,292 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 08:43:43,363 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:43:43,427 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 08:43:43,443 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 08:43:43,454 - data_loader - INFO -   [Training] Balancing generators to 8983 images per class/model...
+2026-06-13 08:43:43,539 - data_loader - INFO -   [Validation/Test] Balancing generators to 2425 images per class/model...
+2026-06-13 08:43:43,546 - data_loader - INFO - Subsampling balanced training dataset from 53898 to 30000 total samples...
+2026-06-13 08:43:43,577 - data_loader - INFO - Stratified sampling allocated 30000 samples:
+2026-06-13 08:43:43,582 - data_loader - INFO -   Group ADM/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,582 - data_loader - INFO -   Group ADM/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,583 - data_loader - INFO -   Group glide/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,583 - data_loader - INFO -   Group glide/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,584 - data_loader - INFO -   Group wukong/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,584 - data_loader - INFO -   Group wukong/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,586 - data_loader - INFO - Subsampling balanced validation dataset from 14550 to 5000 total samples...
+2026-06-13 08:43:43,599 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 08:43:43,601 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,603 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,603 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,604 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,605 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,605 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:43:43,606 - data_loader - INFO - Final setup: 30000 training and 5000 testing samples
+2026-06-13 08:43:44,389 - data_loader - INFO - Skipping training image cache to preserve RAM (feature cache handles repeat-epoch efficiency).
+2026-06-13 08:43:44,389 - data_loader - INFO - Caching validation dataset in memory (as uint8) on CPU...
+2026-06-13 08:43:44,490 - data_loader - INFO - Creating sample dataset of 10000 images for feature extraction
+2026-06-13 08:43:44,516 - data_loader - INFO - Stratified sampling allocated 10000 samples:
+2026-06-13 08:43:44,519 - data_loader - INFO -   Group ADM/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 08:43:44,519 - data_loader - INFO -   Group ADM/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 08:43:44,520 - data_loader - INFO -   Group glide/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 08:43:44,520 - data_loader - INFO -   Group glide/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 08:43:44,521 - data_loader - INFO -   Group wukong/0: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 08:43:44,522 - data_loader - INFO -   Group wukong/1: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 08:43:44,522 - data_loader - INFO - Sample dataset label distribution:
+2026-06-13 08:43:44,524 - data_loader - INFO -   Label 0: 5000 images (50.0%)
+2026-06-13 08:43:44,525 - data_loader - INFO -   Label 1: 5000 images (50.0%)
+2026-06-13 08:44:41,665 - ai_detector_main - INFO - Created TensorFlow dataset pipeline for training and testing
+2026-06-13 08:44:41,667 - ai_detector_main - INFO - Starting experiment: 1 best ruleset (chosen from 3 runs) x 1 seeds = 1 total runs...
+2026-06-13 08:44:41,667 - ai_detector_main - INFO - Running 3 GA runs to find the best ruleset...
+2026-06-13 08:44:41,668 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 1/3 (GA Seed: 42) ====================
+2026-06-13 08:44:41,668 - ai_detector_main - INFO - === Step 2: Running GA first to obtain sparsity target for random mask control ===
+2026-06-13 08:44:41,669 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 08:44:41,672 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 08:44:41,673 - genetic_algorithm - INFO - Random seed set to 42
+2026-06-13 08:44:41,679 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 08:44:41,679 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 08:44:41,680 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 08:45:09,139 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 08:45:12,511 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 30.83 seconds
+2026-06-13 08:45:12,511 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 08:45:12,513 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 08:45:12,513 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 08:45:12,598 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 08:45:12,653 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:45:12,705 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 08:45:12,772 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:45:12,824 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 08:45:12,889 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:45:12,939 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 08:45:12,953 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 08:45:12,956 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 08:45:12,975 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 08:45:12,977 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:45:12,978 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:45:12,978 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:45:12,979 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:45:12,979 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:45:12,980 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:45:25,493 - genetic_algorithm - INFO - Probe features precomputed in 12.90s  shape=(5000, 32, 32, 8)
+2026-06-13 08:48:55,546 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3623)
+2026-06-13 08:48:55,547 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 08:48:55,698 - genetic_algorithm - INFO - Rule 1 [DUMMY]: if color > 1.00 → include patch
+2026-06-13 08:48:55,703 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if symmetry > 0.76 → include patch
+2026-06-13 08:48:55,706 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if color > 0.89 → exclude patch
+2026-06-13 08:48:55,709 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.64 → include patch
+2026-06-13 08:48:55,712 - genetic_algorithm - INFO - Rule 5 [DUMMY]: if noise < 0.86 → exclude patch
+2026-06-13 08:48:55,714 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if hash > 0.17 → include patch
+2026-06-13 08:48:55,717 - genetic_algorithm - INFO - Rule 7 [ACTIVE]: if color < 0.08 → exclude patch
+2026-06-13 08:48:55,720 - genetic_algorithm - INFO - Rule 8 [DUMMY]: if gradient > 0.89 → include patch
+2026-06-13 08:48:55,723 - genetic_algorithm - INFO - Rule 9 [ACTIVE]: if glcm > 0.77 → exclude patch
+2026-06-13 08:48:55,725 - genetic_algorithm - INFO - Rule 10 [ACTIVE]: if local_entropy < 0.80 → exclude patch
+2026-06-13 08:48:55,746 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1663, std=0.1202 (over 10000 images)
+2026-06-13 08:48:55,935 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3561
+2026-06-13 08:48:55,935 - genetic_algorithm - INFO - Best fitness: 0.3649 (True Fit=0.3696)
+2026-06-13 08:48:55,936 - genetic_algorithm - INFO - Inactive Penalty: -0.0047 (Missing: )
+2026-06-13 08:48:55,936 - genetic_algorithm - INFO - Best Ind Components: Div=0.2161, Eff=1.0000, Conn=0.2760, Simp=0.9375
+2026-06-13 08:48:55,937 - genetic_algorithm - INFO - Rules: 10
+2026-06-13 08:48:55,937 - genetic_algorithm - INFO - Average active patches: 170.3 (16.6%) out of 1024
+2026-06-13 08:48:56,115 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 08:48:56,116 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 2/3 (GA Seed: 142) ====================
+2026-06-13 08:48:57,226 - ai_detector_main - INFO - === Step 2: Running GA first to obtain sparsity target for random mask control ===
+2026-06-13 08:48:57,227 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 08:48:57,370 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 08:48:57,426 - genetic_algorithm - INFO - Random seed set to 142
+2026-06-13 08:48:57,617 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 08:48:57,618 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 08:48:57,618 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 08:49:26,420 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 08:49:27,841 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 30.22 seconds
+2026-06-13 08:49:27,841 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 08:49:27,843 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 08:49:27,844 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 08:49:27,928 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 08:49:27,958 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:49:27,981 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 08:49:28,009 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:49:28,034 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 08:49:28,068 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:49:28,090 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 08:49:28,110 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 08:49:28,114 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 08:49:28,144 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 08:49:28,148 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:49:28,149 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:49:28,149 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:49:28,150 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:49:28,151 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:49:28,152 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:49:42,866 - genetic_algorithm - INFO - Probe features precomputed in 14.94s  shape=(5000, 32, 32, 8)
+2026-06-13 08:52:35,403 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3608)
+2026-06-13 08:52:35,403 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 08:52:35,566 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if texture > 0.51 → include patch
+2026-06-13 08:52:35,570 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if local_entropy < 0.47 → exclude patch
+2026-06-13 08:52:35,573 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.14 → exclude patch
+2026-06-13 08:52:35,576 - genetic_algorithm - INFO - Rule 4 [DUMMY]: if symmetry > 0.00 → exclude patch
+2026-06-13 08:52:35,579 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.73 → include patch
+2026-06-13 08:52:35,596 - genetic_algorithm - INFO - Rule 6 [DUMMY]: if local_entropy < 0.00 → exclude patch
+2026-06-13 08:52:35,603 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if texture < 0.11 → exclude patch
+2026-06-13 08:52:35,607 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1644, std=0.1241 (over 10000 images)
+2026-06-13 08:52:35,826 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3583
+2026-06-13 08:52:35,826 - genetic_algorithm - INFO - Best fitness: 0.3619 (True Fit=0.3675)
+2026-06-13 08:52:35,827 - genetic_algorithm - INFO - Inactive Penalty: -0.0056 (Missing: gradient, noise, color, glcm)
+2026-06-13 08:52:35,827 - genetic_algorithm - INFO - Best Ind Components: Div=0.2028, Eff=1.0000, Conn=0.3083, Simp=1.0000
+2026-06-13 08:52:35,827 - genetic_algorithm - INFO - Rules: 6
+2026-06-13 08:52:35,827 - genetic_algorithm - INFO - Average active patches: 168.4 (16.4%) out of 1024
+2026-06-13 08:52:36,008 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 08:52:36,009 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 3/3 (GA Seed: 242) ====================
+2026-06-13 08:52:36,917 - ai_detector_main - INFO - === Step 2: Running GA first to obtain sparsity target for random mask control ===
+2026-06-13 08:52:36,918 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 08:52:37,430 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 08:52:37,431 - genetic_algorithm - INFO - Random seed set to 242
+2026-06-13 08:52:37,434 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 08:52:37,435 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 08:52:37,435 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 08:53:05,067 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 08:53:06,309 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 28.87 seconds
+2026-06-13 08:53:06,309 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 08:53:06,311 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 08:53:06,311 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 08:53:06,398 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 08:53:06,418 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:53:06,430 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 08:53:06,453 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:53:06,471 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 08:53:06,499 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 08:53:06,529 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 08:53:06,543 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 08:53:06,546 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 08:53:06,566 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 08:53:06,569 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:53:06,569 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 08:53:06,570 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:53:06,570 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:53:06,571 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:53:06,572 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 08:53:20,092 - genetic_algorithm - INFO - Probe features precomputed in 13.69s  shape=(5000, 32, 32, 8)
+2026-06-13 08:56:21,702 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3418)
+2026-06-13 08:56:21,703 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 08:56:21,883 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if local_entropy > 0.27 → include patch
+2026-06-13 08:56:21,887 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if hash < 0.44 → exclude patch
+2026-06-13 08:56:21,889 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.37 → exclude patch
+2026-06-13 08:56:21,892 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.74 → exclude patch
+2026-06-13 08:56:21,895 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 08:56:21,898 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 08:56:21,913 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if gradient < 0.01 → exclude patch
+2026-06-13 08:56:21,917 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1317, std=0.1087 (over 10000 images)
+2026-06-13 08:56:22,159 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3499
+2026-06-13 08:56:22,160 - genetic_algorithm - INFO - Best fitness: 0.3383 (True Fit=0.3431)
+2026-06-13 08:56:22,160 - genetic_algorithm - INFO - Inactive Penalty: -0.0048 (Missing: noise, symmetry, color, glcm)
+2026-06-13 08:56:22,160 - genetic_algorithm - INFO - Best Ind Components: Div=0.1731, Eff=0.9966, Conn=0.2726, Simp=1.0000
+2026-06-13 08:56:22,161 - genetic_algorithm - INFO - Rules: 7
+2026-06-13 08:56:22,161 - genetic_algorithm - INFO - Average active patches: 134.9 (13.2%) out of 1024
+2026-06-13 08:56:22,359 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 08:56:22,360 - ai_detector_main - INFO - GA sparsity target selected for random masks – fitness=0.3583, sparsity mean=0.1644, std=0.1241
+2026-06-13 08:56:22,360 - ai_detector_main - INFO - GA ruleset evolution phase complete. Clearing raw sample images from memory...
+2026-06-13 08:56:22,441 - ai_detector_main - INFO - 
+--- CNN Seed 1/1 (CNN Seed: 42) ---
+2026-06-13 08:56:23,479 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 08:56:23,928 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 08:56:23,934 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 08:56:23,934 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 08:56:24,532 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 08:56:24,626 - model_architecture - INFO - Model compilation complete.
+2026-06-13 08:56:24,627 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 08:56:24,628 - model_architecture - INFO - ModelWrapper initialized. mask_mode='random'
+2026-06-13 08:56:24,628 - model_architecture - INFO - Starting model wrapper training.
+2026-06-13 08:56:24,635 - feature_extractor - INFO - Precomputed features for train already exist in output/feature_cache/train/features.npy. Reusing cached features.
+2026-06-13 08:56:24,641 - feature_extractor - INFO - Precomputed features for val already exist in output/feature_cache/val/features.npy. Reusing cached features.
+2026-06-13 08:56:24,641 - feature_extractor - INFO - Loading precomputed patch features for train into RAM...
+2026-06-13 08:56:30,349 - feature_extractor - INFO - Loaded features array into RAM. Shape: (30000, 32, 32, 8)
+2026-06-13 08:56:31,284 - feature_extractor - INFO - Loading precomputed patch features for val into RAM...
+2026-06-13 08:56:31,933 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 08:56:31,996 - model_architecture - INFO - Starting model training...
+2026-06-13 10:30:48,322 - model_architecture - INFO - Model training complete.
+2026-06-13 10:30:48,607 - model_architecture - INFO - Saving complete model state to output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.*
+2026-06-13 10:30:48,624 - model_architecture - INFO - Saving model to output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.keras...
+2026-06-13 10:30:48,763 - model_architecture - INFO - Model saved successfully.
+2026-06-13 10:30:48,782 - model_architecture - INFO - Model state saved: output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0.keras, output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong_run_0_config.json
+2026-06-13 10:30:48,783 - ai_detector_main - INFO - Evaluating Run 1...
+2026-06-13 10:30:48,794 - feature_extractor - INFO - Precomputed features for test already exist in output/feature_cache/test/features.npy. Reusing cached features.
+2026-06-13 10:30:48,795 - feature_extractor - INFO - Loading precomputed patch features for test into RAM...
+2026-06-13 10:31:02,756 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 10:31:20,049 - ai_detector_main - INFO - 
+Classification Report:
+2026-06-13 10:31:20,052 - ai_detector_main - INFO -             precision     recall   f1-score    support
+2026-06-13 10:31:20,053 - ai_detector_main - INFO -      Human     0.9806     0.9888     0.9847       2500
+2026-06-13 10:31:20,053 - ai_detector_main - INFO -         AI     0.9887     0.9804     0.9845       2500
+2026-06-13 10:31:20,053 - ai_detector_main - INFO - 
+balanced_accuracy: 0.9846
+2026-06-13 10:31:20,054 - ai_detector_main - INFO - 
+Confusion Matrix (rows=actual, cols=predicted):
+2026-06-13 10:31:20,054 - ai_detector_main - INFO -               Predicted Human  Predicted AI
+2026-06-13 10:31:20,054 - ai_detector_main - INFO - Actual Human            2472            28
+2026-06-13 10:31:20,055 - ai_detector_main - INFO - Actual AI                 49          2451
+2026-06-13 10:31:20,057 - ai_detector_main - INFO - Run 1 Accuracy: 0.9846  Loss: 0.0929
+2026-06-13 10:31:20,059 - model_architecture - INFO - Saving complete model state to output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 10:31:20,059 - model_architecture - INFO - Saving model to output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.keras...
+2026-06-13 10:31:20,222 - model_architecture - INFO - Model saved successfully.
+2026-06-13 10:31:20,225 - model_architecture - INFO - Model state saved: output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.keras, output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong_config.json
+2026-06-13 10:31:20,373 - ai_detector_main - INFO - Saved best model (accuracy: 0.9846) to output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 10:31:20,377 - ai_detector_main - INFO - 
+============================== experiment summary (averaged over 1 runs) ==============================
+2026-06-13 10:31:20,378 - ai_detector_main - INFO - Test accuracy: 0.9846 (std=0.0000)
+2026-06-13 10:31:20,378 - ai_detector_main - INFO - Test loss:     0.0929 (std=0.0000)
+2026-06-13 10:31:20,379 - ai_detector_main - INFO - Test F1:       0.9845
+2026-06-13 10:31:20,386 - ai_detector_main - INFO - === Step 5: Generating mask visualisations ===
+2026-06-13 10:31:21,483 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample000.png
+2026-06-13 10:31:21,907 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample001.png
+2026-06-13 10:31:22,271 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample002.png
+2026-06-13 10:31:22,697 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample003.png
+2026-06-13 10:31:23,110 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample004.png
+2026-06-13 10:31:23,482 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample005.png
+2026-06-13 10:31:23,977 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample006.png
+2026-06-13 10:31:24,392 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample007.png
+2026-06-13 10:31:24,768 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample008.png
+2026-06-13 10:31:25,183 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_ADM_glide_wukong_sample009.png
+2026-06-13 10:31:25,807 - Visualizer - INFO - Saved figure to output/training_history_random__train_ADM_glide_wukong__test_ADM_glide_wukong.png
+2026-06-13 10:31:26,127 - Visualizer - INFO - Saved figure to output/confusion_matrix_random__train_ADM_glide_wukong__test_ADM_glide_wukong.png
+2026-06-13 10:31:26,133 - ai_detector_main - INFO - Results saved → output/results_random__train_ADM_glide_wukong__test_ADM_glide_wukong.json
+2026-06-13 10:31:26,509 - ai_detector_main - INFO - Loading existing model and rules from output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 10:31:26,514 - model_architecture - INFO - Loading complete model state from output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.*
+2026-06-13 10:31:26,520 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 10:31:26,523 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 10:31:26,524 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 10:31:26,524 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 10:31:26,627 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 10:31:26,732 - model_architecture - INFO - Model compilation complete.
+2026-06-13 10:31:26,733 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 10:31:26,733 - model_architecture - INFO - ModelWrapper initialized. mask_mode='random'
+2026-06-13 10:31:26,735 - model_architecture - INFO - Loading model from output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.keras...
+2026-06-13 10:31:26,997 - model_architecture - INFO - Model loaded successfully. Use features: True
+2026-06-13 10:31:26,998 - model_architecture - INFO - Model state loaded from: output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong.keras, output/model_random__train_ADM_glide_wukong__test_ADM_glide_wukong_config.json
+2026-06-13 10:31:26,998 - ai_detector_main - INFO - Model state loaded successfully.
+2026-06-13 10:31:26,999 - ai_detector_main - INFO - AI detector pipeline completed successfully
+2026-06-13 10:31:44,077 - ai_detector_main - INFO - Console output will also be saved to output/ai_detector.log
+2026-06-13 10:31:44,077 - ai_detector_main - ERROR - Error setting up GPU: Physical devices cannot be modified after being initialized
+2026-06-13 10:31:44,078 - ai_detector_main - INFO - Mixed precision enabled (float16)
+2026-06-13 10:31:44,078 - ai_detector_main - INFO - === Running in mask_mode='none' ===
+2026-06-13 10:31:44,079 - ai_detector_main - INFO - 
+======================================================================
+  run_experiment  mask_mode='none'
+  train=['ADM', 'glide', 'wukong']  test=['sdv4', 'vqdm']
+======================================================================
+2026-06-13 10:31:44,108 - ai_detector_main - INFO - Successfully loaded GA parameters from best_ga_config.json
+2026-06-13 10:31:44,134 - ai_detector_main - INFO - Loading optimized CNN parameters for mask_mode 'none' from best_cnn_config_none_scaled.json:
+2026-06-13 10:31:44,135 - ai_detector_main - INFO -   cnn_learning_rate = 0.002146385137578536
+2026-06-13 10:31:44,135 - ai_detector_main - INFO -   cnn_dropout_1 = 0.38090022363163806
+2026-06-13 10:31:44,136 - ai_detector_main - INFO -   cnn_dropout_2 = 0.14942585490944932
+2026-06-13 10:31:44,136 - ai_detector_main - INFO -   cnn_dense_units = 832
+2026-06-13 10:31:44,136 - ai_detector_main - INFO -   cnn_l2_reg = 1.787753934560751e-05
+2026-06-13 10:31:44,137 - ai_detector_main - INFO -   cnn_optimizer = adam
+2026-06-13 10:31:44,137 - ai_detector_main - INFO - === Step 1: Loading and preparing datasets ===
+2026-06-13 10:31:44,137 - data_loader - INFO - Using folder-based dataset discovery...
+2026-06-13 10:31:44,221 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 10:31:44,290 - data_loader - INFO -     Found 9101 valid images in train/real
+2026-06-13 10:31:44,511 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 10:31:44,604 - data_loader - INFO -     Found 8988 valid images in train/real
+2026-06-13 10:31:44,720 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 10:31:46,426 - data_loader - INFO -     Found 8983 valid images in train/real
+2026-06-13 10:31:46,496 - data_loader - INFO - Crawled 54144 images from 3 generators (balanced per-generator).
+2026-06-13 10:31:46,556 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 10:31:46,605 - data_loader - INFO -     Found 2422 valid images in val/real
+2026-06-13 10:31:46,668 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 10:31:46,722 - data_loader - INFO -     Found 2429 valid images in val/real
+2026-06-13 10:31:46,732 - data_loader - INFO - Crawled 9702 images from 2 generators (balanced per-generator).
+2026-06-13 10:31:46,739 - data_loader - INFO -   [Training] Balancing generators to 8983 images per class/model...
+2026-06-13 10:31:46,771 - data_loader - INFO -   [Validation/Test] Balancing generators to 2422 images per class/model...
+2026-06-13 10:31:46,777 - data_loader - INFO - Subsampling balanced training dataset from 53898 to 30000 total samples...
+2026-06-13 10:31:46,807 - data_loader - INFO - Stratified sampling allocated 30000 samples:
+2026-06-13 10:31:46,811 - data_loader - INFO -   Group ADM/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 10:31:46,812 - data_loader - INFO -   Group ADM/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 10:31:46,813 - data_loader - INFO -   Group glide/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 10:31:46,813 - data_loader - INFO -   Group glide/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 10:31:46,814 - data_loader - INFO -   Group wukong/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 10:31:46,814 - data_loader - INFO -   Group wukong/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 10:31:46,816 - data_loader - INFO - Subsampling balanced validation dataset from 9688 to 5000 total samples...
+2026-06-13 10:31:46,824 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 10:31:46,826 - data_loader - INFO -   Group sdv4/0: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 10:31:46,827 - data_loader - INFO -   Group sdv4/1: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 10:31:46,828 - data_loader - INFO -   Group vqdm/0: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 10:31:46,829 - data_loader - INFO -   Group vqdm/1: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 10:31:46,830 - data_loader - INFO - Final setup: 30000 training and 5000 testing samples
+2026-06-13 10:31:47,425 - data_loader - INFO - Skipping training image cache to preserve RAM (feature cache handles repeat-epoch efficiency).
+2026-06-13 10:31:47,426 - data_loader - INFO - Caching validation dataset in memory (as uint8) on CPU...
+2026-06-13 10:31:47,515 - data_loader - INFO - Creating sample dataset of 10000 images for feature extraction
+2026-06-13 10:31:47,533 - data_loader - INFO - Stratified sampling allocated 10000 samples:
+2026-06-13 10:31:47,535 - data_loader - INFO -   Group ADM/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 10:31:47,536 - data_loader - INFO -   Group ADM/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 10:31:47,537 - data_loader - INFO -   Group glide/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 10:31:47,538 - data_loader - INFO -   Group glide/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 10:31:47,538 - data_loader - INFO -   Group wukong/0: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 10:31:47,539 - data_loader - INFO -   Group wukong/1: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 10:31:47,540 - data_loader - INFO - Sample dataset label distribution:
+2026-06-13 10:31:47,550 - data_loader - INFO -   Label 0: 5000 images (50.0%)
+2026-06-13 10:31:47,550 - data_loader - INFO -   Label 1: 5000 images (50.0%)
+2026-06-13 10:31:47,552 - ai_detector_main - INFO - Created TensorFlow dataset pipeline for training and testing
+2026-06-13 10:31:47,553 - ai_detector_main - INFO - Starting 1 CNN baseline runs (flat structure)...
+2026-06-13 10:31:47,553 - ai_detector_main - INFO - 
+--- Baseline Run 1/1 with seed 42 ---
+2026-06-13 10:31:47,553 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 10:31:47,558 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 10:31:47,558 - model_architecture - INFO - Building model architecture. Use features: False
+2026-06-13 10:31:47,559 - model_architecture - INFO - Using compute dtype: float16, variable dtype: float32
+2026-06-13 10:31:48,451 - model_architecture - INFO - Building model without feature extraction branch.
+2026-06-13 10:31:48,504 - model_architecture - INFO - Using LossScaleOptimizer for mixed precision training
+2026-06-13 10:31:48,507 - model_architecture - INFO - Model compilation complete.
+2026-06-13 10:31:48,508 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 10:31:48,508 - model_architecture - INFO - ModelWrapper initialized. mask_mode='none'
+2026-06-13 10:31:48,509 - model_architecture - INFO - Starting model wrapper training.
+2026-06-13 10:31:48,509 - model_architecture - INFO - Using on-the-fly feature extraction (no disk cache).
+2026-06-13 10:31:49,301 - model_architecture - INFO - Starting model training...
+2026-06-13 11:20:21,899 - model_architecture - INFO - Model training complete.
+2026-06-13 11:20:21,901 - model_architecture - INFO - Saving complete model state to output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.*
+2026-06-13 11:20:21,901 - model_architecture - INFO - Saving model to output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.keras...
+2026-06-13 11:20:22,066 - model_architecture - INFO - Model saved successfully.
+2026-06-13 11:20:22,068 - model_architecture - INFO - Model state saved: output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.keras, output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm_run_0_config.json
+2026-06-13 11:20:22,068 - ai_detector_main - INFO - Evaluating Run 1...
+2026-06-13 11:20:27,288 - ai_detector_main - INFO - 
+Classification Report:
+2026-06-13 11:20:27,288 - ai_detector_main - INFO -             precision     recall   f1-score    support
+2026-06-13 11:20:27,289 - ai_detector_main - INFO -      Human     0.7363     0.8624     0.7944       2500
+2026-06-13 11:20:27,289 - ai_detector_main - INFO -         AI     0.8340     0.6912     0.7559       2500
+2026-06-13 11:20:27,289 - ai_detector_main - INFO - 
+balanced_accuracy: 0.7768
+2026-06-13 11:20:27,289 - ai_detector_main - INFO - 
+Confusion Matrix (rows=actual, cols=predicted):
+2026-06-13 11:20:27,290 - ai_detector_main - INFO -               Predicted Human  Predicted AI
+2026-06-13 11:20:27,290 - ai_detector_main - INFO - Actual Human            2156           344
+2026-06-13 11:20:27,290 - ai_detector_main - INFO - Actual AI                772          1728
+2026-06-13 11:20:27,291 - ai_detector_main - INFO - Run 1 Accuracy: 0.7768  Loss: 0.7550
+2026-06-13 11:20:27,291 - model_architecture - INFO - Saving complete model state to output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 11:20:27,291 - model_architecture - INFO - Saving model to output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.keras...
+2026-06-13 11:20:27,427 - model_architecture - INFO - Model saved successfully.
+2026-06-13 11:20:27,429 - model_architecture - INFO - Model state saved: output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.keras, output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm_config.json
+2026-06-13 11:20:27,550 - ai_detector_main - INFO - Saved best model (accuracy: 0.7768) to output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 11:20:27,551 - ai_detector_main - INFO - 
+============================== experiment summary (averaged over 1 runs) ==============================
+2026-06-13 11:20:27,551 - ai_detector_main - INFO - Test accuracy: 0.7768 (std=0.0000)
+2026-06-13 11:20:27,551 - ai_detector_main - INFO - Test loss:     0.7550 (std=0.0000)
+2026-06-13 11:20:27,552 - ai_detector_main - INFO - Test F1:       0.7559
+2026-06-13 11:20:28,028 - Visualizer - INFO - Saved figure to output/training_history_none__train_ADM_glide_wukong__test_sdv4_vqdm.png
+2026-06-13 11:20:28,223 - Visualizer - INFO - Saved figure to output/confusion_matrix_none__train_ADM_glide_wukong__test_sdv4_vqdm.png
+2026-06-13 11:20:28,226 - ai_detector_main - INFO - Results saved → output/results_none__train_ADM_glide_wukong__test_sdv4_vqdm.json
+2026-06-13 11:20:28,234 - ai_detector_main - INFO - Loading existing model and rules from output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 11:20:28,234 - model_architecture - INFO - Loading complete model state from output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 11:20:28,242 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 11:20:28,245 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 11:20:28,245 - model_architecture - INFO - Building model architecture. Use features: False
+2026-06-13 11:20:28,246 - model_architecture - INFO - Using compute dtype: float16, variable dtype: float32
+2026-06-13 11:20:28,280 - model_architecture - INFO - Building model without feature extraction branch.
+2026-06-13 11:20:28,317 - model_architecture - INFO - Using LossScaleOptimizer for mixed precision training
+2026-06-13 11:20:28,319 - model_architecture - INFO - Model compilation complete.
+2026-06-13 11:20:28,319 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 11:20:28,320 - model_architecture - INFO - ModelWrapper initialized. mask_mode='none'
+2026-06-13 11:20:28,322 - model_architecture - INFO - Loading model from output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.keras...
+2026-06-13 11:20:28,458 - model_architecture - INFO - Model loaded successfully. Use features: False
+2026-06-13 11:20:28,459 - model_architecture - INFO - Model state loaded from: output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm.keras, output/model_none__train_ADM_glide_wukong__test_sdv4_vqdm_config.json
+2026-06-13 11:20:28,459 - ai_detector_main - INFO - Model state loaded successfully.
+2026-06-13 11:20:28,459 - ai_detector_main - INFO - AI detector pipeline completed successfully
+2026-06-13 11:20:32,579 - ai_detector_main - INFO - Console output will also be saved to output/ai_detector.log
+2026-06-13 11:20:32,580 - ai_detector_main - ERROR - Error setting up GPU: Physical devices cannot be modified after being initialized
+2026-06-13 11:20:32,580 - ai_detector_main - INFO - Mixed precision enabled (float16)
+2026-06-13 11:20:32,581 - ai_detector_main - INFO - === Running in mask_mode='ga' ===
+2026-06-13 11:20:32,582 - ai_detector_main - INFO - 
+======================================================================
+  run_experiment  mask_mode='ga'
+  train=['ADM', 'glide', 'wukong']  test=['sdv4', 'vqdm']
+======================================================================
+2026-06-13 11:20:32,591 - ai_detector_main - INFO - Successfully loaded GA parameters from best_ga_config.json
+2026-06-13 11:20:32,599 - ai_detector_main - INFO - Loading optimized CNN parameters for mask_mode 'ga' from best_cnn_config_ga_scaled.json:
+2026-06-13 11:20:32,599 - ai_detector_main - INFO -   cnn_learning_rate = 0.0010927159763666227
+2026-06-13 11:20:32,599 - ai_detector_main - INFO -   cnn_dropout_1 = 0.16775727351607025
+2026-06-13 11:20:32,600 - ai_detector_main - INFO -   cnn_dropout_2 = 0.3440874100478203
+2026-06-13 11:20:32,600 - ai_detector_main - INFO -   cnn_dense_units = 960
+2026-06-13 11:20:32,600 - ai_detector_main - INFO -   cnn_l2_reg = 0.0007565311865382789
+2026-06-13 11:20:32,601 - ai_detector_main - INFO -   cnn_optimizer = adam
+2026-06-13 11:20:32,689 - ai_detector_main - INFO - Cleared feature cache directory at output/feature_cache for fresh GA experiment.
+2026-06-13 11:20:32,690 - ai_detector_main - INFO - === Step 1: Loading and preparing datasets ===
+2026-06-13 11:20:32,690 - data_loader - INFO - Using folder-based dataset discovery...
+2026-06-13 11:20:32,777 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 11:20:32,849 - data_loader - INFO -     Found 9101 valid images in train/real
+2026-06-13 11:20:33,040 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 11:20:33,103 - data_loader - INFO -     Found 8988 valid images in train/real
+2026-06-13 11:20:33,214 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 11:20:33,293 - data_loader - INFO -     Found 8983 valid images in train/real
+2026-06-13 11:20:33,345 - data_loader - INFO - Crawled 54144 images from 3 generators (balanced per-generator).
+2026-06-13 11:20:33,389 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:20:33,416 - data_loader - INFO -     Found 2422 valid images in val/real
+2026-06-13 11:20:33,465 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:20:33,502 - data_loader - INFO -     Found 2429 valid images in val/real
+2026-06-13 11:20:33,514 - data_loader - INFO - Crawled 9702 images from 2 generators (balanced per-generator).
+2026-06-13 11:20:33,521 - data_loader - INFO -   [Training] Balancing generators to 8983 images per class/model...
+2026-06-13 11:20:33,551 - data_loader - INFO -   [Validation/Test] Balancing generators to 2422 images per class/model...
+2026-06-13 11:20:33,558 - data_loader - INFO - Subsampling balanced training dataset from 53898 to 30000 total samples...
+2026-06-13 11:20:33,592 - data_loader - INFO - Stratified sampling allocated 30000 samples:
+2026-06-13 11:20:33,597 - data_loader - INFO -   Group ADM/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 11:20:33,598 - data_loader - INFO -   Group ADM/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 11:20:33,598 - data_loader - INFO -   Group glide/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 11:20:33,599 - data_loader - INFO -   Group glide/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 11:20:33,600 - data_loader - INFO -   Group wukong/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 11:20:33,600 - data_loader - INFO -   Group wukong/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 11:20:33,603 - data_loader - INFO - Subsampling balanced validation dataset from 9688 to 5000 total samples...
+2026-06-13 11:20:33,612 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 11:20:33,616 - data_loader - INFO -   Group sdv4/0: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 11:20:33,616 - data_loader - INFO -   Group sdv4/1: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 11:20:33,618 - data_loader - INFO -   Group vqdm/0: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 11:20:33,618 - data_loader - INFO -   Group vqdm/1: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 11:20:33,619 - data_loader - INFO - Final setup: 30000 training and 5000 testing samples
+2026-06-13 11:20:34,138 - data_loader - INFO - Skipping training image cache to preserve RAM (feature cache handles repeat-epoch efficiency).
+2026-06-13 11:20:34,139 - data_loader - INFO - Caching validation dataset in memory (as uint8) on CPU...
+2026-06-13 11:20:34,217 - data_loader - INFO - Creating sample dataset of 10000 images for feature extraction
+2026-06-13 11:20:34,236 - data_loader - INFO - Stratified sampling allocated 10000 samples:
+2026-06-13 11:20:34,239 - data_loader - INFO -   Group ADM/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 11:20:34,240 - data_loader - INFO -   Group ADM/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 11:20:34,240 - data_loader - INFO -   Group glide/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 11:20:34,241 - data_loader - INFO -   Group glide/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 11:20:34,242 - data_loader - INFO -   Group wukong/0: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 11:20:34,243 - data_loader - INFO -   Group wukong/1: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 11:20:34,244 - data_loader - INFO - Sample dataset label distribution:
+2026-06-13 11:20:34,247 - data_loader - INFO -   Label 0: 5000 images (50.0%)
+2026-06-13 11:20:34,248 - data_loader - INFO -   Label 1: 5000 images (50.0%)
+2026-06-13 11:20:57,187 - ai_detector_main - INFO - Created TensorFlow dataset pipeline for training and testing
+2026-06-13 11:20:57,188 - ai_detector_main - INFO - Starting experiment: 1 best ruleset (chosen from 3 runs) x 1 seeds = 1 total runs...
+2026-06-13 11:20:57,188 - ai_detector_main - INFO - Running 3 GA runs to find the best ruleset...
+2026-06-13 11:20:57,189 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 1/3 (GA Seed: 42) ====================
+2026-06-13 11:20:57,190 - ai_detector_main - INFO - === Step 2: Running genetic algorithm for feature optimisation ===
+2026-06-13 11:20:57,190 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 11:20:57,193 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 11:20:57,194 - genetic_algorithm - INFO - Random seed set to 42
+2026-06-13 11:20:57,203 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 11:20:57,204 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 11:20:57,204 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 11:21:25,520 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 11:21:28,820 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 31.62 seconds
+2026-06-13 11:21:28,821 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 11:21:28,822 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 11:21:28,822 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 11:21:28,912 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 11:21:28,974 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:21:29,016 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 11:21:29,079 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:21:29,129 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 11:21:29,188 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:21:29,241 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 11:21:29,251 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 11:21:29,254 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 11:21:29,269 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 11:21:29,271 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 11:21:29,271 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 11:21:29,272 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:21:29,272 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:21:29,273 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:21:29,274 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:21:41,906 - genetic_algorithm - INFO - Probe features precomputed in 12.99s  shape=(5000, 32, 32, 8)
+2026-06-13 11:25:12,329 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3623)
+2026-06-13 11:25:12,329 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 11:25:12,471 - genetic_algorithm - INFO - Rule 1 [DUMMY]: if color > 1.00 → include patch
+2026-06-13 11:25:12,474 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if symmetry > 0.76 → include patch
+2026-06-13 11:25:12,479 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if color > 0.89 → exclude patch
+2026-06-13 11:25:12,482 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.64 → include patch
+2026-06-13 11:25:12,485 - genetic_algorithm - INFO - Rule 5 [DUMMY]: if noise < 0.86 → exclude patch
+2026-06-13 11:25:12,488 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if hash > 0.17 → include patch
+2026-06-13 11:25:12,490 - genetic_algorithm - INFO - Rule 7 [ACTIVE]: if color < 0.08 → exclude patch
+2026-06-13 11:25:12,492 - genetic_algorithm - INFO - Rule 8 [DUMMY]: if gradient > 0.89 → include patch
+2026-06-13 11:25:12,495 - genetic_algorithm - INFO - Rule 9 [ACTIVE]: if glcm > 0.77 → exclude patch
+2026-06-13 11:25:12,497 - genetic_algorithm - INFO - Rule 10 [ACTIVE]: if local_entropy < 0.80 → exclude patch
+2026-06-13 11:25:12,516 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1663, std=0.1202 (over 10000 images)
+2026-06-13 11:25:12,712 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3561
+2026-06-13 11:25:12,713 - genetic_algorithm - INFO - Best fitness: 0.3649 (True Fit=0.3696)
+2026-06-13 11:25:12,714 - genetic_algorithm - INFO - Inactive Penalty: -0.0047 (Missing: )
+2026-06-13 11:25:12,714 - genetic_algorithm - INFO - Best Ind Components: Div=0.2161, Eff=1.0000, Conn=0.2760, Simp=0.9375
+2026-06-13 11:25:12,715 - genetic_algorithm - INFO - Rules: 10
+2026-06-13 11:25:12,715 - genetic_algorithm - INFO - Average active patches: 170.3 (16.6%) out of 1024
+2026-06-13 11:25:12,899 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 11:25:12,899 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 2/3 (GA Seed: 142) ====================
+2026-06-13 11:25:13,928 - ai_detector_main - INFO - === Step 2: Running genetic algorithm for feature optimisation ===
+2026-06-13 11:25:13,929 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 11:25:14,011 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 11:25:14,030 - genetic_algorithm - INFO - Random seed set to 142
+2026-06-13 11:25:14,402 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 11:25:14,403 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 11:25:14,404 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 11:25:41,658 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 11:25:42,851 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 28.45 seconds
+2026-06-13 11:25:42,851 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 11:25:42,852 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 11:25:42,853 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 11:25:42,938 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 11:25:42,962 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:25:42,981 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 11:25:43,023 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:25:43,052 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 11:25:43,082 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:25:43,101 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 11:25:43,119 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 11:25:43,123 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 11:25:43,147 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 11:25:43,152 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 11:25:43,153 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 11:25:43,153 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:25:43,153 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:25:43,154 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:25:43,154 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:25:55,658 - genetic_algorithm - INFO - Probe features precomputed in 12.72s  shape=(5000, 32, 32, 8)
+2026-06-13 11:28:50,202 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3608)
+2026-06-13 11:28:50,202 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 11:28:50,391 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if texture > 0.51 → include patch
+2026-06-13 11:28:50,394 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if local_entropy < 0.47 → exclude patch
+2026-06-13 11:28:50,397 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.14 → exclude patch
+2026-06-13 11:28:50,400 - genetic_algorithm - INFO - Rule 4 [DUMMY]: if symmetry > 0.00 → exclude patch
+2026-06-13 11:28:50,405 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.73 → include patch
+2026-06-13 11:28:50,420 - genetic_algorithm - INFO - Rule 6 [DUMMY]: if local_entropy < 0.00 → exclude patch
+2026-06-13 11:28:50,426 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if texture < 0.11 → exclude patch
+2026-06-13 11:28:50,430 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1644, std=0.1241 (over 10000 images)
+2026-06-13 11:28:50,692 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3583
+2026-06-13 11:28:50,693 - genetic_algorithm - INFO - Best fitness: 0.3619 (True Fit=0.3675)
+2026-06-13 11:28:50,693 - genetic_algorithm - INFO - Inactive Penalty: -0.0056 (Missing: gradient, noise, color, glcm)
+2026-06-13 11:28:50,693 - genetic_algorithm - INFO - Best Ind Components: Div=0.2028, Eff=1.0000, Conn=0.3083, Simp=1.0000
+2026-06-13 11:28:50,694 - genetic_algorithm - INFO - Rules: 6
+2026-06-13 11:28:50,694 - genetic_algorithm - INFO - Average active patches: 168.4 (16.4%) out of 1024
+2026-06-13 11:28:50,904 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 11:28:50,905 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 3/3 (GA Seed: 242) ====================
+2026-06-13 11:28:51,834 - ai_detector_main - INFO - === Step 2: Running genetic algorithm for feature optimisation ===
+2026-06-13 11:28:51,835 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 11:28:52,392 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 11:28:52,394 - genetic_algorithm - INFO - Random seed set to 242
+2026-06-13 11:28:52,397 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 11:28:52,398 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 11:28:52,398 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 11:29:18,191 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 11:29:19,401 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 27.00 seconds
+2026-06-13 11:29:19,402 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 11:29:19,403 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 11:29:19,403 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 11:29:19,489 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 11:29:19,516 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:29:19,531 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 11:29:19,556 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:29:19,571 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 11:29:19,605 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 11:29:19,632 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 11:29:19,649 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 11:29:19,653 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 11:29:19,673 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 11:29:19,678 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 11:29:19,678 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 11:29:19,678 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:29:19,679 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:29:19,680 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:29:19,681 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 11:29:34,293 - genetic_algorithm - INFO - Probe features precomputed in 14.80s  shape=(5000, 32, 32, 8)
+2026-06-13 11:32:36,298 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3418)
+2026-06-13 11:32:36,298 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 11:32:36,487 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if local_entropy > 0.27 → include patch
+2026-06-13 11:32:36,491 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if hash < 0.44 → exclude patch
+2026-06-13 11:32:36,498 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.37 → exclude patch
+2026-06-13 11:32:36,501 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.74 → exclude patch
+2026-06-13 11:32:36,504 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 11:32:36,507 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 11:32:36,535 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if gradient < 0.01 → exclude patch
+2026-06-13 11:32:36,541 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1317, std=0.1087 (over 10000 images)
+2026-06-13 11:32:36,760 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3499
+2026-06-13 11:32:36,761 - genetic_algorithm - INFO - Best fitness: 0.3383 (True Fit=0.3431)
+2026-06-13 11:32:36,761 - genetic_algorithm - INFO - Inactive Penalty: -0.0048 (Missing: noise, symmetry, color, glcm)
+2026-06-13 11:32:36,762 - genetic_algorithm - INFO - Best Ind Components: Div=0.1731, Eff=0.9966, Conn=0.2726, Simp=1.0000
+2026-06-13 11:32:36,762 - genetic_algorithm - INFO - Rules: 7
+2026-06-13 11:32:36,762 - genetic_algorithm - INFO - Average active patches: 134.9 (13.2%) out of 1024
+2026-06-13 11:32:36,953 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 11:32:36,954 - ai_detector_main - INFO - GA best ruleset selected – fitness=0.3583, sparsity mean=0.1644, std=0.1241
+2026-06-13 11:32:36,955 - ai_detector_main - INFO - GA ruleset evolution phase complete. Clearing raw sample images from memory...
+2026-06-13 11:32:37,047 - ai_detector_main - INFO - 
+--- CNN Seed 1/1 (CNN Seed: 42) ---
+2026-06-13 11:32:38,303 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 11:32:38,309 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 11:32:38,310 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 11:32:38,312 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 11:32:39,509 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 11:32:39,602 - model_architecture - INFO - Model compilation complete.
+2026-06-13 11:32:39,602 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 11:32:39,603 - model_architecture - INFO - ModelWrapper initialized. mask_mode='ga'
+2026-06-13 11:32:39,604 - model_architecture - INFO - Starting model wrapper training.
+2026-06-13 11:32:39,608 - feature_extractor - INFO - Precomputing patch features for train
+2026-06-13 11:34:09,414 - feature_extractor - INFO - Saved 30000 patch features to output/feature_cache/train/features.npy
+2026-06-13 11:34:09,433 - feature_extractor - INFO - Precomputing patch features for val
+2026-06-13 11:34:23,179 - feature_extractor - INFO - Saved 5000 patch features to output/feature_cache/val/features.npy
+2026-06-13 11:34:23,181 - feature_extractor - INFO - Loading precomputed patch features for train into RAM...
+2026-06-13 11:34:26,483 - feature_extractor - INFO - Loaded features array into RAM. Shape: (30000, 32, 32, 8)
+2026-06-13 11:34:28,894 - feature_extractor - INFO - Loading precomputed patch features for val into RAM...
+2026-06-13 11:34:29,351 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 11:34:29,389 - model_architecture - INFO - Starting model training...
+2026-06-13 12:36:25,022 - model_architecture - INFO - Model training complete.
+2026-06-13 12:36:25,282 - model_architecture - INFO - Saving complete model state to output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.*
+2026-06-13 12:36:25,294 - model_architecture - INFO - Saving model to output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.keras...
+2026-06-13 12:36:25,449 - model_architecture - INFO - Model saved successfully.
+2026-06-13 12:36:25,455 - model_architecture - INFO - Model state saved: output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.keras, output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm_run_0_config.json
+2026-06-13 12:36:25,457 - ai_detector_main - INFO - Evaluating Run 1...
+2026-06-13 12:36:25,488 - feature_extractor - INFO - Precomputing patch features for test
+2026-06-13 12:36:43,593 - feature_extractor - INFO - Saved 5000 patch features to output/feature_cache/test/features.npy
+2026-06-13 12:36:43,598 - feature_extractor - INFO - Loading precomputed patch features for test into RAM...
+2026-06-13 12:36:52,875 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 12:37:13,040 - ai_detector_main - INFO - 
+Classification Report:
+2026-06-13 12:37:13,040 - ai_detector_main - INFO -             precision     recall   f1-score    support
+2026-06-13 12:37:13,040 - ai_detector_main - INFO -      Human     0.7266     0.9184     0.8113       2500
+2026-06-13 12:37:13,041 - ai_detector_main - INFO -         AI     0.8891     0.6544     0.7539       2500
+2026-06-13 12:37:13,041 - ai_detector_main - INFO - 
+balanced_accuracy: 0.7864
+2026-06-13 12:37:13,042 - ai_detector_main - INFO - 
+Confusion Matrix (rows=actual, cols=predicted):
+2026-06-13 12:37:13,042 - ai_detector_main - INFO -               Predicted Human  Predicted AI
+2026-06-13 12:37:13,042 - ai_detector_main - INFO - Actual Human            2296           204
+2026-06-13 12:37:13,042 - ai_detector_main - INFO - Actual AI                864          1636
+2026-06-13 12:37:13,044 - ai_detector_main - INFO - Run 1 Accuracy: 0.7864  Loss: 0.6532
+2026-06-13 12:37:13,046 - model_architecture - INFO - Saving complete model state to output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 12:37:13,049 - model_architecture - INFO - Saving model to output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.keras...
+2026-06-13 12:37:13,241 - model_architecture - INFO - Model saved successfully.
+2026-06-13 12:37:13,244 - model_architecture - INFO - Model state saved: output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.keras, output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm_config.json
+2026-06-13 12:37:13,369 - ai_detector_main - INFO - Saved best model (accuracy: 0.7864) to output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 12:37:13,372 - ai_detector_main - INFO - 
+============================== experiment summary (averaged over 1 runs) ==============================
+2026-06-13 12:37:13,373 - ai_detector_main - INFO - Test accuracy: 0.7864 (std=0.0000)
+2026-06-13 12:37:13,376 - ai_detector_main - INFO - Test loss:     0.6532 (std=0.0000)
+2026-06-13 12:37:13,377 - ai_detector_main - INFO - Test F1:       0.7539
+2026-06-13 12:37:13,377 - ai_detector_main - INFO - === Step 5: Generating mask visualisations ===
+2026-06-13 12:37:15,584 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample000.png
+2026-06-13 12:37:15,962 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample001.png
+2026-06-13 12:37:16,334 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample002.png
+2026-06-13 12:37:16,732 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample003.png
+2026-06-13 12:37:17,122 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample004.png
+2026-06-13 12:37:17,432 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample005.png
+2026-06-13 12:37:17,843 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample006.png
+2026-06-13 12:37:18,197 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample007.png
+2026-06-13 12:37:18,535 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample008.png
+2026-06-13 12:37:18,971 - Visualizer - INFO - Mask visualisation saved → output/mask_ga__train_ADM_glide_wukong__test_sdv4_vqdm_sample009.png
+2026-06-13 12:37:19,414 - Visualizer - INFO - Saved figure to output/training_history_ga__train_ADM_glide_wukong__test_sdv4_vqdm.png
+2026-06-13 12:37:19,693 - Visualizer - INFO - Saved figure to output/confusion_matrix_ga__train_ADM_glide_wukong__test_sdv4_vqdm.png
+2026-06-13 12:37:19,698 - ai_detector_main - INFO - Results saved → output/results_ga__train_ADM_glide_wukong__test_sdv4_vqdm.json
+2026-06-13 12:37:20,052 - ai_detector_main - INFO - Loading existing model and rules from output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 12:37:20,055 - model_architecture - INFO - Loading complete model state from output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 12:37:20,065 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 12:37:20,072 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 12:37:20,072 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 12:37:20,072 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 12:37:20,151 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 12:37:20,239 - model_architecture - INFO - Model compilation complete.
+2026-06-13 12:37:20,239 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 12:37:20,241 - model_architecture - INFO - ModelWrapper initialized. mask_mode='ga'
+2026-06-13 12:37:20,243 - model_architecture - INFO - Loading model from output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.keras...
+2026-06-13 12:37:20,470 - model_architecture - INFO - Model loaded successfully. Use features: True
+2026-06-13 12:37:20,471 - model_architecture - INFO - Model state loaded from: output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm.keras, output/model_ga__train_ADM_glide_wukong__test_sdv4_vqdm_config.json
+2026-06-13 12:37:20,471 - ai_detector_main - INFO - Model state loaded successfully.
+2026-06-13 12:37:20,472 - ai_detector_main - INFO - AI detector pipeline completed successfully
+2026-06-13 12:37:34,092 - ai_detector_main - INFO - Console output will also be saved to output/ai_detector.log
+2026-06-13 12:37:34,093 - ai_detector_main - ERROR - Error setting up GPU: Physical devices cannot be modified after being initialized
+2026-06-13 12:37:34,094 - ai_detector_main - INFO - Mixed precision enabled (float16)
+2026-06-13 12:37:34,094 - ai_detector_main - INFO - === Running in mask_mode='random' ===
+2026-06-13 12:37:34,095 - ai_detector_main - INFO - 
+======================================================================
+  run_experiment  mask_mode='random'
+  train=['ADM', 'glide', 'wukong']  test=['sdv4', 'vqdm']
+======================================================================
+2026-06-13 12:37:34,110 - ai_detector_main - INFO - Successfully loaded GA parameters from best_ga_config.json
+2026-06-13 12:37:34,116 - ai_detector_main - INFO - Loading optimized CNN parameters for mask_mode 'random' from best_cnn_config_ga_scaled.json:
+2026-06-13 12:37:34,116 - ai_detector_main - INFO -   cnn_learning_rate = 0.0010927159763666227
+2026-06-13 12:37:34,117 - ai_detector_main - INFO -   cnn_dropout_1 = 0.16775727351607025
+2026-06-13 12:37:34,117 - ai_detector_main - INFO -   cnn_dropout_2 = 0.3440874100478203
+2026-06-13 12:37:34,117 - ai_detector_main - INFO -   cnn_dense_units = 960
+2026-06-13 12:37:34,117 - ai_detector_main - INFO -   cnn_l2_reg = 0.0007565311865382789
+2026-06-13 12:37:34,118 - ai_detector_main - INFO -   cnn_optimizer = adam
+2026-06-13 12:37:34,120 - ai_detector_main - INFO - === Step 1: Loading and preparing datasets ===
+2026-06-13 12:37:34,121 - data_loader - INFO - Using folder-based dataset discovery...
+2026-06-13 12:37:34,273 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 12:37:34,406 - data_loader - INFO -     Found 9101 valid images in train/real
+2026-06-13 12:37:34,714 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 12:37:34,856 - data_loader - INFO -     Found 8988 valid images in train/real
+2026-06-13 12:37:35,036 - data_loader - INFO -     Found 10000 valid images in train/ai
+2026-06-13 12:37:35,181 - data_loader - INFO -     Found 8983 valid images in train/real
+2026-06-13 12:37:35,368 - data_loader - INFO - Crawled 54144 images from 3 generators (balanced per-generator).
+2026-06-13 12:37:35,445 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:37:35,502 - data_loader - INFO -     Found 2422 valid images in val/real
+2026-06-13 12:37:35,580 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:37:35,646 - data_loader - INFO -     Found 2429 valid images in val/real
+2026-06-13 12:37:35,658 - data_loader - INFO - Crawled 9702 images from 2 generators (balanced per-generator).
+2026-06-13 12:37:35,668 - data_loader - INFO -   [Training] Balancing generators to 8983 images per class/model...
+2026-06-13 12:37:35,697 - data_loader - INFO -   [Validation/Test] Balancing generators to 2422 images per class/model...
+2026-06-13 12:37:35,703 - data_loader - INFO - Subsampling balanced training dataset from 53898 to 30000 total samples...
+2026-06-13 12:37:35,735 - data_loader - INFO - Stratified sampling allocated 30000 samples:
+2026-06-13 12:37:35,739 - data_loader - INFO -   Group ADM/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 12:37:35,740 - data_loader - INFO -   Group ADM/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 12:37:35,741 - data_loader - INFO -   Group glide/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 12:37:35,741 - data_loader - INFO -   Group glide/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 12:37:35,742 - data_loader - INFO -   Group wukong/0: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 12:37:35,742 - data_loader - INFO -   Group wukong/1: 5000/8983 samples (16.7% → 16.7%)
+2026-06-13 12:37:35,744 - data_loader - INFO - Subsampling balanced validation dataset from 9688 to 5000 total samples...
+2026-06-13 12:37:35,752 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 12:37:35,755 - data_loader - INFO -   Group sdv4/0: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 12:37:35,755 - data_loader - INFO -   Group sdv4/1: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 12:37:35,756 - data_loader - INFO -   Group vqdm/0: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 12:37:35,756 - data_loader - INFO -   Group vqdm/1: 1250/2422 samples (25.0% → 25.0%)
+2026-06-13 12:37:35,757 - data_loader - INFO - Final setup: 30000 training and 5000 testing samples
+2026-06-13 12:37:36,491 - data_loader - INFO - Skipping training image cache to preserve RAM (feature cache handles repeat-epoch efficiency).
+2026-06-13 12:37:36,491 - data_loader - INFO - Caching validation dataset in memory (as uint8) on CPU...
+2026-06-13 12:37:36,944 - data_loader - INFO - Creating sample dataset of 10000 images for feature extraction
+2026-06-13 12:37:36,962 - data_loader - INFO - Stratified sampling allocated 10000 samples:
+2026-06-13 12:37:36,964 - data_loader - INFO -   Group ADM/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 12:37:36,964 - data_loader - INFO -   Group ADM/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 12:37:36,965 - data_loader - INFO -   Group glide/0: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 12:37:36,965 - data_loader - INFO -   Group glide/1: 1667/5000 samples (16.7% → 16.7%)
+2026-06-13 12:37:36,966 - data_loader - INFO -   Group wukong/0: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 12:37:36,966 - data_loader - INFO -   Group wukong/1: 1666/5000 samples (16.7% → 16.7%)
+2026-06-13 12:37:36,967 - data_loader - INFO - Sample dataset label distribution:
+2026-06-13 12:37:36,969 - data_loader - INFO -   Label 0: 5000 images (50.0%)
+2026-06-13 12:37:36,969 - data_loader - INFO -   Label 1: 5000 images (50.0%)
+2026-06-13 12:38:38,380 - ai_detector_main - INFO - Created TensorFlow dataset pipeline for training and testing
+2026-06-13 12:38:38,381 - ai_detector_main - INFO - Starting experiment: 1 best ruleset (chosen from 3 runs) x 1 seeds = 1 total runs...
+2026-06-13 12:38:38,382 - ai_detector_main - INFO - Running 3 GA runs to find the best ruleset...
+2026-06-13 12:38:38,382 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 1/3 (GA Seed: 42) ====================
+2026-06-13 12:38:38,383 - ai_detector_main - INFO - === Step 2: Running GA first to obtain sparsity target for random mask control ===
+2026-06-13 12:38:38,384 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 12:38:38,387 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 12:38:38,388 - genetic_algorithm - INFO - Random seed set to 42
+2026-06-13 12:38:38,395 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 12:38:38,395 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 12:38:38,396 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 12:39:09,017 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 12:39:10,770 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 32.37 seconds
+2026-06-13 12:39:10,771 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 12:39:10,773 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 12:39:10,774 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 12:39:10,869 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 12:39:10,926 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:39:10,976 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 12:39:11,039 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:39:11,092 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 12:39:11,157 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:39:11,208 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 12:39:11,224 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 12:39:11,228 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 12:39:11,251 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 12:39:11,254 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 12:39:11,254 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 12:39:11,255 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:39:11,255 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:39:11,256 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:39:11,256 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:39:23,479 - genetic_algorithm - INFO - Probe features precomputed in 12.61s  shape=(5000, 32, 32, 8)
+2026-06-13 12:42:46,806 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3623)
+2026-06-13 12:42:46,806 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 12:42:46,954 - genetic_algorithm - INFO - Rule 1 [DUMMY]: if color > 1.00 → include patch
+2026-06-13 12:42:46,959 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if symmetry > 0.76 → include patch
+2026-06-13 12:42:46,963 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if color > 0.89 → exclude patch
+2026-06-13 12:42:46,966 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.64 → include patch
+2026-06-13 12:42:46,969 - genetic_algorithm - INFO - Rule 5 [DUMMY]: if noise < 0.86 → exclude patch
+2026-06-13 12:42:46,971 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if hash > 0.17 → include patch
+2026-06-13 12:42:46,978 - genetic_algorithm - INFO - Rule 7 [ACTIVE]: if color < 0.08 → exclude patch
+2026-06-13 12:42:46,981 - genetic_algorithm - INFO - Rule 8 [DUMMY]: if gradient > 0.89 → include patch
+2026-06-13 12:42:46,983 - genetic_algorithm - INFO - Rule 9 [ACTIVE]: if glcm > 0.77 → exclude patch
+2026-06-13 12:42:46,987 - genetic_algorithm - INFO - Rule 10 [ACTIVE]: if local_entropy < 0.80 → exclude patch
+2026-06-13 12:42:47,008 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1663, std=0.1202 (over 10000 images)
+2026-06-13 12:42:47,198 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3561
+2026-06-13 12:42:47,198 - genetic_algorithm - INFO - Best fitness: 0.3649 (True Fit=0.3696)
+2026-06-13 12:42:47,198 - genetic_algorithm - INFO - Inactive Penalty: -0.0047 (Missing: )
+2026-06-13 12:42:47,199 - genetic_algorithm - INFO - Best Ind Components: Div=0.2161, Eff=1.0000, Conn=0.2760, Simp=0.9375
+2026-06-13 12:42:47,199 - genetic_algorithm - INFO - Rules: 10
+2026-06-13 12:42:47,199 - genetic_algorithm - INFO - Average active patches: 170.3 (16.6%) out of 1024
+2026-06-13 12:42:47,378 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 12:42:47,379 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 2/3 (GA Seed: 142) ====================
+2026-06-13 12:42:48,439 - ai_detector_main - INFO - === Step 2: Running GA first to obtain sparsity target for random mask control ===
+2026-06-13 12:42:48,439 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 12:42:48,510 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 12:42:48,528 - genetic_algorithm - INFO - Random seed set to 142
+2026-06-13 12:42:48,843 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 12:42:48,844 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 12:42:48,844 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 12:43:15,884 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 12:43:17,241 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 28.40 seconds
+2026-06-13 12:43:17,242 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 12:43:17,243 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 12:43:17,244 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 12:43:17,338 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 12:43:17,373 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:43:17,401 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 12:43:17,450 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:43:17,481 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 12:43:17,531 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:43:17,568 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 12:43:17,590 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 12:43:17,594 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 12:43:17,624 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 12:43:17,628 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 12:43:17,629 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 12:43:17,630 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:43:17,631 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:43:17,632 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:43:17,632 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:43:32,225 - genetic_algorithm - INFO - Probe features precomputed in 14.89s  shape=(5000, 32, 32, 8)
+2026-06-13 12:46:22,168 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3608)
+2026-06-13 12:46:22,169 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 12:46:22,317 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if texture > 0.51 → include patch
+2026-06-13 12:46:22,320 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if local_entropy < 0.47 → exclude patch
+2026-06-13 12:46:22,322 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.14 → exclude patch
+2026-06-13 12:46:22,325 - genetic_algorithm - INFO - Rule 4 [DUMMY]: if symmetry > 0.00 → exclude patch
+2026-06-13 12:46:22,329 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.73 → include patch
+2026-06-13 12:46:22,343 - genetic_algorithm - INFO - Rule 6 [DUMMY]: if local_entropy < 0.00 → exclude patch
+2026-06-13 12:46:22,351 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if texture < 0.11 → exclude patch
+2026-06-13 12:46:22,356 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1644, std=0.1241 (over 10000 images)
+2026-06-13 12:46:22,554 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3583
+2026-06-13 12:46:22,555 - genetic_algorithm - INFO - Best fitness: 0.3619 (True Fit=0.3675)
+2026-06-13 12:46:22,555 - genetic_algorithm - INFO - Inactive Penalty: -0.0056 (Missing: gradient, noise, color, glcm)
+2026-06-13 12:46:22,555 - genetic_algorithm - INFO - Best Ind Components: Div=0.2028, Eff=1.0000, Conn=0.3083, Simp=1.0000
+2026-06-13 12:46:22,556 - genetic_algorithm - INFO - Rules: 6
+2026-06-13 12:46:22,556 - genetic_algorithm - INFO - Average active patches: 168.4 (16.4%) out of 1024
+2026-06-13 12:46:22,731 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 12:46:22,731 - ai_detector_main - INFO - 
+==================== GA Evolving Ruleset Search Run 3/3 (GA Seed: 242) ====================
+2026-06-13 12:46:23,679 - ai_detector_main - INFO - === Step 2: Running GA first to obtain sparsity target for random mask control ===
+2026-06-13 12:46:23,680 - genetic_algorithm - INFO - Initializing GeneticFeatureOptimizer...
+2026-06-13 12:46:24,198 - genetic_algorithm - INFO - Using evaluation sample size: 10000
+2026-06-13 12:46:24,199 - genetic_algorithm - INFO - Random seed set to 242
+2026-06-13 12:46:24,202 - genetic_algorithm - INFO - Initialized with 1024 patches (32×32)
+2026-06-13 12:46:24,202 - genetic_algorithm - INFO - Precomputing patch features for evaluation dataset...
+2026-06-13 12:46:24,202 - genetic_algorithm - INFO - Extracting features for 10000 evaluation images...
+2026-06-13 12:46:51,759 - genetic_algorithm - INFO - Auto-calibrating feature scales (Dynamic Normalization)...
+2026-06-13 12:46:53,050 - genetic_algorithm - INFO - Feature precomputation and auto-calibration complete in 28.85 seconds
+2026-06-13 12:46:53,051 - genetic_algorithm - INFO - Final normalized features shape: (10000, 32, 32, 8)
+2026-06-13 12:46:53,053 - genetic_algorithm - INFO - GeneticFeatureOptimizer initialization complete with precomputed features.
+2026-06-13 12:46:53,053 - ai_detector_main - INFO - Precomputing probe features for validation checkpointing...
+2026-06-13 12:46:53,136 - genetic_algorithm - INFO - Loading probe features batch-by-batch via Dataset to save RAM...
+2026-06-13 12:46:53,158 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:46:53,177 - data_loader - INFO -     Found 2426 valid images in val/real
+2026-06-13 12:46:53,218 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:46:53,239 - data_loader - INFO -     Found 2425 valid images in val/real
+2026-06-13 12:46:53,295 - data_loader - INFO -     Found 2500 valid images in val/ai
+2026-06-13 12:46:53,329 - data_loader - INFO -     Found 2437 valid images in val/real
+2026-06-13 12:46:53,343 - data_loader - INFO - Crawled 14576 images from 3 generators (balanced per-generator).
+2026-06-13 12:46:53,347 - data_loader - INFO -   [ValSample] Balancing generators to 2425 images per class/model...
+2026-06-13 12:46:53,367 - data_loader - INFO - Stratified sampling allocated 5000 samples:
+2026-06-13 12:46:53,369 - data_loader - INFO -   Group ADM/0: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 12:46:53,370 - data_loader - INFO -   Group ADM/1: 834/2425 samples (16.7% → 16.7%)
+2026-06-13 12:46:53,371 - data_loader - INFO -   Group glide/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:46:53,372 - data_loader - INFO -   Group glide/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:46:53,373 - data_loader - INFO -   Group wukong/0: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:46:53,373 - data_loader - INFO -   Group wukong/1: 833/2425 samples (16.7% → 16.7%)
+2026-06-13 12:47:06,003 - genetic_algorithm - INFO - Probe features precomputed in 12.87s  shape=(5000, 32, 32, 8)
+2026-06-13 12:50:02,913 - genetic_algorithm - INFO - Loaded best validation individual from checkpoint (blended val score: 0.3418)
+2026-06-13 12:50:02,913 - genetic_algorithm - INFO - Best rule set found:
+2026-06-13 12:50:03,066 - genetic_algorithm - INFO - Rule 1 [ACTIVE]: if local_entropy > 0.27 → include patch
+2026-06-13 12:50:03,070 - genetic_algorithm - INFO - Rule 2 [ACTIVE]: if hash < 0.44 → exclude patch
+2026-06-13 12:50:03,073 - genetic_algorithm - INFO - Rule 3 [ACTIVE]: if hash < 0.37 → exclude patch
+2026-06-13 12:50:03,076 - genetic_algorithm - INFO - Rule 4 [ACTIVE]: if texture < 0.74 → exclude patch
+2026-06-13 12:50:03,077 - genetic_algorithm - INFO - Rule 5 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 12:50:03,080 - genetic_algorithm - INFO - Rule 6 [ACTIVE]: if local_entropy > 0.28 → include patch
+2026-06-13 12:50:03,099 - genetic_algorithm - INFO - Rule 7 [DUMMY]: if gradient < 0.01 → exclude patch
+2026-06-13 12:50:03,104 - genetic_algorithm - INFO - [run_1] Mask sparsity: mean=0.1317, std=0.1087 (over 10000 images)
+2026-06-13 12:50:03,300 - genetic_algorithm - INFO - [run_1] Validation Probe Fitness: 0.3499
+2026-06-13 12:50:03,301 - genetic_algorithm - INFO - Best fitness: 0.3383 (True Fit=0.3431)
+2026-06-13 12:50:03,301 - genetic_algorithm - INFO - Inactive Penalty: -0.0048 (Missing: noise, symmetry, color, glcm)
+2026-06-13 12:50:03,302 - genetic_algorithm - INFO - Best Ind Components: Div=0.1731, Eff=0.9966, Conn=0.2726, Simp=1.0000
+2026-06-13 12:50:03,302 - genetic_algorithm - INFO - Rules: 7
+2026-06-13 12:50:03,302 - genetic_algorithm - INFO - Average active patches: 134.9 (13.2%) out of 1024
+2026-06-13 12:50:03,470 - genetic_algorithm - INFO - Feature scales saved to feature_scales.json
+2026-06-13 12:50:03,470 - ai_detector_main - INFO - GA sparsity target selected for random masks – fitness=0.3583, sparsity mean=0.1644, std=0.1241
+2026-06-13 12:50:03,470 - ai_detector_main - INFO - GA ruleset evolution phase complete. Clearing raw sample images from memory...
+2026-06-13 12:50:03,550 - ai_detector_main - INFO - 
+--- CNN Seed 1/1 (CNN Seed: 42) ---
+2026-06-13 12:50:04,592 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 12:50:05,030 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 12:50:05,036 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 12:50:05,036 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 12:50:05,631 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 12:50:05,715 - model_architecture - INFO - Model compilation complete.
+2026-06-13 12:50:05,715 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 12:50:05,715 - model_architecture - INFO - ModelWrapper initialized. mask_mode='random'
+2026-06-13 12:50:05,716 - model_architecture - INFO - Starting model wrapper training.
+2026-06-13 12:50:05,724 - feature_extractor - INFO - Precomputed features for train already exist in output/feature_cache/train/features.npy. Reusing cached features.
+2026-06-13 12:50:05,731 - feature_extractor - INFO - Precomputed features for val already exist in output/feature_cache/val/features.npy. Reusing cached features.
+2026-06-13 12:50:05,732 - feature_extractor - INFO - Loading precomputed patch features for train into RAM...
+2026-06-13 12:50:09,714 - feature_extractor - INFO - Loaded features array into RAM. Shape: (30000, 32, 32, 8)
+2026-06-13 12:50:10,609 - feature_extractor - INFO - Loading precomputed patch features for val into RAM...
+2026-06-13 12:50:11,244 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 12:50:11,306 - model_architecture - INFO - Starting model training...
+2026-06-13 14:19:18,402 - model_architecture - INFO - Model training complete.
+2026-06-13 14:19:18,457 - model_architecture - INFO - Saving complete model state to output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.*
+2026-06-13 14:19:18,461 - model_architecture - INFO - Saving model to output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.keras...
+2026-06-13 14:19:18,615 - model_architecture - INFO - Model saved successfully.
+2026-06-13 14:19:18,629 - model_architecture - INFO - Model state saved: output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm_run_0.keras, output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm_run_0_config.json
+2026-06-13 14:19:18,629 - ai_detector_main - INFO - Evaluating Run 1...
+2026-06-13 14:19:18,640 - feature_extractor - INFO - Precomputed features for test already exist in output/feature_cache/test/features.npy. Reusing cached features.
+2026-06-13 14:19:18,641 - feature_extractor - INFO - Loading precomputed patch features for test into RAM...
+2026-06-13 14:19:33,760 - feature_extractor - INFO - Loaded features array into RAM. Shape: (5000, 32, 32, 8)
+2026-06-13 14:19:51,610 - ai_detector_main - INFO - 
+Classification Report:
+2026-06-13 14:19:51,611 - ai_detector_main - INFO -             precision     recall   f1-score    support
+2026-06-13 14:19:51,611 - ai_detector_main - INFO -      Human     0.6959     0.9768     0.8128       2500
+2026-06-13 14:19:51,612 - ai_detector_main - INFO -         AI     0.9611     0.5732     0.7181       2500
+2026-06-13 14:19:51,612 - ai_detector_main - INFO - 
+balanced_accuracy: 0.7750
+2026-06-13 14:19:51,612 - ai_detector_main - INFO - 
+Confusion Matrix (rows=actual, cols=predicted):
+2026-06-13 14:19:51,613 - ai_detector_main - INFO -               Predicted Human  Predicted AI
+2026-06-13 14:19:51,613 - ai_detector_main - INFO - Actual Human            2442            58
+2026-06-13 14:19:51,613 - ai_detector_main - INFO - Actual AI               1067          1433
+2026-06-13 14:19:51,616 - ai_detector_main - INFO - Run 1 Accuracy: 0.7750  Loss: 1.3030
+2026-06-13 14:19:51,617 - model_architecture - INFO - Saving complete model state to output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 14:19:51,618 - model_architecture - INFO - Saving model to output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.keras...
+2026-06-13 14:19:51,786 - model_architecture - INFO - Model saved successfully.
+2026-06-13 14:19:51,801 - model_architecture - INFO - Model state saved: output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.keras, output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm_config.json
+2026-06-13 14:19:51,935 - ai_detector_main - INFO - Saved best model (accuracy: 0.7750) to output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 14:19:51,937 - ai_detector_main - INFO - 
+============================== experiment summary (averaged over 1 runs) ==============================
+2026-06-13 14:19:51,939 - ai_detector_main - INFO - Test accuracy: 0.7750 (std=0.0000)
+2026-06-13 14:19:51,946 - ai_detector_main - INFO - Test loss:     1.3030 (std=0.0000)
+2026-06-13 14:19:51,949 - ai_detector_main - INFO - Test F1:       0.7181
+2026-06-13 14:19:51,950 - ai_detector_main - INFO - === Step 5: Generating mask visualisations ===
+2026-06-13 14:19:52,932 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample000.png
+2026-06-13 14:19:53,278 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample001.png
+2026-06-13 14:19:53,618 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample002.png
+2026-06-13 14:19:54,009 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample003.png
+2026-06-13 14:19:54,400 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample004.png
+2026-06-13 14:19:54,703 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample005.png
+2026-06-13 14:19:55,045 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample006.png
+2026-06-13 14:19:55,351 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample007.png
+2026-06-13 14:19:55,655 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample008.png
+2026-06-13 14:19:56,009 - Visualizer - INFO - Mask visualisation saved → output/mask_random__train_ADM_glide_wukong__test_sdv4_vqdm_sample009.png
+2026-06-13 14:19:56,379 - Visualizer - INFO - Saved figure to output/training_history_random__train_ADM_glide_wukong__test_sdv4_vqdm.png
+2026-06-13 14:19:56,590 - Visualizer - INFO - Saved figure to output/confusion_matrix_random__train_ADM_glide_wukong__test_sdv4_vqdm.png
+2026-06-13 14:19:56,603 - ai_detector_main - INFO - Results saved → output/results_random__train_ADM_glide_wukong__test_sdv4_vqdm.json
+2026-06-13 14:19:56,875 - ai_detector_main - INFO - Loading existing model and rules from output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 14:19:56,876 - model_architecture - INFO - Loading complete model state from output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.*
+2026-06-13 14:19:56,881 - model_architecture - INFO - Initializing ModelWrapper...
+2026-06-13 14:19:56,882 - model_architecture - INFO - Initializing AIDetectorModel...
+2026-06-13 14:19:56,882 - model_architecture - INFO - Building model architecture. Use features: True
+2026-06-13 14:19:56,883 - model_architecture - INFO - Using compute dtype: float32, variable dtype: float32
+2026-06-13 14:19:56,935 - model_architecture - INFO - Building model with feature extraction branch.
+2026-06-13 14:19:57,009 - model_architecture - INFO - Model compilation complete.
+2026-06-13 14:19:57,010 - model_architecture - INFO - AIDetectorModel initialized.
+2026-06-13 14:19:57,010 - model_architecture - INFO - ModelWrapper initialized. mask_mode='random'
+2026-06-13 14:19:57,013 - model_architecture - INFO - Loading model from output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.keras...
+2026-06-13 14:19:57,203 - model_architecture - INFO - Model loaded successfully. Use features: True
+2026-06-13 14:19:57,204 - model_architecture - INFO - Model state loaded from: output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm.keras, output/model_random__train_ADM_glide_wukong__test_sdv4_vqdm_config.json
+2026-06-13 14:19:57,204 - ai_detector_main - INFO - Model state loaded successfully.
+2026-06-13 14:19:57,205 - ai_detector_main - INFO - AI detector pipeline completed successfully

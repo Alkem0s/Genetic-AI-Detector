@@ -11,6 +11,12 @@
 \usepackage{booktabs}
 \usepackage{subcaption}
 
+% Relax strict LaTeX float constraints to prevent small tables/figures from taking up entire pages
+\renewcommand{\topfraction}{0.85}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.15}
+\renewcommand{\floatpagefraction}{0.75}
+
 \begin{document}
 
 \title{Evolving Patch-Level Attention via Genetic Algorithm for AI-Generated Image Detection Under Cross-Generator Shift}
@@ -26,7 +32,7 @@
 \maketitle
 
 \begin{abstract}
-Detecting AI-generated images becomes substantially harder when the test images come from generators unseen during training. We address this cross-generator distribution shift by introducing a pipeline in which a genetic algorithm evolves conditional rulesets that produce per-image soft attention masks over a patch grid, highlighting regions whose patch-level features---gradient statistics, noise residuals, texture, and spectral properties---best separate AI-generated from human-generated content. These masks are provided as a secondary input channel to a CNN classifier alongside the raw image, allowing the network to leverage both pixel-level patterns and structured feature-level attention. To isolate the contribution of the evolutionary search, we compare three models sharing an identical CNN backbone: a baseline with no masking, a model with GA-evolved masks, and a control model with random masks matched to the same sparsity distribution. In-distribution, all three models converge to comparable accuracy ($\sim$98.4\%), confirming that masking offers no advantage when generator-specific artifacts are directly learnable from pixels. Under cross-generator shift, the GA-masked model achieves 78.6\% accuracy and 88.9\% precision compared to 77.7\% accuracy and 83.4\% precision for the baseline, while the random-masked control performs at or below the baseline (77.5\% accuracy, 71.8\% F1), confirming that the advantage stems from the structure of patch selection rather than sparsity or the additional input channel. JPEG robustness analysis reveals that the masking channel introduces sensitivity to lossy compression, a trade-off inherent to reliance on fine-grained spatial statistics. These results demonstrate that evolutionary feature masking captures generator-invariant discriminative structure that random selection does not, with the benefit emerging specifically under distribution shift.
+Detecting AI-generated images becomes substantially harder when the test images come from generators unseen during training. We address this cross-generator distribution shift by introducing a pipeline in which a genetic algorithm evolves conditional rulesets that produce per-image soft attention masks over a patch grid, highlighting regions whose patch-level features (gradient statistics, noise residuals, texture, and spectral properties) best separate AI-generated from human-generated content. These masks are provided as a secondary input channel to a CNN classifier alongside the raw image, allowing the network to leverage both pixel-level patterns and structured feature-level attention. To isolate the contribution of the evolutionary search, we compare three models sharing an identical CNN backbone: a baseline with no masking, a model with GA-evolved masks, and a control model with random masks matched to the same sparsity distribution. In-distribution, all three models converge to comparable accuracy ($\sim$98.4\%), confirming that masking offers no advantage when generator-specific artifacts are directly learnable from pixels. Under cross-generator shift, the GA-masked model achieves 78.6\% accuracy and 88.9\% precision compared to 77.7\% accuracy and 83.4\% precision for the baseline, while the random-masked control performs at or below the baseline (77.5\% accuracy, 71.8\% F1), confirming that the advantage stems from the structure of patch selection rather than sparsity or the additional input channel. JPEG robustness analysis reveals that the masking channel introduces sensitivity to lossy compression, a trade-off inherent to reliance on fine-grained spatial statistics. These results demonstrate that evolutionary feature masking captures generator-invariant discriminative structure that random selection does not, with the benefit emerging specifically under distribution shift.
 
 \keywords{AI-generated image detection \and Genetic algorithm \and Feature masking \and Cross-generator generalization \and Distribution shift}
 \end{abstract}
@@ -35,13 +41,13 @@ Detecting AI-generated images becomes substantially harder when the test images 
 \section{Introduction}
 %% ====================================================================
 
-The rapid advancement of generative models has made photorealistic synthetic imagery trivially producible. Diffusion-based architectures such as ADM~\cite{dhariwal2021diffusion} and GLIDE~\cite{nichol2022glide}, latent diffusion systems such as Stable Diffusion~\cite{rombach2022highresolution}, and autoregressive systems such as VQDM each produce distinct families of visual artifacts that are difficult to characterise with a single static detector. More recent systems such as DALL-E~3~\cite{betker2023dalle3}, Midjourney, and FLUX~\cite{flux2024} continue to push photorealism to the point where generated images are often indistinguishable from photographs by human observers, making this a moving-target problem in which each new generator family may invalidate existing detection strategies. Detection systems trained on one family of generators routinely fail when evaluated on images from generators unseen during training~\cite{zhu2023genimage}. This cross-generator distribution shift represents the central practical obstacle in the field: a detector that works only on known generators has limited real-world value.
+The rapid advancement of generative models has made photorealistic synthetic imagery trivially producible. Diffusion-based architectures such as ADM~\cite{dhariwal2021diffusion} and GLIDE~\cite{nichol2022glide}, latent diffusion systems such as Stable Diffusion~\cite{rombach2022highresolution}, and autoregressive systems such as VQDM each produce distinct families of visual artifacts that are difficult to characterize with a single static detector. More recent systems such as DALL-E~3~\cite{betker2023dalle3}, Midjourney, and FLUX~\cite{flux2024} continue to push photorealism to the point where generated images are often indistinguishable from photographs by human observers, making this a moving-target problem in which each new generator family may invalidate existing detection strategies. Detection systems trained on one family of generators routinely fail when evaluated on images from generators unseen during training~\cite{zhu2023genimage}. This cross-generator distribution shift represents the central practical obstacle in the field: a detector that works only on known generators has limited real-world value.
 
-Most existing detection pipelines pass entire images through a convolutional or transformer backbone and rely on the network to discover discriminative features on its own. A natural question arises from this setup: whether explicitly guiding the network to attend to specific spatial regions---patches that carry discriminative artifacts---can improve robustness to generator shift. The present work explores one instantiation of this idea. A genetic algorithm evolves conditional rulesets that, when applied to per-patch feature vectors, produce a per-image soft mask over a patch grid. The fitness function rewards rulesets whose selected patches maximise the statistical divergence between AI-generated and human-generated feature distributions. These masks are then provided as a second input channel to a convolutional neural network classifier alongside the raw image.
+Most existing detection pipelines pass entire images through a convolutional or transformer backbone and rely on the network to discover discriminative features on its own. A natural question arises from this setup: whether explicitly guiding the network to attend to specific spatial regions---patches that carry discriminative artifacts---can improve robustness to generator shift. The present work explores one instantiation of this idea. A genetic algorithm evolves conditional rulesets that, when applied to per-patch feature vectors, produce a per-image soft mask over a patch grid. The fitness function rewards rulesets whose selected patches maximize the statistical divergence between AI-generated and human-generated feature distributions. These masks are then provided as a second input channel to a convolutional neural network classifier alongside the raw image.
 
 This work focuses on a specific question: whether structured, per-image algorithmic masking via genetic algorithm provides discriminative signals compared to random masking or no masking, and whether this advantage is more pronounced under cross-generator distribution shift than in-distribution. The experiments are designed to isolate this question through controlled comparison of three models sharing an identical CNN backbone, differing only in their masking strategy.
 
-The remainder of this paper is organised as follows. Section~2 surveys related work in AI-generated image detection and evolutionary approaches. Section~3 describes the methodology in detail, including the feature extraction pipeline, genetic algorithm design, and CNN architecture. Section~4 presents the experimental setup, including dataset construction and hyperparameter configuration. Section~5 reports the results of four experiments. Section~6 discusses the implications and limitations of the findings.
+The remainder of this paper is organized as follows. Section~2 surveys related work in AI-generated image detection and evolutionary approaches. Section~3 describes the methodology in detail, including the feature extraction pipeline, genetic algorithm design, and CNN architecture. Section~4 presents the experimental setup, including dataset construction and hyperparameter configuration. Section~5 reports the results of four experiments. Section~6 discusses the implications and limitations of the findings.
 
 %% ====================================================================
 \section{Related Works}
@@ -51,30 +57,30 @@ The detection of AI-generated images has been approached from several angles, in
 
 Bird and Lotfi~\cite{bird2023cifake} proposed a straightforward CNN classifier trained on the CIFAKE dataset, achieving approximately 92.9\% accuracy on 32$\times$32 real-versus-diffusion images. While effective within its training distribution, the static nature of the architecture means it cannot adapt its feature extraction strategy to new generators. The model learns generator-specific pixel-level patterns rather than more fundamental signatures of synthetic content, resulting in poor cross-generator transfer.
 
-Liu et al.~\cite{liu2022detecting} took a different approach by leveraging frequency-domain noise patterns. They observed that authentic images share common noise characteristics in the frequency domain that GAN-generated or flow-based images lack, and trained a simple classifier on these patterns. While the single noise-residual feature is effective for certain generator families, it represents only one of many possible discriminative signals. The approach is limited by its reliance on a single statistical dimension.
+Liu et al.~\cite{liu2022detecting} took a different approach by leveraging frequency-domain noise patterns. They observed that authentic images share common noise characteriztics in the frequency domain that GAN-generated or flow-based images lack, and trained a simple classifier on these patterns. While the single noise-residual feature is effective for certain generator families, it represents only one of many possible discriminative signals. The approach is limited by its reliance on a single statistical dimension.
 
 Sinitsa and Fried~\cite{sinitsa2024fingerprint} introduced a model-specific fingerprint computed by averaging denoised residuals of generated images. This allows detection of images from a specific generator with very few training samples, but the method requires re-extraction of a new fingerprint for each previously unseen generator. The approach is inherently generator-specific rather than generator-agnostic.
 
-The problem of patch-level feature utilisation has received direct attention in recent work. Yang et al.~\cite{yang2025panoptic} identified a ``Few-Patch Bias'' in naive detectors: networks tend to latch onto a small number of salient patches while ignoring the rest of the image. Their Panoptic Patch Learning framework uses random patch replacement and patch-wise contrastive learning to force the network to attend to all patches uniformly. The present work addresses the same underlying observation but from the opposite direction---rather than forcing uniform patch usage, it uses evolutionary optimisation to discover which patches actually carry the strongest discriminative signals.
+The problem of patch-level feature utilisation has received direct attention in recent work. Yang et al.~\cite{yang2025panoptic} identified a ``Few-Patch Bias'' in naive detectors: networks tend to latch onto a small number of salient patches while ignoring the rest of the image. Their Panoptic Patch Learning framework uses random patch replacement and patch-wise contrastive learning to force the network to attend to all patches uniformly. The present work addresses the same underlying observation but from the opposite direction---rather than forcing uniform patch usage, it uses evolutionary optimization to discover which patches actually carry the strongest discriminative signals.
 
-Transformer-based approaches have also been explored. Liu et al.~\cite{liu2024fatformer} introduced FatFormer, which adds specialised forgery-aware adapter modules to a pretrained CLIP-ViT backbone. The method integrates image and frequency features and aligns them with text embeddings through language prompts. While effective, it depends on large pretrained models and does not provide explicit control over which spatial regions receive attention.
+Transformer-based approaches have also been explored. Liu et al.~\cite{liu2024fatformer} introduced FatFormer, which adds specialized forgery-aware adapter modules to a pretrained CLIP-ViT backbone. The method integrates image and frequency features and aligns them with text embeddings through language prompts. While effective, it depends on large pretrained models and does not provide explicit control over which spatial regions receive attention.
 
 Epstein et al.~\cite{epstein2023online} studied detection in a continual learning setting, sequentially training on images from generator releases over time. Their work underscores the need for detectors that can adapt as new models appear, though their approach focuses on the learning regime rather than on feature engineering or spatial attention.
 
-In the evolutionary computation domain, Lin et al.~\cite{lin2023genetic} developed a genetic programming framework that evolves tree-structured programs for interpretable AI-generated image detection. Their programs process images through four specialised layers: region detection, image filtering, feature extraction, and feature concatenation before SVM classification. While achieving competitive cross-generator performance (e.g., 95.67\% accuracy on StarGAN), their approach processes entire images through fixed pipelines rather than performing per-image spatial selection.
+In the evolutionary computation domain, Lin et al.~\cite{lin2023genetic} developed a genetic programming framework that evolves tree-structured programs for interpretable AI-generated image detection. Their programs process images through four specialized layers: region detection, image filtering, feature extraction, and feature concatenation before SVM classification. While achieving competitive cross-generator performance (e.g., 95.67\% accuracy on StarGAN), their approach processes entire images through fixed pipelines rather than performing per-image spatial selection.
 
-The present work uses evolutionary optimisation to evolve conditional rulesets that construct per-image attention masks from patch-level features. These masks are fed alongside the raw image into a standard CNN classifier. Because the ruleset and the classifier are separate components, the contribution of the evolutionary search can be isolated by comparing it against random masks of identical sparsity---a controlled experimental design that none of the surveyed works provide. This separation also means the approach is modular: the ruleset evolves on feature-level statistics independently of the CNN training loop, and the CNN receives both raw pixels and mask-weighted feature maps for its classification decision.
+The present work uses evolutionary optimization to evolve conditional rulesets that construct per-image attention masks from patch-level features. These masks are fed alongside the raw image into a standard CNN classifier. Because the ruleset and the classifier are separate components, the contribution of the evolutionary search can be isolated by comparing it against random masks of identical sparsity---a controlled experimental design that none of the surveyed works provide. This separation also means the approach is modular: the ruleset evolves on feature-level statistics independently of the CNN training loop, and the CNN receives both raw pixels and mask-weighted feature maps for its classification decision.
 
 %% ====================================================================
 \section{Methodology}
 %% ====================================================================
 
-The system operates in three sequential phases. Phase~1 optimises per-feature importance weights using Bayesian hyperparameter optimisation (Optuna~\cite{akiba2019optuna}), establishing which of the eight patch-level features carry the most discriminative information. Phase~2 evolves a set of conditional rules using a genetic algorithm implemented with the DEAP framework~\cite{fortin2012deap}; these rules are applied to patch-level features to produce a per-image soft mask over the patch grid. Phase~3 trains a convolutional neural network classifier that receives two inputs: the raw image and a feature map constructed from the mask-weighted patch features. Fig.~\ref{fig:pipeline} illustrates the overall architecture.
+The system operates in three sequential phases. Phase~1 optimizes per-feature importance weights using Bayesian hyperparameter optimization (Optuna~\cite{akiba2019optuna}), establishing which of the eight patch-level features carry the most discriminative information. Phase~2 evolves a set of conditional rules using a genetic algorithm implemented with the DEAP framework~\cite{fortin2012deap}; these rules are applied to patch-level features to produce a per-image soft mask over the patch grid. Phase~3 trains a convolutional neural network classifier that receives two inputs: the raw image and a feature map constructed from the mask-weighted patch features. The overall pipeline is illustrated in Fig.~\ref{fig:pipeline}.
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.55\textwidth]{deepseek_mermaid_20250619_c4d3df}
-\caption{Architecture of the proposed pipeline. The data pipeline feeds images both directly to the CNN and through the feature extraction module. The genetic algorithm optimises conditional rules that generate dynamic per-image masks from extracted features. These masks modulate the feature maps before they enter the CNN attention mechanism, where they are fused with the image branch for final classification.}
+\includegraphics[width=0.45\textwidth]{general_pipeline}
+\caption{Overall pipeline of the proposed approach. Images are divided into patch grids for feature extraction. The genetic algorithm evolves conditional rulesets using DEAP to generate dynamic, soft attention masks. These masks weigh the patch features, which are then upsampled and input to the CNN alongside the raw image for final classification.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -91,35 +97,43 @@ The gradient perfection metric applies Sobel operators~\cite{kanopoulos1988desig
 G_x = \begin{bmatrix} -1 & 0 & 1 \\ -2 & 0 & 2 \\ -1 & 0 & 1 \end{bmatrix}, \quad
 G_y = \begin{bmatrix} -1 & -2 & -1 \\ 0 & 0 & 0 \\ 1 & 2 & 1 \end{bmatrix}
 \end{equation}
-The gradient magnitude $M = \sqrt{G_x^2 + G_y^2}$ is computed per pixel, and the feature value is the variance of $M$ over the patch. Unnaturally smooth transitions in AI-generated images produce lower gradient variance than natural camera images.
+The gradient magnitude $M = \sqrt{G_x^2 + G_y^2}$ is computed per pixel. The base feature score is the inverse of the normalized magnitude variance over the patch: $P_{\text{grad}} = 1 / (\text{Var}(M / G_{\text{max}}) + \epsilon)$. To incorporate spatial weighting, this base patch score is multiplied by a centered radial decay map $g(y,x)$ computed for each pixel coordinate $(y,x)$ within the patch:
+\begin{equation}
+g(y,x) = 1.0 - \frac{\sqrt{(y - y_c)^2 + (x - x_c)^2}}{d_{\text{max}}}
+\label{eq:radialdecay}
+\end{equation}
+where $(y_c, x_c)$ is the pixel-level patch center and $d_{\text{max}}$ is the maximum distance from the center to a corner within the $8 \times 8$ pixel patch. The final feature value for the patch is the mean of this weighted pixel-level map. Unnaturally smooth transitions in AI-generated images produce lower gradient variance, yielding higher perfection scores.
 
 The noise uniformity feature applies a Laplacian filter~\cite{gonzalez2002digital} to isolate high-frequency noise:
 \begin{equation}
 L = \begin{bmatrix} 0 & 1 & 0 \\ 1 & -4 & 1 \\ 0 & 1 & 0 \end{bmatrix}, \quad \text{Noise} = \text{Var}(\nabla^2 I)
 \end{equation}
-The variance of the Laplacian response captures the absence of natural sensor noise that is characteristic of generated images.
+A low variance of the Laplacian response indicates an unnaturally smooth noise distribution, characteriztic of generated images, as opposed to the irregular grain introduced by natural camera sensors; a high variance indicates the noisy, textured response typical of authentic photographs.
 
-The symmetry feature measures horizontal and vertical pixel-difference symmetry by computing the normalised correlation between opposite halves of the patch:
+The symmetry feature measures horizontal and vertical pixel-difference symmetry. It splits the patch vertically and horizontally, reversing one half to align coordinates. Horizontal and vertical symmetry scores are computed as:
 \begin{equation}
-S = \frac{\sum (I_{\text{left}} \odot I_{\text{right}})}{\|I_{\text{left}}\| \cdot \|I_{\text{right}}\|}
+S_{\text{h}} = 1.0 - \frac{\text{Mean}(|I_{\text{left}} - \text{Rev}(I_{\text{right}})|)}{\max(I) + \epsilon}, \quad S_{\text{v}} = 1.0 - \frac{\text{Mean}(|I_{\text{top}} - \text{Rev}(I_{\text{bottom}})|)}{\max(I) + \epsilon}
 \end{equation}
-Generative models, particularly those conditioned on symmetric prompts, exhibit bias toward unnatural levels of spatial symmetry.
+The composite symmetry score $(S_{\text{h}} + S_{\text{v}}) / 2$ is multiplied by the same centered radial decay map $g(y,x)$ from Eq.~\ref{eq:radialdecay} to produce a pixel-level weighted map, whose mean over the patch pixels is taken as the final feature value. Generative models, particularly those conditioned on symmetric prompts, exhibit bias toward unnatural levels of spatial symmetry.
 
 The LBP texture feature implements Local Binary Patterns~\cite{ojala2002multiresolution} by comparing each pixel $p_c$ with its eight neighbours $p_i$ in a circular arrangement:
 \begin{equation}
 \text{LBP} = \sum_{i=0}^{7} s(p_i - p_c) \cdot 2^i, \quad s(x) = \begin{cases} 1 & x \geq 0 \\ 0 & \text{otherwise} \end{cases}
 \end{equation}
-The resulting histogram entropy characterises local texture regularity.
+The feature value is the mean normalized LBP code over the patch, capturing micro-texture regularities.
 
-The colour saturation feature converts the patch to HSV colour space and computes the variance of the saturation channel:
+The color saturation feature converts the patch to HSV color space and computes the variance of the saturation channel:
 \begin{equation}
 \sigma_S^2 = \frac{1}{HW} \sum_{i,j} (S_{ij} - \mu_S)^2
 \end{equation}
-AI-generated images often exhibit unnaturally uniform colour distributions that produce low saturation variance.
+AI-generated images often exhibit unnaturally uniform color distributions that produce low saturation variance.
 
-The hash complexity feature computes a DCT-based perceptual hash by reducing the patch to an $8 \times 8$ grayscale representation, computing the Discrete Cosine Transform, and measuring the entropy of bit transitions in the resulting hash. This captures overall synthetic signatures related to the spectral structure of the patch.
+The hash complexity feature computes a DCT-based perceptual hash by reducing the patch to an $8 \times 8$ grayscale representation, computing the 2D Discrete Cosine Transform, and binarising the coefficients relative to their mean. The feature value is the normalized count of bit transitions along rows and columns, capturing structural order.
 
-The GLCM texture feature computes Gray-Level Co-occurrence Matrix~\cite{haralick1973textural} contrast and homogeneity scores. The co-occurrence matrix tabulates the frequency of pixel-intensity pairs at a fixed spatial offset, and the derived statistics capture second-order texture properties.
+The GLCM texture feature computes a Gray-Level Co-occurrence Matrix~\cite{haralick1973textural} approximation. The patch intensities are quantized to 16 levels, and the co-occurrence matrix is computed for a horizontal displacement ($\Delta x = 1, \Delta y = 0$). The patch score is a linear combination of normalized contrast $C_{\text{norm}}$ and homogeneity $H_{\text{norm}}$:
+\begin{equation}
+\text{GLCM}_{\text{score}} = 0.6 \cdot H_{\text{norm}} + 0.4 \cdot (1 - C_{\text{norm}})
+\end{equation}
 
 The local entropy feature computes the Shannon entropy of quantised grayscale intensity histograms within each patch:
 \begin{equation}
@@ -127,20 +141,34 @@ H = -\sum_{k} p_k \log_2 p_k
 \end{equation}
 where $p_k$ is the probability of intensity bin $k$. Low-entropy patches indicate regions of unnaturally flat intensity.
 
-Feature values are dynamically normalised using per-feature 99th-percentile scales computed from the training set, ensuring consistent ranges across datasets and preventing outlier domination. These scales are computed once during the preprocessing stage and serialised for consistent application during evaluation and inference.
+Feature values are dynamically normalized using per-feature 99th-percentile scales computed from the training set, ensuring consistent ranges across datasets and preventing outlier domination. These scales are computed once during the preprocessing stage and serialised for consistent application during evaluation and inference. Crucially, scaling the features into the unit interval $[0, 1]$ (with values above the 99th percentile clipped to 1.0) enables a uniform ruleset representation in the genetic algorithm. Because every feature channel is bounded to $[0, 1]$, the GA can utilize a single, uniform threshold search space of $[0, 1]$ and uniform crossover/mutation operators across all rules, regardless of the physical units or raw magnitudes of the underlying features (e.g., Laplacian variance vs.\ Local Binary Patterns).
 
 \subsection{Genetic Algorithm}
 
 The genetic algorithm is implemented using the DEAP framework~\cite{fortin2012deap}, a Python library for evolutionary computation that provides infrastructure for population management, tournament selection, crossover, mutation, and Hall of Fame elitism. The GA operates on the precomputed patch feature tensor $\mathbf{F}$ and evolves a population of candidate rulesets, each representing a strategy for constructing per-image attention masks.
 
-Each individual in the population encodes a variable-length set of conditional rules (up to 40 rules, with typically 10 active at initialisation) as a tensor of shape $[\text{max\_rules}, 4]$, where each row encodes a rule $r_i = [\text{feature\_index},\; \text{threshold},\; \text{operator},\; \text{action}]$. The feature index selects one of the eight feature channels, the threshold is a scalar in $[0, 1]$, the operator is either greater-than or less-than, and the action is either include or exclude. Rules with a feature index of $-1$ are treated as inactive padding.
+Each individual in the population encodes a variable-length set of conditional rules (up to 40 rules, with typically 10 active at initialisation) as a tensor of shape $[\text{max\_rules}, 4]$, where each row encodes a rule $r_i = [f_i, \theta_i, op_i, a_i]$ representing feature index, threshold, operator, and action ($a_i \in \{\text{include}, \text{exclude}\}$), respectively. The feature index selects one of the eight feature channels, the threshold is a scalar in $[0, 1]$, the operator is either greater-than or less-than, and the action is either include or exclude. Rules with a feature index of $-1$ are treated as inactive padding.
 
-For a given image with patch features $\mathbf{F} \in \mathbb{R}^{32 \times 32 \times 8}$, each rule votes independently on each patch. The final soft mask is computed as the difference of normalised include and exclude vote fractions:
+For a given image with patch features $\mathbf{F} \in \mathbb{R}^{32 \times 32 \times 8}$, each rule votes independently on each patch. Let $\mathbb{1}[r_i \text{ fires at } (h,w)]$ be an indicator variable representing whether rule $r_i$ is activated:
 \begin{equation}
-m(h,w) = \text{clip}\!\left(\frac{\sum_{r \in R_{\text{incl}}} \mathbb{1}[r \text{ fires at } (h,w)]}{|R_{\text{incl}}|} - \frac{\sum_{r \in R_{\text{excl}}} \mathbb{1}[r \text{ fires at } (h,w)]}{|R_{\text{excl}}|},\; 0,\; 1\right)
+\mathbb{1}[r_i \text{ fires at } (h,w)] = \begin{cases} 
+1 & \text{if } \mathbf{F}(h,w,f_i) \mathbin{op_i} \theta_i \\
+0 & \text{otherwise} 
+\end{cases}
+\end{equation}
+The final soft mask is computed as the difference of normalized include and exclude vote fractions:
+\begin{equation}
+m(h,w) = \text{clip}\!\left(V_{\text{incl}}(h,w) - V_{\text{excl}}(h,w),\; 0,\; 1\right)
 \label{eq:softmask}
 \end{equation}
-where $R_{\text{incl}}$ and $R_{\text{excl}}$ denote the subsets of include and exclude rules respectively. This formulation produces a soft mask: patches with unanimous include votes receive weight 1.0, patches with mixed signals receive fractional weights, and patches with net exclusion receive weight 0.0. The entire mask generation procedure is implemented as a single vectorised TensorFlow graph via \texttt{@tf.function} to allow batched processing on GPU without Python-level loops.
+where the vote fractions are aggregated as:
+\begin{equation}
+\begin{aligned}
+V_{\text{incl}}(h,w) &= \frac{\sum_{r \in R_{\text{incl}}} \mathbb{1}[r \text{ fires at } (h,w)]}{\max(|R_{\text{incl}}|, 1)} \\[1ex]
+V_{\text{excl}}(h,w) &= \frac{\sum_{r \in R_{\text{excl}}} \mathbb{1}[r \text{ fires at } (h,w)]}{\max(|R_{\text{excl}}|, 1)}
+\end{aligned}
+\end{equation}
+and $R_{\text{incl}}$ and $R_{\text{excl}}$ denote the active subsets of include and exclude rules respectively. If a subset is empty, its vote fraction is set to zero. This formulation produces a soft mask: patches with net include votes receive fractional weights, and patches with net exclusion receive weight 0.0. The entire mask generation procedure is implemented as a single vectorised TensorFlow graph via \texttt{@tf.function} to allow batched processing on GPU without Python-level loops.
 
 The fitness of an individual is a weighted combination of four objectives:
 \begin{equation}
@@ -148,38 +176,60 @@ The fitness of an individual is a weighted combination of four objectives:
 \label{eq:fitness}
 \end{equation}
 
-The divergence score $D$ is the primary fitness component and measures how well the mask-selected patches separate AI-generated from human-generated images across the evaluation batch. It combines Fisher Discriminant Ratio (FDR)~\cite{fisher1936use} and Bhattacharyya distance~\cite{bhattacharyya1943measure} into a composite score weighted by the per-feature importance weights from Phase~1:
+The divergence score $D$ is the primary fitness component and measures how well the mask-selected patches separate AI-generated from human-generated images across the evaluation batch. Because the statistical distance measures (FDR and Bhattacharyya) are highly sensitive to class size imbalances, the pipeline enforces strict stratified sampling to maintain a $50/50$ AI-to-human class layout during evaluation. This prevents the divergence metric from being biased by majority categories or specific generator subsets. The divergence score combines Fisher Discriminant Ratio (FDR)~\cite{fisher1936use} and Bhattacharyya distance~\cite{bhattacharyya1943measure} into a composite score weighted by the per-feature importance weights from Phase~1:
 \begin{equation}
 D = \sum_f w_f \left(0.6 \cdot (1 - e^{-\text{FDR}_f}) + 0.4 \cdot (1 - e^{-\text{BC}_f})\right)
 \label{eq:divergence}
 \end{equation}
-The FDR for each feature channel $f$ is computed as $\text{FDR}_f = (\mu_{f}^{\text{ai}} - \mu_{f}^{\text{human}})^2 / (\sigma_{f,\text{ai}}^2 + \sigma_{f,\text{human}}^2 + \epsilon)$, where $\mu$ and $\sigma^2$ are the mean and variance of the masked feature vectors for each class. The Bhattacharyya distance uses a Gaussian approximation combining both shape and Mahalanobis terms: $\text{BC}_f = 0.5 \cdot \ln\!\left(\frac{\bar{\sigma}_f^2}{\sigma_{f,\text{ai}} \cdot \sigma_{f,\text{human}}}\right) + 0.25 \cdot \frac{(\mu_f^{\text{ai}} - \mu_f^{\text{human}})^2}{\sigma_{f,\text{ai}}^2 + \sigma_{f,\text{human}}^2}$. Both measures are saturated through the $1 - e^{-x}$ transform to prevent unbounded growth. The divergence score is gated by a sparsity floor: $D_{\text{gated}} = D \cdot \min(\text{sparsity}/0.10, 1)$, which prevents degenerate masks that select fewer than 10\% of patches from receiving inflated divergence scores.
+The FDR for each feature channel $f$ is computed as:
+\begin{equation}
+\text{FDR}_f = \frac{(\mu_{f}^{\text{ai}} - \mu_{f}^{\text{human}})^2}{\sigma_{f,\text{ai}}^2 + \sigma_{f,\text{human}}^2 + \epsilon}
+\end{equation}
+where $\mu$ and $\sigma^2$ are the mean and variance of the masked feature vectors for each class. The Bhattacharyya distance uses a Gaussian approximation combining both shape and Mahalanobis terms:
+\begin{equation}
+\text{BC}_f = 0.5 \ln\!\left(\frac{\bar{\sigma}_f^2}{\sigma_{f,\text{ai}} \sigma_{f,\text{human}}}\right) + 0.25 \frac{(\mu_f^{\text{ai}} - \mu_f^{\text{human}})^2}{\sigma_{f,\text{ai}}^2 + \sigma_{f,\text{human}}^2}
+\end{equation}
+Both measures are saturated through the $1 - e^{-x}$ transform to prevent unbounded growth. To prevent degenerate masks that select only a tiny fraction of patches and overfit to the training batch without generalizing, the divergence score is gated by a sparsity floor: $D_{\text{gated}} = D \cdot \min(\text{sparsity}/0.10, 1)$. This gates out degenerate masks selecting fewer than 10\% of the spatial grid.
 
 The efficiency score $E$ applies a quadratic penalty outside a target sparsity range:
 \begin{equation}
 E = \max\!\left(1 - \left(\frac{\max(|\text{sparsity} - t| - r, 0)}{0.4}\right)^{\!2},\; 0\right)
 \end{equation}
-where $t$ is the target sparsity and $r$ is the tolerance radius. This produces a plateau of perfect efficiency within the target range and smooth degradation outside it.
+where $t$ is the target sparsity and $r$ is the tolerance radius. This produces a plateau of perfect efficiency within the target range and smooth degradation outside it, preventing the search from collapsing into degenerate all-mask (which mimics the baseline CNN) or zero-mask solutions.
 
-The connectivity score $C$ measures spatial coherence of selected patches using convolution with a cross-shaped 3$\times$3 kernel. For each selected patch, the kernel counts the number of selected neighbours (up to 4). The connectivity score is the mean ratio of actual to maximum possible connections across the batch, normalised to $[0, 1]$. This encourages spatially contiguous mask regions rather than scattered selections.
+The connectivity score $C$ measures spatial coherence of selected patches using convolution with a cross-shaped 3$\times$3 kernel. For each selected patch, the kernel counts the number of selected neighbours (up to 4). The connectivity score is the mean ratio of actual to maximum possible connections across the batch, normalized to $[0, 1]$. This cross-shaped kernel prior rewards spatial contiguity of selected patches, encouraging the GA to select contiguous physical regions and image boundaries carrying actual generative artifacts, rather than scattered, high-frequency "salt-and-pepper" noise patches that lack structural coherence.
 
-The simplicity score $S$ penalises rule complexity beyond the number of features: $S = 1 - \max(\text{active\_rules} - 8, 0) / (\text{max\_rules} - 8)$. This prevents the GA from overfitting through excessive rule counts.
+The simplicity score $S$ penalises rule complexity beyond the number of features: $S = 1 - \max(\text{active\_rules} - 8, 0) / (\text{max\_rules} - 8)$. This parsimony constraint prevents the GA from overfitting through excessive rule counts and rule bloat, forcing the search to evolve compact, interpretable conditional rulesets.
 
-An inactive-weight penalty is applied to individuals that ignore high-weight features. The penalty sums the Phase~1 weights of features not utilised by any active rule and is phased in proportionally to the divergence score to avoid suppressing immature but promising individuals early in evolution.
+An inactive-weight penalty is applied to individuals that ignore high-weight features. The penalty sums the Phase~1 weights of features not utilised by any active rule and is phased in proportionally to the divergence score to avoid suppressing immature but promising individuals early in evolution. This enforces an "Honest Weights" policy, preventing the GA from ignoring statistically validated feature domains (e.g., noise uniformity or gradient perfection) in favor of exploiting noisy, low-weight features to achieve false statistical divergence.
 
 The selection mechanism uses tournament selection~\cite{goldberg1991comparative} with configurable tournament size. Crossover operates by swapping rule subsets between two parent individuals at a randomly chosen crossover point. Mutation introduces controlled perturbations to thresholds, flips comparison operators and actions, and can add or remove rules within predefined limits. Elitism preserves top individuals via a Hall of Fame with similarity-based deduplication, where similarity is computed as the fraction of matching rule components between two individuals.
 
+To prevent overfitting during the evolutionary search, the genetic algorithm incorporates a validation checkpointing mechanism utilizing a separate probe dataset. At designated generations, the best individual in the population is evaluated on the probe set. A blended validation score is computed as a weighted combination of training batch fitness ($30\%$) and probe set fitness ($70\%$):
+\begin{equation}
+\text{Fitness}_{\text{val}} = 0.3 \cdot \text{Fitness}_{\text{train}} + 0.7 \cdot \text{Fitness}_{\text{probe}}
+\label{eq:valblend}
+\end{equation}
+The candidate ruleset that achieves the highest validation score across all generations is restored as the final evolved ruleset. This blending forces the genetic search to prioritize rulesets that maintain high discriminability on the training set while demonstrating generalizability on the probe set.
+
 \subsection{Random Mask Generator (Control)}
 
-The random mask control is implemented as a subclass of the feature pipeline that replaces the GA mask generation step with a stochastic process. For each image, each patch is independently selected with probability equal to the mean sparsity of the GA masks (approximately 16.4\%). Seeds are derived deterministically from per-image feature sums via \texttt{tf.random.stateless\_uniform} to ensure that different images receive different masks while maintaining reproducibility across runs. The random pipeline reuses all other infrastructure---feature extraction, caching, normalisation, and dataset preparation---identically to the GA pipeline, ensuring that the only difference between the two conditions is the structure of the mask.
-
+The random mask control is implemented as a subclass of the feature pipeline that replaces the GA mask generation step with a stochastic process. For each image, each patch is independently selected with probability equal to the mean sparsity of the GA masks (approximately 16.4\%). Seeds are derived deterministically from per-image feature sums via \texttt{tf.random.stateless\_uniform} to ensure that different images receive different masks while maintaining reproducibility across runs. The random pipeline reuses all other infrastructure---feature extraction, caching, normalization, and dataset preparation---identically to the GA pipeline, ensuring that the only difference between the two conditions is the structure of the mask.
 \subsection{CNN Architecture}
 
-All three model variants share the same CNN architecture, implemented using TensorFlow and Keras~\cite{tensorflow2015whitepaper}. The image branch consists of three convolutional blocks, each containing a 2D convolutional layer with $3 \times 3$ kernels (32, 64, and 128 filters respectively), ReLU activation, $2 \times 2$ max-pooling, and batch normalisation~\cite{ioffe2015batch}.
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.45\textwidth]{model_architecture}
+\caption{Detailed architecture of the proposed CNN model with attention fusion. The image branch and feature branch process the raw image and upsampled feature map in parallel. A $1 \times 1$ convolution gates the spatial feature activations before fusion via cross-attention and a residual addition back into the image classification stream.}
+\label{fig:architecture}
+\end{figure}
 
-For the GA-masked and random-masked models, a parallel feature branch processes the $256 \times 256 \times 8$ feature map (mask-weighted patch features upsampled to image resolution) through a mirrored three-block architecture with the same filter progression. A $1 \times 1$ convolutional attention gate on the image branch produces spatial weights in $[0, 1]$ that modulate the feature branch output via element-wise multiplication. The modulated features are then element-wise multiplied with the image branch activations (cross-attention) and added back to the image branch through a residual connection. This mechanism allows the CNN to selectively integrate information from the mask-weighted features where the image content suggests relevance.
+All three model variants share the same CNN architecture, implemented using TensorFlow and Keras~\cite{tensorflow2015whitepaper}. The image branch consists of three convolutional blocks, each containing a 2D convolutional layer with $3 \times 3$ kernels (32, 64, and 128 filters respectively), ReLU activation, $2 \times 2$ max-pooling, and batch normalization~\cite{ioffe2015batch}.
 
-After the attention fusion, a fourth convolutional layer (128 filters, $3 \times 3$) feeds into $2 \times 2$ max-pooling, batch normalisation, and global average pooling. Two dropout layers with rates determined by hyperparameter optimisation precede a dense layer and a sigmoid output. The baseline model replaces the attention fusion with an additional convolutional layer to maintain comparable model capacity. Training uses the Adam optimiser~\cite{kingma2015adam} with binary cross-entropy loss, mixed-precision arithmetic (float16 compute, float32 accumulation) via \texttt{LossScaleOptimizer} for GPU efficiency, learning rate reduction on plateau, and early stopping. L2 kernel regularisation is applied to all convolutional and dense layers.
+For the GA-masked and random-masked models, a parallel feature branch processes the $256 \times 256 \times 8$ feature map (mask-weighted patch features upsampled from the $32 \times 32$ patch grid to image resolution via nearest-neighbour interpolation) through a mirrored three-block architecture with the same filter progression. A $1 \times 1$ convolutional attention gate on the image branch produces spatial weights in $[0, 1]$ that modulate the feature branch output via element-wise multiplication. The modulated features are then element-wise multiplied with the image branch activations (cross-attention) and added back to the image branch through a residual connection. This mechanism allows the CNN to selectively integrate information from the mask-weighted features where the image content suggests relevance. The detailed model architecture, including attention fusion, is shown in Fig.~\ref{fig:architecture}.
+
+After the attention fusion, a fourth convolutional layer (128 filters, $3 \times 3$) feeds into $2 \times 2$ max-pooling, batch normalization, and global average pooling. Two dropout layers with rates determined by hyperparameter optimization precede a dense layer and a sigmoid output. The baseline model replaces the attention fusion with an additional convolutional layer to maintain comparable model capacity. Training uses the Adam optimizer~\cite{kingma2015adam} with binary cross-entropy loss, mixed-precision arithmetic (float16 compute, float32 accumulation) via \texttt{LossScaleOptimizer} for GPU efficiency, learning rate reduction on plateau, and early stopping. L2 kernel regularisation is applied to all convolutional and dense layers.
+
 
 %% ====================================================================
 \section{Experimental Setup}
@@ -189,15 +239,81 @@ After the attention fusion, a fourth convolutional layer (128 filters, $3 \times
 
 All experiments use the GenImage benchmark~\cite{zhu2023genimage}, a large-scale dataset specifically designed for AI-generated image detection research. GenImage encompasses multiple generative model families and provides standardised train/test splits across generator types.
 
-Three generators are used for training: ADM~\cite{dhariwal2021diffusion}, GLIDE~\cite{nichol2022glide}, and Wukong. From each generator, 10{,}000 AI-generated and 10{,}000 real images are sampled, yielding a balanced training set of 30{,}000 images. For in-distribution evaluation, a stratified 20\% held-out validation split is drawn from the same generators (5{,}000 images). For cross-generator evaluation, two unseen generators are used: Stable Diffusion v4 (sdv4) and VQDM, with 2{,}500 AI-generated and 2{,}500 real images per generator (5{,}000 images total). All images are centre-cropped and resized to $256 \times 256$ pixels and normalised to $[0, 1]$. The dataset is loaded through a custom CSV-indexed pipeline built on TensorFlow's \texttt{tf.data} API, with stratified sampling to maintain balanced class distributions throughout all processing stages.
+Three generators are used for training: ADM~\cite{dhariwal2021diffusion}, GLIDE~\cite{nichol2022glide}, and Wukong. From each generator, 10{,}000 AI-generated and 10{,}000 real images are sampled, yielding a balanced training set of 30{,}000 images. For in-distribution evaluation, a stratified 20\% held-out validation split is drawn from the same generators (5{,}000 images). For cross-generator evaluation, two unseen generators are used: Stable Diffusion v4 (sdv4) and VQDM, with 2{,}500 AI-generated and 2{,}500 real images per generator (5{,}000 images total). All images are centre-cropped and resized to $256 \times 256$ pixels and normalized to $[0, 1]$. The dataset is loaded through a custom CSV-indexed pipeline built on TensorFlow's \texttt{tf.data} API, with stratified sampling to maintain balanced class distributions throughout all processing stages.
 
-\subsection{Hyperparameter Configuration}
+\subsection{Hyperparameter Optimization Framework and Objectives}
 
-The GA hyperparameters were selected through Bayesian optimisation using Optuna~\cite{akiba2019optuna}. Table~\ref{tab:ga_params} lists the final GA configuration. The population of 120 individuals evolves for 80 generations across three independent runs, and the ruleset with the highest fitness is selected for Phase~3.
+To systematically optimize the proposed pipeline, hyperparameter optimization (HPO) was conducted in three sequential phases using the Optuna framework~\cite{akiba2019optuna}: Phase~1 optimizes feature importance weights; Phase~2 tunes genetic algorithm parameters; and Phase~3 optimizes CNN training and architectural configurations.
+
+To find parameters and feature weights that generalize robustly under distribution shift, Phases~1 and 2 utilize a validation checkpointing objective that blends training set performance with cross-generator probe set performance. The probe set consists of images from unseen generators (specifically, Stable Diffusion v4 and VQDM), allowing the search to directly target cross-generator generalizability. In Phase~1 (feature weight optimization), the trial objective is a $30/70$ blend of training and probe set fitness:
+\begin{equation}
+\text{Objective}_{\text{HPO}} = 0.3 \cdot \text{Fitness}_{\text{train}} + 0.7 \cdot \text{Fitness}_{\text{probe}}
+\end{equation}
+where both terms incorporate the inactive feature weight penalty.
+
+In Phase~2 (GA hyperparameter optimization), the trial objective uses the same $30/70$ blend of unpenalized training and probe fitness, collapsing to pure probe fitness when the active weight penalty itself is being optimized to prevent numeric collapse of the search.
+
+For Phase~3, CNN classifier hyperparameters were optimized targeting downstream cross-generator validation accuracy on the probe set. The search spaces and resulting parameters are detailed in the following sections.
+
+\subsection{Phase 1 and Phase 2 Optimization Results}
+
+Phase~1 determines the relative importance of each feature channel for separating AI-generated from human-generated images. An Optuna study optimizes the set of eight feature weights by maximizing the fusion fitness score, which measures the overall discriminability of the weighted feature combination. Table~\ref{tab:feature_weights} presents the learned weights along with the achieved fusion fitness score. The corresponding fitness function component weights used in the genetic algorithm are listed in Table~\ref{tab:fitness_weights}.
+
+\begin{table}[!htbp]
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\caption{Learned feature weights from Phase~1 Bayesian optimization.}
+\label{tab:feature_weights}
+\vspace{0.5ex}
+\setlength{\tabcolsep}{4pt}
+\small
+\begin{tabular}{@{}lc@{}}
+\toprule
+Feature & Weight \\
+\midrule
+Noise uniformity & 0.318 \\
+Gradient perfection & 0.220 \\
+Hash complexity & 0.168 \\
+Symmetry & 0.101 \\
+LBP texture & 0.093 \\
+Local entropy & 0.051 \\
+Color saturation & 0.034 \\
+GLCM texture & 0.014 \\
+\midrule
+Fusion fitness score & 0.368 \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\caption{Fitness function component weights used in the genetic algorithm.}
+\label{tab:fitness_weights}
+\vspace{0.5ex}
+\setlength{\tabcolsep}{4pt}
+\small
+\begin{tabular}{@{}lc@{}}
+\toprule
+Component & Weight \\
+\midrule
+Divergence ($D$) & 0.75 \\
+Efficiency ($E$) & 0.10 \\
+Connectivity ($C$) & 0.05 \\
+Simplicity ($S$) & 0.10 \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\end{table}
+
+Noise uniformity receives the highest weight (0.318), consistent with the well-established observation that generative models produce unnaturally uniform noise distributions compared to natural camera sensor noise~\cite{liu2022detecting}. Gradient perfection ranks second (0.220), capturing the overly smooth gradient transitions characteriztic of diffusion model outputs. Hash complexity and symmetry contribute moderately, while GLCM texture and color saturation contribute minimally, suggesting that co-occurrence statistics and color distributions are less discriminative at the $8\times 8$ patch scale used in this study.
+
+The four components of the GA fitness function (Eq.~\ref{eq:fitness}) are weighted as shown in Table~\ref{tab:fitness_weights}. The divergence score receives the dominant weight (0.75), reflecting the primary objective of maximizing inter-class feature separation. Efficiency and simplicity each receive a weight of 0.10 to prevent degenerate or overly complex solutions, while connectivity receives a minimal weight of 0.05 as a soft encouragement toward spatially coherent masks.
+
+For Phase~2, the GA hyperparameters selected through Bayesian optimization are detailed in Table~\ref{tab:ga_params}. Under this setup, a population of 120 individuals evolves for 80 generations across three independent runs, and the candidate ruleset achieving the highest validation-checkpointed fitness is selected for downstream classification in Phase~3.
 
 \begin{table}[!htbp]
 \centering
-\caption{Genetic algorithm hyperparameters. Values were selected through Bayesian optimisation.}
+\caption{Genetic algorithm hyperparameters. Values were selected through Bayesian optimization.}
 \label{tab:ga_params}
 \begin{tabular}{@{}lc@{}}
 \toprule
@@ -220,11 +336,13 @@ Best fitness achieved & 0.325 \\
 \end{tabular}
 \end{table}
 
-CNN hyperparameters were optimised for the baseline and GA mask modes through separate Optuna studies targeting cross-generator validation accuracy. The random mask model reuses the GA mask hyperparameters to ensure a controlled comparison where architecture and training regime are identical, isolating the effect of mask structure. Table~\ref{tab:cnn_params} presents the resulting configurations.
+\subsection{Phase 3: CNN Classifier Optimization Results}
+
+CNN hyperparameters were optimized for the baseline and GA mask modes through separate Optuna studies targeting cross-generator validation accuracy. The random mask model reuses the GA mask hyperparameters to ensure a controlled comparison where the network architecture and training regime are identical, isolating the effect of mask structure. Table~\ref{tab:cnn_params} presents the resulting configurations.
 
 \begin{table}[!htbp]
 \centering
-\caption{CNN hyperparameters per mask mode. Values were selected through Bayesian optimisation targeting cross-generator validation accuracy.}
+\caption{CNN hyperparameters per mask mode. Values were selected through Bayesian optimization targeting cross-generator validation accuracy.}
 \label{tab:cnn_params}
 \begin{tabular}{@{}lccc@{}}
 \toprule
@@ -235,56 +353,7 @@ Dropout (layer 1) & 0.381 & 0.168 & 0.168 \\
 Dropout (layer 2) & 0.149 & 0.344 & 0.344 \\
 Dense units & 832 & 960 & 960 \\
 L2 regularisation & $1.79 \times 10^{-5}$ & $7.57 \times 10^{-4}$ & $7.57 \times 10^{-4}$ \\
-Optimiser & Adam & Adam & Adam \\
-HPO val.\ accuracy & 0.782 & 0.793 & 0.749 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Feature Weight Optimisation}
-
-Phase~1 of the pipeline determines the relative importance of each feature channel for separating AI-generated from human-generated images. An Optuna study optimises a set of eight feature weights by maximising a fusion fitness score that measures the overall discriminability of the weighted feature combination. Table~\ref{tab:feature_weights} presents the learned weights along with the achieved fusion fitness score.
-
-\begin{table}[!htbp]
-\centering
-\caption{Learned feature weights from Phase~1 Bayesian optimisation. The fusion fitness score (0.368) measures the overall discriminability of the weighted feature combination on the training set.}
-\label{tab:feature_weights}
-\begin{tabular}{@{}lc@{}}
-\toprule
-Feature & Weight \\
-\midrule
-Noise uniformity & 0.318 \\
-Gradient perfection & 0.220 \\
-Hash complexity & 0.168 \\
-Symmetry & 0.101 \\
-LBP texture & 0.093 \\
-Local entropy & 0.051 \\
-Colour saturation & 0.034 \\
-GLCM texture & 0.014 \\
-\midrule
-Fusion fitness score & 0.368 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Noise uniformity receives the highest weight (0.318), consistent with the well-established observation that generative models produce unnaturally uniform noise distributions compared to natural camera sensor noise~\cite{liu2022detecting}. Gradient perfection ranks second (0.220), capturing the overly smooth gradient transitions characteristic of diffusion model outputs. Hash complexity and symmetry contribute moderately, while GLCM texture and colour saturation contribute minimally, suggesting that co-occurrence statistics and colour distributions are less discriminative at the $8 \times 8$ patch scale used in this study.
-
-\subsection{Fitness Weights}
-
-The four components of the GA fitness function (Eq.~\ref{eq:fitness}) are weighted as shown in Table~\ref{tab:fitness_weights}. The divergence score receives the dominant weight (0.75), reflecting the primary objective of maximising inter-class feature separation. Efficiency and simplicity each receive a weight of 0.10 to prevent degenerate or overly complex solutions, while connectivity receives a minimal weight of 0.05 as a soft encouragement toward spatially coherent masks.
-
-\begin{table}[!htbp]
-\centering
-\caption{Fitness function component weights used in the genetic algorithm.}
-\label{tab:fitness_weights}
-\begin{tabular}{@{}lc@{}}
-\toprule
-Component & Weight \\
-\midrule
-Divergence score ($D$) & 0.75 \\
-Efficiency score ($E$) & 0.10 \\
-Connectivity score ($C$) & 0.05 \\
-Simplicity score ($S$) & 0.10 \\
+Optimizer & Adam & Adam & Adam \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -318,7 +387,7 @@ Random mask         & 0.9846 & 0.9845 & 0.9887 & 0.9804 \\
 
 All three models perform comparably, with accuracy differences within 0.14 percentage points. Neither masking strategy provides a meaningful advantage when the test set is drawn from the same generators used for training. This outcome is expected: when the CNN can already learn generator-specific artifacts directly from pixel patterns, the auxiliary masking signal has little room to add value. The GA-masked model achieves marginally higher precision (99.3\%) at the cost of slightly lower recall (97.6\%), indicating a tendency toward fewer but more confident positive predictions.
 
-Fig.~\ref{fig:training_indist} shows the training history for the baseline model in the in-distribution setting. Training accuracy converges smoothly toward 99\%, while validation accuracy exhibits characteristic oscillation around 90--97\% due to the relatively small validation set and the batch normalisation statistics mismatch between training and evaluation modes. The gap between training and validation loss indicates moderate overfitting, which is mitigated by early stopping.
+Fig.~\ref{fig:training_indist} shows the training history for the baseline model in the in-distribution setting. Training accuracy converges smoothly toward 99\%, while validation accuracy exhibits characteriztic oscillation around 90--97\% due to the relatively small validation set and the batch normalization statistics mismatch between training and evaluation modes. The gap between training and validation loss indicates moderate overfitting, which is mitigated by early stopping.
 
 \begin{figure}[!htbp]
 \centering
@@ -327,7 +396,7 @@ Fig.~\ref{fig:training_indist} shows the training history for the baseline model
 \label{fig:training_indist}
 \end{figure}
 
-\subsection{Cross-Generator Generalisation}
+\subsection{Cross-Generator Generalization}
 
 Models trained on ADM, GLIDE, and Wukong are evaluated on Stable Diffusion v4 and VQDM, generators never seen during training. This experiment represents the core test of the paper's claim. Table~\ref{tab:crossgen} presents the results, and Fig.~\ref{fig:confusion_crossgen} shows the confusion matrices for all three models.
 
@@ -366,13 +435,15 @@ Random mask         & 0.7750 & 0.7181 & 0.9611 & 0.5732 \\
 \label{fig:confusion_crossgen}
 \end{figure}
 
-The GA-masked model achieves the highest overall accuracy (78.6\%) compared to the baseline (77.7\%) and random masking (77.5\%). The margin is approximately one percentage point over the baseline, which is modest but aligns with our claim that structured masking provides additional discriminative signal under distribution shift.
+The GA-masked model achieves the highest overall accuracy (78.64\%) compared to the baseline (77.68\%) and random masking (77.50\%). The margin is approximately one percentage point over the baseline, which is modest but aligns with our claim that structured masking provides additional discriminative signal under distribution shift.
 
-The three models exhibit markedly different precision--recall trade-offs under shift. The confusion matrices in Fig.~\ref{fig:confusion_crossgen} illustrate this clearly. The random-masked model becomes extremely conservative: it correctly rejects 97.7\% of human images (only 58 false positives out of 2{,}500) but fails to detect 42.7\% of AI-generated images (1{,}067 false negatives). The GA-masked model sits in between, with 91.8\% specificity and 65.4\% sensitivity. The baseline has the most balanced profile, with 86.2\% specificity and 69.1\% sensitivity.
+The three models exhibit markedly different precision--recall trade-offs under shift, which explains the apparent discrepancy between overall accuracy and F1 score. In a balanced binary classification task, accuracy is the arithmetic mean of sensitivity (recall) and specificity (True Negative Rate). The GA-masked model achieves a significantly higher specificity (91.84\%) than the baseline (86.24\%), correctly classifying 2,296 authentic human-generated images compared to the baseline's 2,156. This represents a 40.7\% reduction in False Positives (from 344 to 204). The random-masked model represents the extreme end of this trade-off, achieving 97.68\% specificity (only 58 False Positives) but failing to detect 42.68\% of AI-generated images (1,067 False Negatives). 
 
-The random-masked model performs at or slightly below the baseline in both accuracy and F1 score (71.8\% vs.\ 75.6\%). This result confirms that the GA mask's advantage is not simply due to sparsity-induced regularisation or the provision of an extra input channel. The specific structure of patch selection is what matters.
+The F1 score, which is mathematically insensitive to True Negatives, is slightly lower for the GA-masked model than the baseline (75.39\% vs.\ 75.59\%) because the sparse masking channel (which mutes approximately 83.6\% of the spatial feature grid) naturally limits the density of synthetic artifacts available to the CNN, biasing the network toward conservatism (sensitivity of 65.44\% vs.\ 69.12\% for the baseline). However, in real-world deployment contexts (e.g., flagging fake news or checking digital evidence), misclassifying authentic user media as AI-generated carries severe operational and trust penalties, making the GA model's precision boost (88.91\% vs.\ 83.40\% for the baseline) a highly favorable trade-off.
 
-The contrast between in-distribution and cross-generator results is informative. In-distribution, the GA mask's advantage over random masking is negligible (less than 0.1\% accuracy). Under cross-generator shift, the gap grows to approximately 1.1\% in accuracy and 3.6\% in F1 score. This pattern supports our claim that the advantage of structured masking is more pronounced under distribution shift.
+The random-masked model performs at or slightly below the baseline in both accuracy (77.50\% vs.\ 77.68\%) and F1 score (71.81\% vs.\ 75.59\%). This result confirms that the GA mask's advantage is not simply due to sparsity-induced regularisation or the provision of an extra input channel. The specific structure of patch selection is what matters.
+
+The contrast between in-distribution and cross-generator results is informative. In-distribution, the GA mask's advantage over random masking is negligible (less than 0.1\% accuracy). Under cross-generator shift, the gap grows to approximately 1.14\% in accuracy and 3.58\% in F1 score. This pattern supports our claim that the advantage of structured masking is more pronounced under distribution shift.
 
 Under cross-generator shift, all three models exhibit a substantial accuracy drop of approximately 20 percentage points compared to in-distribution performance, reflecting the inherent difficulty of the cross-generator task. The GA-masked model achieves the smallest absolute drop (19.8 pp) compared to the baseline (20.6 pp) and random masking (21.0 pp).
 
@@ -420,7 +491,7 @@ Q50 & Drop  & .280 & .388 & .331 & .153 & .180 & .263 \\
 
 As shown in Fig.~\ref{fig:jpeg_robustness}, masking amplifies JPEG fragility. In the in-distribution setting, the GA model drops 38.8 percentage points at quality level 50, compared to 28.1 for the baseline and 33.1 for the random model. The patch-level features---particularly gradient perfection, noise uniformity, and hash complexity---are computed from local pixel statistics that JPEG quantisation destroys. When the model depends on these features through the masking channel, it suffers more when they are corrupted.
 
-The cross-generator JPEG results reveal a more dramatic pattern. The random-masked model drops to 50.0\% accuracy at quality level 10, which is effectively chance-level performance on a balanced binary classification task. The GA model retains 54.2\% and the baseline retains 56.6\%. The baseline is the most JPEG-robust model overall, which is not surprising given that it learns directly from pixels and does not depend on an auxiliary feature channel sensitive to compression artifacts.
+The cross-generator JPEG results reveal a more dramatic pattern. Under the random masking control, the model drops to 50.0\% accuracy at quality level 10, which is effectively chance-level performance on a balanced binary classification task. The GA model retains 54.2\% and the baseline retains 56.6\%. The baseline is the most JPEG-robust model overall, which is not surprising given that it learns directly from pixels and does not depend on an auxiliary feature channel sensitive to compression artifacts.
 
 The absolute accuracy drops are smaller in the cross-generator setting because the models start from a lower baseline ($\sim$78\% vs.\ $\sim$98\%). The relative degradation, however, is comparable across settings. These results reveal a trade-off: the masking channel that provides modest gains in clean cross-generator accuracy introduces a new vulnerability to lossy compression.
 
@@ -454,7 +525,7 @@ Fig.~\ref{fig:mask_additional} shows an additional GA mask example on a differen
 \label{fig:mask_additional}
 \end{figure}
 
-The evolved rules provide a degree of interpretability that is uncommon in learned attention mechanisms. Each rule operates on a named image-processing feature computed by a well-documented algorithm: a rule such as ``include patches where noise uniformity exceeds 0.73'' references the normalised Laplacian variance, where 0.73 corresponds to a specific point on the distribution of Laplacian responses scaled by the 99th-percentile value observed in the training set. The threshold can be mapped back to an absolute Laplacian variance value by multiplying by the stored scale factor. More broadly, the identity of the features selected by the rules is itself informative: the dominance of noise uniformity and gradient perfection in the evolved rulesets (as reflected by the Phase~1 feature weights in Table~\ref{tab:feature_weights}) indicates that the pipeline identifies noise residual patterns and gradient smoothness as the primary signals distinguishing AI-generated from human-generated patches. These features correspond to well-understood properties of generative models---the absence of natural sensor noise and the tendency toward overly smooth spatial transitions---providing an interpretable account of what the system considers a ``tell'' of synthetic origin.
+The evolved rules provide a degree of interpretability that is uncommon in learned attention mechanisms. Each rule operates on a named image-processing feature computed by a well-documented algorithm: a rule such as ``include patches where noise uniformity exceeds 0.73'' references the normalized Laplacian variance, where 0.73 corresponds to a specific point on the distribution of Laplacian responses scaled by the 99th-percentile value observed in the training set. The threshold can be mapped back to an absolute Laplacian variance value by multiplying by the stored scale factor. More broadly, the identity of the features selected by the rules is itself informative: the dominance of noise uniformity and gradient perfection in the evolved rulesets (as reflected by the Phase~1 feature weights in Table~\ref{tab:feature_weights}) indicates that the pipeline identifies noise residual patterns and gradient smoothness as the primary signals distinguishing AI-generated from human-generated patches. These features correspond to well-understood properties of generative models---the absence of natural sensor noise and the tendency toward overly smooth spatial transitions---providing an interpretable account of what the system considers a ``tell'' of synthetic origin.
 
 %% ====================================================================
 \section{Discussion}
@@ -466,25 +537,29 @@ The precision--recall analysis reveals that the three models occupy different po
 
 The GA model is not robust to JPEG compression. In fact, it is less robust than the baseline. The masking mechanism introduces a dependency on patch-level features, and when those features are corrupted by lossy compression, the model suffers disproportionately. This is a direct consequence of our design: the features that enable the GA to construct informative masks---gradient statistics, noise residuals, frequency-domain properties---are computed from local pixel statistics that JPEG quantisation destroys. This trade-off between clean-image discriminability and compression robustness is inherent to any pipeline that relies on fine-grained spatial statistics, and its acceptability depends on the deployment scenario.
 
-The current configuration reflects deliberate engineering decisions, each made under computational budget constraints. The 8$\times$8 pixel patch size was chosen to balance spatial granularity against the dimensionality of the feature tensor and the computational cost of per-patch feature extraction across thousands of images. At this resolution, generator artifacts that manifest at larger spatial scales---such as anatomical inconsistencies in faces and hands---fall outside the scope of patch-level features. The eight handcrafted features were selected to cover complementary signal domains (spatial gradients, noise statistics, texture, colour, frequency), though they represent a subset of the possible discriminative signals available in each patch. The GA fitness function optimises for statistical feature divergence rather than downstream CNN accuracy; this was a deliberate decoupling that allows the GA to operate independently of the CNN training loop, substantially reducing the computational cost of the pipeline. The stochastic nature of genetic algorithms is a well-known consideration, addressed in our implementation through multiple independent GA runs, Hall of Fame elitism with similarity-based deduplication, and an inactive-weight penalty that encourages broad feature utilisation across the evolved rules.
+The current configuration reflects deliberate engineering and experimental decisions, each made under computational budget constraints. The specific generator split—training on ADM, GLIDE, and Wukong while testing generalization on Stable Diffusion and VQDM—was selected to ensure representational coverage across three distinct architectural families: pixel-space diffusion, latent diffusion, and vector-quantized autoregressive structures. While testing under different generator permutations would naturally yield varying absolute accuracy margins (an avenue left for future validation work), this specific setup represents the most structurally comprehensive baseline to probe.
 
-The feature weight analysis in Table~\ref{tab:feature_weights} reveals that noise uniformity and gradient perfection together account for more than half of the total feature weight (53.8\%). The lower-weight features (GLCM at 1.4\%, colour saturation at 3.4\%) contribute minimally to the GA's mask construction, indicating that the discriminative signal at this patch scale is concentrated in noise and gradient statistics rather than in colour or co-occurrence texture measures.
+The 8$\times$8 pixel patch size was chosen to balance spatial granularity against the dimensionality of the feature tensor and the computational cost of per-patch feature extraction across thousands of images. At this resolution, generator artifacts that manifest at larger spatial scales---such as anatomical inconsistencies in faces and hands---fall outside the scope of patch-level features. The eight handcrafted features were selected to cover complementary signal domains (spatial gradients, noise statistics, texture, color, frequency), though they represent a subset of the possible discriminative signals available in each patch. The GA fitness function optimizes for statistical feature divergence rather than downstream CNN accuracy; this was a deliberate decoupling that allows the GA to operate independently of the CNN training loop, substantially reducing the computational cost of the pipeline. The stochastic nature of genetic algorithms is a well-known consideration, addressed in our implementation through multiple independent GA runs, Hall of Fame elitism with similarity-based deduplication, and an inactive-weight penalty that encourages broad feature utilisation across the evolved rules.
 
-This project is an undergraduate thesis exploration with a large number of interacting components: patch size, feature set, GA hyperparameters, CNN architecture, attention mechanism design, and fitness function formulation. Each of these axes was optimised within the available computational budget using Bayesian hyperparameter search, though exhaustive ablation across all combinations was not feasible. The results demonstrate that the general approach of using evolutionary search to construct per-image attention masks for a CNN produces measurable benefits under distribution shift, and provide a foundation for further investigation.
+The structured nature of the evolved masks (discussed in Section~5.4) validates the fitness function's constraint design. Without the sparsity floor gating, parsimony constraints, and spatial priors, the GA could have easily converged to degenerate shortcuts---such as selecting a tiny fraction of highly overfitted patches or using bloated rulesets to fit the training batch. The average mask coverage of 16.4\% and the contiguity of the selected regions (Fig.~\ref{fig:mask_comparison}) confirm that the combination of the quadratic efficiency score, the simplicity penalty, and the cross-shaped connectivity prior successfully guided the evolutionary search toward robust, physically meaningful patch-selection strategies. This confirms that guiding a deep neural network through evolved, handcrafted statistical priors is a viable alternative to pure end-to-end representation learning under distribution shift.
 
-Future work could extend the approach in several directions. Multi-scale patch extraction would allow the system to capture artifacts that span larger spatial regions. Replacing handcrafted features with learned representations from a pretrained backbone (e.g., CLIP or DINOv2) would provide richer feature spaces for the GA to operate on. Aligning the GA fitness function with downstream CNN accuracy through a bilevel optimisation formulation would close the gap between mask quality and classification performance. Finally, compression-aware feature extraction---for example, computing features in a JPEG-invariant representation---could mitigate the compression fragility observed in our experiments.
+The feature weight analysis in Table~\ref{tab:feature_weights} reveals that noise uniformity and gradient perfection together account for more than half of the total feature weight (53.8\%). The lower-weight features (GLCM at 1.4\%, color saturation at 3.4\%) contribute minimally to the GA's mask construction, indicating that the discriminative signal at this patch scale is concentrated in noise and gradient statistics rather than in color or co-occurrence texture measures.
 
-\subsection{Design Constraints and Broader Considerations}
+The pipeline encompasses a large number of interacting components---patch size, feature set, GA hyperparameters, CNN architecture, attention mechanism design, and fitness function formulation---each optimized within the available computational budget using Bayesian hyperparameter search, though exhaustive ablation across all combinations was not feasible. The results demonstrate that the general approach of using evolutionary search to construct per-image attention masks for a CNN produces measurable benefits under distribution shift, and provide a foundation for further investigation.
 
-Several engineering constraints shaped the design of this system. The computational cost of the pipeline was a primary concern: per-patch feature extraction across tens of thousands of images, combined with a population-based evolutionary search over 80 generations, required careful budgeting of GPU compute time. This motivated the decoupled architecture in which the GA operates on precomputed feature statistics independently of the CNN training loop, and the use of mixed-precision arithmetic and NumPy memory-mapped caching to reduce memory pressure and accelerate data throughput. Reproducibility was addressed through fixed random seeds, deterministic mask generation via stateless random operations, serialisation of all hyperparameters and feature normalisation scales, and systematic logging of all experiment configurations and results.
+Future work could extend the approach in several directions. Multi-scale patch extraction would allow the system to capture artifacts that span larger spatial regions. Replacing handcrafted features with learned representations from a pretrained backbone (e.g., CLIP or DINOv2) would provide richer feature spaces for the GA to operate on. Aligning the GA fitness function with downstream CNN accuracy through a bilevel optimization formulation would close the gap between mask quality and classification performance. Finally, compression-aware feature extraction---for example, computing features in a JPEG-invariant representation---could mitigate the compression fragility observed in our experiments.
 
-From an ethical and social perspective, the detection of AI-generated images is directly relevant to combating visual misinformation, identity fraud, and non-consensual synthetic media. A detector that generalises across generator families---the central goal of this work---is more practically useful in these contexts than one that only identifies images from known sources. At the same time, detection tools carry dual-use risk: the same feature-level analysis that identifies synthetic content could theoretically be used to refine generators to evade detection. The interpretability of the evolved rulesets, discussed in Section~5.4, provides transparency into what the system considers discriminative, which supports accountability in deployment contexts.
+\subsection{Engineering Context and Ethical Considerations}
+
+Several engineering constraints shaped the design of this system. The computational cost of the pipeline was a primary concern: per-patch feature extraction across tens of thousands of images, combined with a population-based evolutionary search over 80 generations, required careful budgeting of GPU compute time. This motivated the decoupled architecture in which the GA operates on precomputed feature statistics independently of the CNN training loop, and the use of mixed-precision arithmetic and NumPy memory-mapped caching to reduce memory pressure and accelerate data throughput. Reproducibility was addressed through fixed random seeds, deterministic mask generation via stateless random operations, serialisation of all hyperparameters and feature normalization scales, and systematic logging of all experiment configurations and results.
+
+From an ethical and social perspective, the detection of AI-generated images is directly relevant to combating visual misinformation, identity fraud, and non-consensual synthetic media. A detector that generalizes across generator families---the central goal of this work---is more practically useful in these contexts than one that only identifies images from known sources. At the same time, detection tools carry dual-use risk: the same feature-level analysis that identifies synthetic content could theoretically be used to refine generators to evade detection. The interpretability of the evolved rulesets, discussed in Section~5.4, provides transparency into what the system considers discriminative, which supports accountability in deployment contexts.
 
 This work relates to United Nations Sustainable Development Goal~16 (Peace, Justice and Strong Institutions), which includes targets for reducing corruption and ensuring public access to reliable information. Automated detection of AI-generated imagery contributes to the integrity of visual media in journalism, legal proceedings, and public discourse.
 
 \subsection{Modern Methods and Tools}
 
-The project draws on methods and tools from several areas of modern computer engineering. The genetic algorithm, implemented with the DEAP framework~\cite{fortin2012deap}, applies evolutionary computation principles---tournament selection~\cite{goldberg1991comparative}, crossover, mutation, and elitism---to a combinatorial optimisation problem over conditional rule spaces. Bayesian hyperparameter optimisation via Optuna~\cite{akiba2019optuna} was used to tune both the GA configuration and the CNN training parameters, replacing grid search with a sample-efficient tree-structured Parzen estimator. The CNN classifier was implemented in TensorFlow~\cite{tensorflow2015whitepaper} with Keras, using mixed-precision training (float16 compute with float32 accumulation) managed through \texttt{LossScaleOptimizer} for GPU efficiency. Feature extraction was implemented as a compiled TensorFlow graph (\texttt{@tf.function}) to enable batched GPU execution without Python-level loops. Data loading used \texttt{tf.data} pipelines with prefetching and parallel mapping. The attention fusion mechanism between image and feature branches uses $1 \times 1$ convolutional gating with residual connections, a design pattern drawn from modern attention-based architectures. All experiments were conducted on a single consumer-grade NVIDIA GPU, demonstrating that the approach is feasible without specialised compute infrastructure.
+The project draws on methods and tools from several areas of modern computer engineering. The genetic algorithm, implemented with the DEAP framework~\cite{fortin2012deap}, applies evolutionary computation principles---tournament selection~\cite{goldberg1991comparative}, crossover, mutation, and elitism---to a combinatorial optimization problem over conditional rule spaces. Bayesian hyperparameter optimization via Optuna~\cite{akiba2019optuna} was used to tune both the GA configuration and the CNN training parameters, replacing grid search with a sample-efficient tree-structured Parzen estimator. The CNN classifier was implemented in TensorFlow~\cite{tensorflow2015whitepaper} with Keras, using mixed-precision training (float16 compute with float32 accumulation) managed through \texttt{LossScaleOptimizer} for GPU efficiency. Feature extraction was implemented as a compiled TensorFlow graph (\texttt{@tf.function}) to enable batched GPU execution without Python-level loops. Data loading used \texttt{tf.data} pipelines with prefetching and parallel mapping. The attention fusion mechanism between image and feature branches uses $1 \times 1$ convolutional gating with residual connections, a design pattern drawn from modern attention-based architectures. All experiments were conducted on a single consumer-grade NVIDIA GPU, demonstrating that the approach is feasible without specialized compute infrastructure.
 
 %% ====================================================================
 

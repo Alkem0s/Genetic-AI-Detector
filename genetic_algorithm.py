@@ -899,7 +899,7 @@ class GeneticFeatureOptimizer:
                     train_fit = hof[0].fitness.values[0]
                     # Match the penalization setup to get generalizable features
                     probe_fit = self.eval_on_probe(hof[0], penalized=(self.inactive_penalty_tf > 0.0))
-                    val_score = 0.7 * train_fit + 0.3 * probe_fit
+                    val_score = 0.3 * train_fit + 0.7 * probe_fit
                     
                     if val_score > best_val_score:
                         best_val_score = val_score

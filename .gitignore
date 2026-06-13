@@ -2,12 +2,11 @@
 test_data_v2/
 train_data/
 __pycache__/
-output/
+output/feature_cache
 data/
 dataset_sampled/
 logs/
 profiler_logs/
-*.png
 *.pdf
 *.docx
 *.jpg
