@@ -1,0 +1,13 @@
+Hyperparameter,Value
+population_size,120.0
+n_generations,80.0
+rules_per_individual,10.0
+max_possible_rules,40.0
+crossover_prob,0.8137113551172906
+mutation_prob,0.21559339145580186
+tournament_size,3.0
+num_elites,4.0
+inactive_weight_penalty,0.0322918672611915
+target_sparsity,0.2597427529194693
+sparsity_radius,0.10455915104324466
+fitness,0.32524773001670837

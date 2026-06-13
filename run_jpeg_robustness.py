@@ -39,6 +39,9 @@ def parse_args():
                         help="Directory to save JSON metrics")
     parser.add_argument('--paper-dir', type=str, default='paper',
                         help="Directory to save final comparison figures")
+    parser.add_argument('--eval-type', type=str, choices=['in-distribution', 'cross-generator', 'both'],
+                        default='both',
+                        help="Choose whether to evaluate on in-distribution, cross-generator, or both (default: cross-generator)")
     return parser.parse_args()
 
 def _prepare_eval_dataset(dataset, max_samples):
@@ -181,42 +184,30 @@ def main():
     in_dist_test  = list(config.train_generators)
     cross_test    = list(config.val_generators)
     
-    # Generate datasets.
-    # create_sample=False: skip loading ~10 000 sample images not needed here.
-    # For in-dist: test generators == train generators (held-out val split).
-    # For cross-gen: BOTH train_generators and val_generators are set to the
-    # cross-gen list so create_datasets loads only those generators — no ADM/
-    # glide/wukong training data is included in the cross-gen dataset creation.
-    logger.info("Loading In-distribution test dataset...")
-    config.train_generators = in_dist_train
-    config.val_generators   = in_dist_test
-    _, in_dist_ds, _, _ = data_loader.create_datasets(create_sample=False)
+    setups = []
     
-    logger.info("Loading Cross-generator test dataset...")
-    config.train_generators = cross_test   # load only cross-gen splits
-    config.val_generators   = cross_test
-    _, cross_ds, _, _ = data_loader.create_datasets(create_sample=False)
+    # Generate datasets and caches conditionally to save time and RAM
+    if args.eval_type in ('in-distribution', 'both'):
+        logger.info("Loading In-distribution test dataset...")
+        config.train_generators = in_dist_train
+        config.val_generators   = in_dist_test
+        _, in_dist_ds, _, _ = data_loader.create_datasets(create_sample=False)
+        logger.info("Pre-limiting and warming In-distribution evaluation dataset...")
+        in_dist_ds = _prepare_eval_dataset(in_dist_ds, args.max_samples)
+        setups.append(('In-Distribution', 'indist', in_dist_ds, in_dist_train, in_dist_test))
+        
+    if args.eval_type in ('cross-generator', 'both'):
+        logger.info("Loading Cross-generator test dataset...")
+        config.train_generators = cross_test   # load only cross-gen splits
+        config.val_generators   = cross_test
+        _, cross_ds, _, _ = data_loader.create_datasets(create_sample=False)
+        logger.info("Pre-limiting and warming Cross-generator evaluation dataset...")
+        cross_ds = _prepare_eval_dataset(cross_ds, args.max_samples)
+        setups.append(('Cross-Generator', 'cross',  cross_ds,   in_dist_train, cross_test))
 
     # Restore original config generator lists
     config.train_generators = in_dist_train
     config.val_generators   = list(cross_test)
-
-    # Pre-limit and pre-warm each test dataset ONCE before the model loop.
-    # data_loader attaches a .cache() sized for the full validation set (e.g. 5000
-    # items).  If we called .take(max_samples) inside evaluate_model_robustness,
-    # every model invocation would create a fresh inner cache and partially read
-    # the outer one, triggering the TF cache-truncation warning repeatedly.  By
-    # warming a single shared cache here, all subsequent model calls read from
-    # this cache without ever touching the outer one again.
-    logger.info("Pre-limiting and warming evaluation datasets...")
-    in_dist_ds = _prepare_eval_dataset(in_dist_ds, args.max_samples)
-    cross_ds   = _prepare_eval_dataset(cross_ds,   args.max_samples)
-
-    setups = [
-        # (name, cache_prefix, test_dataset, train_gens, test_gens)
-        ('In-Distribution', 'indist', in_dist_ds, in_dist_train, in_dist_test),
-        ('Cross-Generator', 'cross',  cross_ds,   in_dist_train, cross_test)
-    ]
 
     modes = ['none', 'ga', 'random']
     all_metrics = {}
@@ -275,13 +266,13 @@ def main():
     logger.info(f"Saved raw metrics to {metrics_json_path}")
 
     # 4. Generate Plot
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig, axes = plt.subplots(1, len(setups), figsize=(8 * len(setups), 6), squeeze=False)
     colors = {'none': '#7f8c8d', 'ga': '#00bcd4', 'random': '#e67e22'}
     markers = {'none': 'o', 'ga': '^', 'random': 's'}
     labels = {'none': 'No Mask (Baseline)', 'ga': 'GA Evolved Mask', 'random': 'Random Mask (Control)'}
 
-    for idx, (setup_name, _, _, _) in enumerate(setups):
-        ax = axes[idx]
+    for idx, (setup_name, _, _, _, _) in enumerate(setups):
+        ax = axes[0, idx]
         modes_data = all_metrics.get(setup_name, {})
         
         # Plot clean baseline as quality=100 or a dashed baseline?
@@ -290,19 +281,31 @@ def main():
             if mode not in modes_data:
                 continue
             
+            clean_acc = modes_data[mode]['clean']
             q_data = modes_data[mode]['qualities']
             sorted_qs = sorted(list(q_data.keys()), reverse=True)
             accs = [q_data[q] for q in sorted_qs]
             
+            # Prepend clean baseline at x=110
+            x_vals = [110] + sorted_qs
+            y_vals = [clean_acc] + accs
+            
             # Plot the line
-            ax.plot(sorted_qs, accs, label=labels[mode], color=colors[mode], 
+            ax.plot(x_vals, y_vals, label=labels[mode], color=colors[mode], 
                     marker=markers[mode], linewidth=2.5, markersize=8)
 
         ax.set_title(f"{setup_name} JPEG Robustness", fontsize=14, fontweight='bold')
-        ax.set_xlabel("JPEG Quality Level (Lower = More Compression)", fontsize=12)
+        ax.set_xlabel("JPEG Quality / Compression Level", fontsize=12)
         ax.set_ylabel("Accuracy", fontsize=12)
-        ax.set_xlim(105, 5) # reverse x axis to show degradation from left to right
-        ax.set_ylim(0.45, 1.0)
+        
+        # Configure x-axis ticks to include 'Clean'
+        tick_locs = [110] + sorted(args.qualities, reverse=True)
+        tick_labels = ['Clean'] + [str(q) for q in sorted(args.qualities, reverse=True)]
+        ax.set_xticks(tick_locs)
+        ax.set_xticklabels(tick_labels)
+        
+        ax.set_xlim(115, 5) # reverse x axis to show degradation from left to right
+        ax.set_ylim(0.45, 1.05)
         ax.grid(True, linestyle='--', alpha=0.5)
         ax.legend(loc="lower left", fontsize=10)
 

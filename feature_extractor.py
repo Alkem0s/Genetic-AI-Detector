@@ -260,15 +260,40 @@ class FeaturePipeline:
         
         # Check if features are already precomputed and reuse them
         if os.path.exists(features_file):
-            logger.info(f"Precomputed features for {dataset_name} already exist in {features_file}. Reusing cached features.")
-            return
+            try:
+                cached_data = np.load(features_file, mmap_mode='r')
+                cached_len = len(cached_data)
+                del cached_data
+                
+                # Check cardinality of incoming dataset
+                cardinality = dataset.cardinality().numpy()
+                if cardinality > 0 and cached_len != cardinality:
+                    logger.warning(
+                        f"Cached features size ({cached_len}) does not match incoming dataset size ({cardinality}). "
+                        f"Invalidating cache and recomputing features."
+                    )
+                else:
+                    logger.info(f"Precomputed features for {dataset_name} already exist in {features_file}. Reusing cached features.")
+                    return
+            except Exception as e:
+                logger.warning(f"Error checking cached features file {features_file}: {e}. Recomputing.")
             
         # Legacy fallback check (if individual files already exist, do not recompute)
-        if os.path.exists(save_dir):
+        if os.path.exists(save_dir) and not os.path.exists(features_file):
             existing_files = [f for f in os.listdir(save_dir) if f.endswith('.npy') and f != "features.npy"]
             if len(existing_files) > 0:
-                logger.info(f"Legacy precomputed features for {dataset_name} already exist in {save_dir} ({len(existing_files)} files). Reusing cached features.")
-                return
+                try:
+                    cardinality = dataset.cardinality().numpy()
+                    if cardinality > 0 and len(existing_files) != cardinality:
+                        logger.warning(
+                            f"Legacy cached files count ({len(existing_files)}) does not match incoming dataset size ({cardinality}). "
+                            f"Recomputing features."
+                        )
+                    else:
+                        logger.info(f"Legacy precomputed features for {dataset_name} already exist in {save_dir} ({len(existing_files)} files). Reusing cached features.")
+                        return
+                except Exception as e:
+                    logger.warning(f"Error checking legacy cached files: {e}. Recomputing.")
 
         # Invalidate in-memory cache for this directory before writing new features
         keys_to_remove = [k for k in _IN_MEMORY_FEATURE_CACHE if k[0] == save_dir]

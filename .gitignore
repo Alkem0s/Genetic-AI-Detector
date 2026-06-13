@@ -7,7 +7,6 @@ data/
 dataset_sampled/
 logs/
 profiler_logs/
-paper/
 *.png
 *.pdf
 *.docx

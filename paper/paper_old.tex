@@ -1,0 +1,402 @@
+\documentclass[runningheads]{llncs}
+\usepackage[T1]{fontenc}
+% T1 fonts will be used to generate the final print and online PDFs,
+% so please use T1 fonts in your manuscript whenever possible.
+% Other font encondings may result in incorrect characters.
+%
+\usepackage{graphicx}
+% Used for displaying a sample figure. If possible, figure files should
+% be included in EPS format.
+%
+% If you use the hyperref package, please uncomment the following two lines
+% to display URLs in blue roman font according to Springer's eBook style:
+%\usepackage{color}
+%\renewcommand\UrlFont{\color{blue}\rmfamily}
+%\urlstyle{rm}
+%
+\usepackage{placeins}
+\usepackage{changepage}
+\usepackage{multirow}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}      % Required for algorithm environments
+\usepackage{algpseudocode}
+\usepackage{esvect}
+\begin{document}
+%
+\title{Interpretable Detection of AI-Generated Images via Genetic Patch Selection and Attention Fusion}
+%
+%\titlerunning{Abbreviated paper title}
+% If the paper title is too long for the running head, you can set
+% an abbreviated paper title here
+%
+\titlerunning{Genetic Patch Selection for AI Image Detection}
+
+\author{Alkım Gönenç Efe \and Sarp Sünbül}
+%
+\authorrunning{A. G. Efe}
+% First names are abbreviated in the running head.
+% If there are more than two authors, 'et al.' is used.
+%
+
+\institute{Department of Computer Engineering, Faculty of Engineering and Architecture, İzmir Katip Çelebi University, 35620 İzmir, Turkey}
+%
+\maketitle              % typeset the header of the contribution
+%
+\begin{abstract}
+Existing AI-generated image detection methods struggle with cross-generator generalization and interpretability, relying on fixed feature extractors that cannot adapt to diverse synthetic artifacts. We present a framework that uses evolutionary computation to develop threshold-based rules for selecting and weighting image patches on a per-image basis.
+
+The genetic algorithm creates attention masks by identifying spatial regions likely to contain synthetic artifacts, targeting eight specific artifact types including gradient anomalies, GAN fingerprints, and algorithmic patterns. A dual-branch CNN then processes both the original image and these attention masks, combining information through attention-weighted feature integration.
+
+Our approach demonstrates improved generalization across multiple generator types while providing interpretable localization of synthetic artifacts through the evolved patch selection rules.
+
+\keywords{AI-generated image detection \and Genetic algorithms \and Feature optimization \and Interpretable machine learning}
+\end{abstract}
+%
+%
+%
+\section{Introduction}
+
+The proliferation of sophisticated AI image generation tools, ranging from generative adversarial networks (GANs) to advanced diffusion models like DALL·E and Stable Diffusion, has fundamentally transformed the landscape of synthetic content creation. Although these technologies offer remarkable capabilities for creative and practical applications, they have simultaneously introduced significant challenges in distinguishing authentic images from their AI-generated counterparts. The ability to create photorealistic synthetic images has become so advanced that traditional detection methods frequently fail, particularly when faced with content produced by newer or previously unseen generation techniques.
+
+Current detection approaches face two primary limitations that hinder their effectiveness in real-world applications. First, many existing methods suffer from poor generalization across different generation models, often achieving high accuracy on specific datasets but failing dramatically when tested against novel AI generators. This brittleness stems from the tendency of static convolutional neural networks to overfit to the particular artifacts and patterns characteristic of the generators they were trained on, rather than learning more fundamental signatures of synthetic content. Second, most detection systems operate as black boxes, providing classifications without providing insight into which visual characteristics actually drive their decisions, making it difficult to understand, validate, or improve their performance.
+
+The detection problem has become increasingly urgent as AI-generated images become more prevalent across social media, news, and other digital platforms. Static CNN-based detectors that once achieved reasonable performance now struggle against the rapid evolution of generative models, as these systems lack the adaptive mechanisms necessary to identify discriminative features in response to new generation techniques. Although some recent approaches have explored patch-based learning, transformer architectures, and frequency domain analysis, none have successfully integrated evolutionary optimization with deep learning to create accurate and interpretable detection systems.
+
+This project addresses these fundamental challenges by developing a novel framework that combines genetic algorithm-based feature optimization with deep convolutional neural networks to achieve both improved detection accuracy and enhanced interpretability. Our approach suggests a promising branch to existing methods by using evolutionary computation to dynamically select the most informative image patches and feature combinations, rather than relying on fixed architectures or manually designed feature extractors. By evolving conditional rules that capture the telltale signs of AI generation in multiple feature dimensions, our system can adapt to new generators while providing clear insights into the visual characteristics that distinguish synthetic from authentic content.
+
+\section{Related Works}
+
+The past few years have seen an explosion of AI image generators (from GANs to diffusion models like DALL·E and Stable Diffusion), making photorealistic fake images ubiquitous. This has escalated a detection problem: CNN classifiers that once worked well on known generators now fail on new, unseen models. In particular, static CNNs tend to overfit to the artifacts of specific generators. For example, Bird and Lotfi's 32×32 CNN achieved approximately 92.9\% accuracy on their CIFAKE dataset but was trained on a fixed diffusion-generated set. Such methods generally lack adaptive feature selection, so they struggle as generative models rapidly evolve. In short, purely CNN-based detectors can be brittle against model updates, motivating the need for approaches that dynamically select the most discriminative features or patches in response to new generators.
+
+\subsection{Paper Discussions}
+
+CIFAKE: Image Classification and Explainable Identification of AI-Generated Synthetic Images \cite{bird2023cifake} proposes using a straightforward CNN to distinguish real vs. diffusion-generated images. In their method, a binary CNN is trained on 32×32 real vs. latent-diffusion images, achieving approximately 92.9\% accuracy. Unlike their approach, our system does not rely on a single static CNN input; instead, we evolve a tensor of selection rules to pick the most informative 32×32 patches across multiple feature maps. For instance, Bird and Lotfi's CNN focuses on generic background artifacts, whereas our genetic optimization adaptively highlights specific patches (combining noise, texture, and gradient features) to capture subtle cues missed by a fixed network.
+
+Detecting Generated Images by Real Images \cite{liu2022detecting} leverages frequency domain noise patterns to detect a wide range of synthetically generated images. They observe that authentic images share common noise characteristics in the frequency domain, whereas GAN- or flow-based images do not, and train a simple classifier on these patterns. In contrast, our system uses an ensemble of eight handcrafted detectors (gradient, noise distribution, LBP, etc.). For example, their single ``noise residual'' feature is akin to one channel of our feature maps, but we complement it with many others. Our genetic algorithm creates masked feature maps (using dynamic masking) across patches, and our GA fuses them, yielding richer representations. Thus, instead of a one-dimensional noise fingerprint, our evolved tensor rules can capture combinations of artifacts (frequency and spatial textures) that improve generalization beyond a single statistic.
+
+Deep Image Fingerprint: Towards Low-Budget Synthetic Image Detection and Model Lineage Analysis \cite{sinitsa2024fingerprint} introduces a model-specific ``fingerprint'' by averaging denoised residuals of generated images, allowing detection of images from that generator with very few training samples. Their method optimizes a residual filter that strongly correlates with one model's outputs. By contrast, our approach is model-agnostic: we do not learn per-generator fingerprints. Instead, our genetic algorithm evolves patch-selection rules that work across models. For instance, where Sinitsa and Fried tailor detection to each generator, our rules tensor searches a large space of combinations of structural and texture features to find universally discriminative patterns. This tensor-based evolution means our system can handle unseen generators without re-extracting a new fingerprint, and our multi-feature fusion can exploit the same upsampling or grid artifacts they discuss while remaining adaptable.
+
+All Patches Matter, More Patches Better: Enhance AI-Generated Image Detection via Panoptic Patch Learning \cite{yang2025panoptic} identifies a ``Few-Patch Bias'' in naive detectors and proposes a Panoptic Patch Learning (PPL) framework. They use Random Patch Replacement and Patch-wise Contrastive Learning to force the network to learn from all image patches rather than latching onto a few salient ones. Our approach addresses the same issue differently: we explicitly encode patch importance in a learned tensor rather than via data augmentation. For example, whereas Yang et al. rely on randomly substituting patches and a contrastive loss to encourage coverage, our genetic algorithm discovers which patches actually carry the strongest fake-image artifacts by evolving a ruleset. In other words, we evolve the patch-selection mask itself. Moreover, our hybrid CNN with attention fuses these selected patches (from raw plus multi-channel feature maps) in a learned way, while PPL still essentially trains on full images with uniform patch constraints. Thus, our GA-driven masking provides an explicit optimization of patch usage, complementing their uniform patch emphasis with an adaptive selection mechanism.
+
+Forgery-aware Adaptive Transformer for Generalizable Synthetic Image Detection \cite{liu2024fatformer} introduces FatFormer, which uses a pre-trained CLIP-ViT and adds specialized forgery adapters to integrate image and frequency features, even aligning them with text embeddings. Their method learns to focus on subtle frequency artifacts and uses language prompts to guide the model. By contrast, our system does not depend on large pre-trained models or text prompts. Instead, we compute explicit structural and texture features (e.g. gradient imperfections, noise maps). For instance, FatFormer adds a learnable ``forgery adapter'' module to interpret image and frequency cues, whereas we feed similar cues via our handcrafted detectors in structural and texture features. Our evolutionary GA then finds the best way to combine these cues across patches. In short, where FatFormer adapts a fixed ViT backbone, our method builds its capacity through evolving multiple inputs: the ruleset encodes how to mix hand-crafted maps, yielding a complementary route to generalization.
+
+Online Detection of AI-Generated Images \cite{epstein2023online} studies detectors in a continual learning setting, sequentially training on images from generator releases over time. They also extend to pixel-level forgery localization for inpainting. Unlike our work, they do not use feature engineering; instead they focus on the learning regime. However, they underscore the need to adapt as new models appear. Our system similarly supports evolving inputs: the pipeline precomputes features and then compares a baseline CNN to the GA-enhanced mode. For example, while Epstein et al. simulate adding new generator data to the training set, we simulate adaptability by using the GA to evolve the ruleset whenever new feature distributions are encountered. This means our detector can update its patch-selection rules without full retraining, addressing the same ``future model'' scenario they highlight but through an evolutionary optimization rather than incremental data accumulation.
+
+Enhancing Interpretability in AI-Generated Image Detection with Genetic Programming \cite{lin2023genetic} develop a genetic programming framework for interpretable AI-generated image detection that evolves tree-structured programs to sequentially process images through four specialized layers: Region Detection for rectangular/square cropping, Image Filtering applying 10+ transformations (Gaussian/Laplacian/Sobel filters), Feature Extraction using SIFT/HOG/histogram methods, and Feature Concatenation to combine outputs before SVM classification. Their method prioritizes transparency by visualizing intermediate processing steps and employs multi-objective optimization (accuracy/average precision) with Pareto-front selection. While achieving competitive cross-generator performance (e.g., 95.67\% accuracy on StarGAN), their approach processes entire images through fixed pipelines, differing from our patch-level dynamic masking and CNN-integrated architecture which optimizes localized feature selection.
+
+\subsection{Research Gap}
+
+In summary, while recent works highlight individual strengths – patch-wise learning, transformer adapters, fingerprinting, etc. – none fully integrate evolutionary feature selection with a learnable CNN. Our approach fills this gap. We represent patch-selection rules as high-dimensional tensors and evolve them with genetic operations, rather than prescribing them manually. This tensor-based evolution allows the detector to automatically combine multiple handcrafted cues via feature extraction in novel ways. Moreover, our dynamic masking scheme (implemented in the feature extractor and mixed-precision model) applies these learned rules on-the-fly, enabling near-real-time filtering of input images. In practice, this means our detector can rapidly adapt to new generators by updating the ruleset, without retraining the entire CNN. These advantages – an end-to-end evolutionary feature-CNN pipeline, explicit tensor-rule learning, and on-the-fly masking – address limitations in prior work and push synthetic-image detection toward more adaptive solutions.
+
+\section{Methodology}
+
+\subsection{Problem Definition}
+The detection of AI-generated images presents a fundamental classification challenge where subtle synthetic artifacts must be distinguished from natural image characteristics. Traditional approaches rely on fixed feature extractors or end-to-end deep learning models that may miss localized artifacts or fail to adapt to evolving generation techniques. This work addresses the problem by formulating AI-generated image detection as a dynamic feature selection task, where we identify the most discriminative image regions through evolutionary optimization before classification.
+
+Formally, given an input image $I \in \mathbb{R}^{H\times W\times 3}$, the objective is to learn a function $f: I \rightarrow \{0,1\}$ that accurately classifies images as human-generated (0) or AI-generated (1). The key insight is that synthetic artifacts are often localized to specific image regions and manifest differently across generation methods. Therefore, rather than processing entire images uniformly, the problem becomes one of identifying optimal patch subsets $P \subseteq \{p_1, p_2, \ldots, p_n\}$ where each patch $p_i$ contains discriminative synthetic artifacts.
+
+\subsection{Genetic Algorithm Framework}
+The genetic algorithm uses a tensor-based representation system optimized for GPU acceleration and computational efficiency. Each individual in the population encodes a set of conditional rules as a tensor of shape $[\text{max\_rules}, 4]$, where each rule contains four components: feature index, threshold value, comparison operator, and selection action. This tensor representation eliminates costly data type conversions during genetic operations and enables efficient parallel processing.
+
+Population initialization creates individuals with randomly generated rules, where each rule selects a random feature from the eight-dimensional feature space, assigns a threshold value uniformly distributed between 0 and 1, and specifies a comparison operator (greater than or less than) along with a binary action (include or exclude patch). The genetic algorithm maintains a configurable population size with tournament selection favoring individuals with superior fitness scores.
+
+The selection mechanism uses tournament selection with configurable tournament size, allowing multiple individuals to compete for reproduction rights. This approach maintains selective pressure while preserving population diversity. A Hall of Fame mechanism preserves the best individuals across generations using a custom similarity function that compares tensor rule structures, preventing duplicate solutions from dominating the elite population.
+
+\subsection{Dataset Preparation and Preprocessing Framework}
+The experimental framework uses a custom DataLoader class designed to handle large-scale image datasets with binary classification labels. The system accepts CSV-indexed datasets containing file paths and corresponding labels, where human-generated images are encoded as 0 and AI-generated images as 1. To ensure data integrity, the loader performs systematic validation procedures including file existence verification and stratified sampling protocols to maintain balanced class distributions throughout the experimental pipeline.
+
+We developed two distinct image resizing methodologies to accommodate varying aspect ratios while preserving visual content integrity. The system supports configurable image dimensions, with 224×224 and 448×448 pixel sizes selected for this study, where 224×224 serves as the default benchmark configuration. The center cropping approach extracts the central region of each image, maintaining original pixel density but potentially sacrificing peripheral information. Alternatively, the letterboxing technique preserves complete image content by applying uniform padding to achieve target dimensions, though this introduces artificial borders that could influence model behavior. To optimize memory utilization during training, we built the system on TensorFlow's data pipeline architecture with careful consideration for function tracing avoidance, enabling dynamic image loading and preprocessing rather than maintaining entire datasets in volatile memory.
+
+A critical component of the preprocessing pipeline involves generating representative sample subsets for feature extraction procedures. The sampling methodology uses stratified techniques to ensure that extracted subsets accurately reflect the distributional characteristics of the complete dataset. This approach addresses potential class imbalance issues through dynamic adjustment of sample counts per class, while comprehensive statistical analysis provides quantitative assessment of class distributions at each processing stage.
+
+\subsection{Evolutionary Feature Selection Algorithm}
+The genetic optimization framework uses a precomputation strategy that extracts and caches patch features for the entire evaluation dataset prior to genetic algorithm execution. This approach eliminates redundant feature calculations across generations, reducing computational overhead from $O(\text{generations} \times \text{population} \times \text{images})$ to $O(\text{images})$ for feature extraction. We store the precomputed features as tensors with shape $[\text{num\_images}, \text{patch\_height}, \text{patch\_width}, \text{num\_features}]$, enabling efficient batch processing during fitness evaluation.
+
+The feature extraction process operates on 16×16 pixel patches by default, computing eight distinct metrics designed to capture synthetic image generation artifacts:
+\begin{itemize}
+    \item Gradient perfection metrics quantifying unnaturally smooth transitions
+    \item Pattern analysis components detecting repetitive algorithmic structures
+    \item Edge consistency measurements identifying artificial contours
+    \item Symmetry metrics flagging generative model biases
+    \item Noise distribution analysis revealing GAN fingerprints
+    \item Texture pattern examination exposing rendering artifacts
+    \item Color anomaly detection identifying non-natural palette distributions
+    \item Perceptual hashing techniques capturing overall synthetic signatures
+\end{itemize}
+
+The evolutionary framework represents candidate solutions as rule tensors containing conditional logic structured as [feature\_index, threshold, operator, action] tuples. Genetic operations maintain tensor structure integrity while enabling exploration of the feature space through specialized crossover and mutation operators. The crossover operation uses point-based rule swapping between parent individuals, while mutation introduces controlled perturbations to thresholds, operators, and actions with configurable probabilities. Additionally, structural mutations can add or remove rules within predefined limits, allowing the algorithm to optimize both rule parameters and rule set size.
+
+Fitness evaluation uses a multi-objective function that balances classification performance with operational constraints:
+\begin{equation}
+\text{Fitness} = w_1 \cdot \text{Accuracy} + w_2 \cdot \text{F1} + w_3 \cdot \text{Efficiency} + w_4 \cdot \text{Connectivity} + w_5 \cdot \text{Simplicity}
+\end{equation}
+where weights $w_i$ prioritize classification performance while maintaining computational efficiency and interpretability constraints. This comprehensive evaluation framework prevents overfitting to individual characteristics while promoting robust detection capabilities across diverse image types.
+
+\subsection{Hybrid Neural Network Architecture}
+The ModelWrapper class integrates genetic rule outputs with a dual-input convolutional neural network architecture. When processing an image, the system first applies evolved genetic rules to generate dynamic attention masks highlighting regions with elevated probability of containing synthetic artifacts. We then combine these masks with multi-scale feature maps extracted from the original image patches.
+
+The core CNN architecture consists of three convolutional blocks with progressively increasing filter depths of 32, 64, and 128 respectively. Residual connections preserve spatial information flow throughout the network depth. The integration of genetic features and image features occurs through a novel attention mechanism where image-derived features generate spatial weighting coefficients that modulate the genetic feature contributions. Cross-attention operations subsequently combine information from both modalities.
+
+Following global average pooling operations, the architecture includes dropout layers with rates of 50\% and 30\% respectively to mitigate overfitting during training. The final classification layer produces binary predictions with associated confidence scores. This architectural design enables simultaneous learning from raw pixel information and expert-designed artifact detection algorithms, with genetic features providing interpretable indicators while the CNN learns complementary pattern representations.
+
+\subsection{Advanced Fitness Evaluation Strategy}
+The fitness evaluation system uses a sophisticated scoring mechanism that processes all images in a batch using TensorFlow's vectorized operations. For each image, the system generates dynamic masks by applying the evolved rule set to patch-level features, calculates spatial connectivity scores using convolution-based neighbor counting, and computes weighted feature importance scores by combining masked features with learned feature weights.
+
+The adaptive threshold calculation addresses the challenge of determining optimal classification boundaries without fixed thresholds. The system computes percentile-based thresholds using score distributions, statistical thresholds based on mean and standard deviation, and conservative thresholds that prevent extreme predictions. This adaptive approach ensures robust classification performance across diverse datasets with varying score distributions.
+
+Connectivity scoring uses convolution operations with cross-shaped kernels to count neighboring selected patches, promoting spatially coherent regions over scattered selections. We normalize the connectivity metric by the maximum possible connections given the selected patch count and boundary constraints, providing a scale-invariant measure of spatial organization.
+
+\subsection{Training Protocol and Deployment Strategy}
+The training pipeline includes several optimization strategies to ensure efficient learning and generalization. Mixed precision arithmetic acceleration takes advantage of GPU computational capabilities while maintaining numerical stability. Dynamic learning rate reduction protocols activate when validation performance plateaus, preventing training stagnation. Early stopping mechanisms terminate training when validation metrics cease improving, thereby preventing overfitting to training data.
+
+The genetic algorithm execution follows a structured protocol with configurable parameters including population size, generation count, crossover probability, mutation probability, and tournament size. Each generation maintains elite individuals through the Hall of Fame mechanism while generating offspring through tournament selection, crossover, and mutation operations.
+
+For large-scale datasets, the system precomputes and caches features to eliminate redundant calculations across training epochs. During inference, the pipeline generates both binary classifications and associated confidence scores. When configured for explainability analysis, the system produces visualizations of genetic attention masks alongside CNN activation maps, enabling interpretation of decision-making processes.
+
+We serialize the complete system state, including CNN weights, genetic rule configurations, and hyperparameter settings, as a unified deployment artifact. This approach ensures consistent model reloading capabilities for prediction tasks without requiring retraining procedures, maintaining reproducibility across extended time periods.
+
+\subsection{Technical Details and Optimization}
+The dynamic feature selection mechanism represents the primary methodological innovation, using evolved rules to customize feature extraction procedures per individual image based on localized artifact detection. This adaptive approach addresses the heterogeneous nature of AI-generated artifacts across different image types and generation methods. For instance, diffusion models typically exhibit characteristic failures in hand rendering, while generative adversarial networks demonstrate specific weaknesses in reflection synthesis.
+
+The tensor-based rule representation enables efficient GPU operations through TensorFlow's compiled graph execution. Rule evaluation utilizes boolean masking and conditional operations that take advantage of GPU parallelism, while mask generation uses vectorized comparisons across patch dimensions. We avoid Python loops during fitness evaluation, instead relying on TensorFlow's optimized tensor operations for maximum computational efficiency.
+
+Computational optimization strategies include XLA compilation for genetic operations, automatic mixed precision for CNN components, and memory-efficient batching for feature extraction. The system uses double buffering for data loading, prefetch mechanisms for pipeline optimization, and CUDA graph capture for inference acceleration. These optimizations enable processing of large-scale datasets while maintaining reasonable training times.
+
+\subsection{Performance Characteristics and Scalability}
+The system addresses computational challenges through selective processing protocols where only patches identified by genetic rules undergo complete feature extraction. Memory management strategies include batched feature extraction with configurable batch sizes to accommodate varying hardware constraints. Hardware optimization includes XLA compilation for genetic operations and CUDA graphs for CNN inference acceleration.
+
+The precomputation strategy provides linear scalability with dataset size, as feature extraction occurs once regardless of generation count. Genetic optimization computational complexity scales as $O(\text{generations} \times \text{population} \times \text{evaluation\_samples})$, making the approach suitable for datasets ranging from thousands to hundreds of thousands of images. The batch processing approach enables efficient utilization of GPU memory and computational resources.
+
+Feature map caching to persistent storage eliminates redundant computations after initial processing. The pipeline architecture enables parallel processing of data loading, augmentation, and feature extraction operations across CPU and GPU resources. Training scalability demonstrates linear relationship with dataset size, with genetic optimization phases dominating computational requirements for datasets containing fewer than 50,000 images, while feature extraction becomes the primary bottleneck for larger datasets.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.4\textwidth]{methodology_overview}
+\caption{Pipeline Architecture overview of the evolutionary deep learning framework.}
+\label{fig:methodology}
+\end{figure}
+
+\section{Methods and Algorithms}
+
+\subsection{Genetic Algorithm with DEAP Framework}
+The genetic algorithm implementation employs an evolutionary approach to optimize feature-based conditional rules through tournament selection, crossover, and mutation operations. Individuals represent rule sets stored as tensors for computational efficiency, with the algorithm specifically designed to optimize dynamic masks for feature selection in AI image detection.
+
+This genetic algorithm mimics natural evolution to solve optimization problems by maintaining a population of candidate solutions (rule sets) that evolve over generations. The process involves:
+\begin{itemize}
+    \item \textbf{Tournament selection:} Randomly selects a subset of individuals and chooses the best performer from the group
+    \item \textbf{Crossover:} Combines rule components from parent solutions to create offspring
+    \item \textbf{Mutation:} Randomly modifies thresholds, operators, and actions to maintain diversity
+\end{itemize}
+
+The algorithm evolves rules for generating dynamic masks per image based on extracted features, utilizing the DEAP library for population management, fitness evaluation, and evolutionary operations.
+
+\subsection{Convolutional Neural Network with Mixed Precision}
+The deep learning model employs the following architectural components:
+\begin{itemize}
+    \item Convolutional layers with 3×3 kernels for feature extraction
+    \item Max-pooling with 2×2 windows for spatial reduction
+    \item Batch normalization for training stability
+    \item Global average pooling for dimensionality reduction
+    \item Mixed precision training (float16/float32) using \texttt{LossScaleOptimizer}
+    \item Cross-attention mechanism to fuse image and genetic features
+\end{itemize}
+
+This architecture serves as the core classifier for detecting AI-generated images, processing both raw images and genetic feature maps. The mixed precision approach accelerates computation while maintaining numerical stability through automatic loss scaling.
+
+\subsection{Connectivity Analysis via Convolution}
+The connectivity analysis method measures patch coherence using:
+\begin{equation}
+\text{Connectivity Score} = \frac{\sum (\text{mask} \ast \text{kernel})}{\text{max\_possible\_connections}}
+\end{equation}
+where $\ast$ denotes convolution with a 3×3 cross-shaped kernel. This metric evaluates spatial coherence of selected patches in genetic algorithm fitness calculations, with boundary adjustments for edge patches.
+
+\subsection{Adaptive Thresholding}
+The thresholding system dynamically computes classification boundaries using:
+\begin{equation}
+\tau = \max\left(\mu + \sigma, \: P_{75}\right)
+\end{equation}
+where $\mu$ is the mean prediction score, $\sigma$ is the standard deviation, and $P_{75}$ is the 75th percentile. Fallback mechanisms activate when $\sigma = 0$, using $\tau = 0.7$ as default. This approach converts continuous scores to binary predictions during fitness evaluation.
+
+\subsection{Structural Feature Extraction}
+TensorFlow-native implementations of structural analysis techniques:
+
+\subsubsection{Sobel Filters}
+Mathematical operators detecting edges using horizontal and vertical 3×3 convolution kernels:
+\[
+G_x = \begin{bmatrix} -1 & 0 & 1 \\ -2 & 0 & 2 \\ -1 & 0 & 1 \end{bmatrix} \quad
+G_y = \begin{bmatrix} -1 & -2 & -1 \\ 0 & 0 & 0 \\ 1 & 2 & 1 \end{bmatrix}
+\]
+
+\subsubsection{Canny Edge Detection}
+Multi-step algorithm with:
+\begin{enumerate}
+    \item Gaussian blur for noise reduction
+    \item Gradient calculation using Sobel operators
+    \item Non-maximum suppression
+    \item Double thresholding (high/low)
+    \item Edge tracking by hysteresis
+\end{enumerate}
+
+\subsubsection{FFT Pattern Analysis}
+Fast Fourier Transform converts spatial to frequency domain:
+\[
+F(u,v) = \sum_{x=0}^{M-1}\sum_{y=0}^{N-1} f(x,y)e^{-j2\pi(ux/M + vy/N)}
+\]
+detecting repetitive patterns characteristic of AI generation.
+
+\subsubsection{Symmetry Analysis}
+Measures horizontal/vertical symmetry via correlation:
+\[
+\text{Symmetry Score} = \frac{\sum (I_{\text{left}} \odot I_{\text{right}})}{\|I_{\text{left}}\| \cdot \|I_{\text{right}}\|}
+\]
+
+\subsection{Texture Feature Extraction}
+Hybrid TensorFlow/Python texture analysis:
+
+\subsubsection{Local Binary Patterns}
+Texture descriptor comparing each pixel $p_c$ with neighbors $p_i$:
+\[
+\text{LBP} = \sum_{i=0}^{7} s(p_i - p_c) \cdot 2^i \quad \text{where} \quad s(x) = \begin{cases} 1 & x \geq 0 \\ 0 & \text{otherwise} \end{cases}
+\]
+
+\subsubsection{Noise Analysis}
+Laplacian-based noise measurement:
+\[
+L = \begin{bmatrix} 0 & 1 & 0 \\ 1 & -4 & 1 \\ 0 & 1 & 0 \end{bmatrix}, \quad \text{Noise Level} = \text{var}(\nabla^2 I)
+\]
+
+\subsubsection{Perceptual Hashing}
+Image fingerprinting via:
+\begin{enumerate}
+    \item Reduce to 8×8 grayscale
+    \item Compute mean intensity $\mu$
+    \item Generate hash: $h_i = \begin{cases} 1 & I_i > \mu \\ 0 & \text{otherwise} \end{cases}$
+\end{enumerate}
+
+\subsubsection{Color Anomaly Detection}
+HSV space analysis:
+\[
+\text{Saturation Variance} = \frac{1}{HW}\sum_{i=0}^{H-1}\sum_{j=0}^{W-1} (S_{ij} - \mu_S)^2
+\]
+
+\subsection{Dynamic Mask Generation}
+Rule-based binary mask generator using tensor operations:
+\begin{algorithmic}
+\For{each patch $p$ in image}
+    \State $f \gets \text{extract\_features}(p)$
+    \State $m_p \gets \text{apply\_rules}(f, \theta, \text{op})$
+\EndFor
+\end{algorithmic}
+implemented via \texttt{tf.while\_loop} for parallel processing.
+
+\subsection{Performance Metrics}
+
+\subsubsection{Precision-Recall-F1 Calculation}
+Computes metrics with division guards:
+\[
+\text{Precision} = \begin{cases} 
+      \frac{\text{TP}}{\text{TP} + \text{FP}} & \text{if } \text{TP} + \text{FP} > 0 \\
+      0 & \text{otherwise}
+   \end{cases}
+\]
+
+\subsubsection{Matthews Correlation Coefficient}
+Balanced metric for imbalanced data:
+\[
+\text{MCC} = \frac{\text{TP} \times \text{TN} - \text{FP} \times \text{FN}}{\sqrt{(\text{TP}+\text{FP})(\text{TP}+\text{FN})(\text{TN}+\text{FP})(\text{TN}+\text{FN})}}
+\]
+
+\subsection{Feature Map Caching System}
+On-disk caching using memory-mapped arrays:
+\[
+\text{FeatureCache} = \{ \text{dataset\_id: } \text{np.memmap}(\text{path}, \text{dtype=float32}, \text{mode='r'}) \}
+\]
+
+\subsection{Radial Gradient Mapping}
+Generates importance visualizations:
+\[
+R(x,y) = 1 - \frac{\sqrt{(x-x_c)^2 + (y-y_c)^2}}{r_{\max}}, \quad \text{Importance} = R \odot F
+\]
+
+\subsection{Content-Aware Masking}
+Border detection via intensity summation:
+\[
+\text{Mask}(x,y) = \begin{cases} 
+      1 & \sum_{c} I(x,y,c) > \tau_{\text{intensity}} \\
+      0 & \text{otherwise}
+   \end{cases}
+\]
+
+\subsection{TensorFlow-native Edge Detection}
+Implements operators using convolution:
+\begin{itemize}
+    \item Sobel: $[-1, 0, 1]$ gradient kernels
+    \item Scharr: $[-3, 0, 3]$ improved accuracy
+    \item Approximate Canny with non-max suppression
+\end{itemize}
+
+\subsection{Mixed Precision Policy}
+Dynamic precision selection:
+\begin{algorithmic}
+\If{hardware.supports\_float16}
+    \State policy = tf.keras.mixed\_precision.Policy('mixed\_float16')
+\Else
+    \State policy = tf.keras.mixed\_precision.Policy('float32')
+\EndIf
+\end{algorithmic}
+
+\subsection{Hall of Fame Selection}
+Similarity-based elitism:
+\[
+\text{similarity}(A,B) = \frac{\sum \text{tf.equal}(A_{\text{rules}}, B_{\text{rules}})}{\text{num\_rules}} > \tau_{\text{similarity}}
+\]
+
+\section{Experimental Setup}
+
+\subsection{Dataset Used}
+
+To comprehensively evaluate our evolutionary deep learning framework for AI-generated image detection, we conducted experiments on two distinct datasets that represent different aspects of the synthetic image detection challenge.
+
+The first dataset, AI vs Human Generated Dataset \cite{sala2023ai}, available through Kaggle, provides a balanced collection of human-captured photographs and AI-generated synthetic images. This dataset contains images evenly distributed between authentic and synthetic categories, with synthetic images primarily generated using diffusion-based models including Stable Diffusion and DALL·E variants. The dataset includes diverse content categories such as landscapes, portraits, objects, and artistic compositions, making it suitable for evaluating generalization across different image types. The images are provided in high resolution (typically 512×512 to 1024×1024 pixels) and maintain original quality without additional compression artifacts, ensuring that detection performance reflects the model's ability to identify generation artifacts rather than compression-related patterns.
+
+The second dataset, GenImage \cite{zhu2023genimage}, represents a more comprehensive benchmark specifically designed for AI-generated image detection research. This dataset encompasses multiple generative model families including Generative Adversarial Networks (GANs), Variational Autoencoders (VAEs), and diffusion models, providing a broader spectrum of synthetic image types for evaluation. GenImage contains images spanning eight different generation methods: GLIDE, DALL·E 2, Stable Diffusion, ADM, IDDPM, PNDM, LDM, and BigGAN. The dataset includes both conditional and unconditional generation scenarios, with images covering diverse domains such as natural scenes, artistic creations, and photorealistic portraits. Each subset within GenImage is carefully curated to maintain consistent quality standards while preserving the distinctive artifacts characteristic of each generation method.
+
+Both datasets were preprocessed using our standardized pipeline, which includes aspect ratio-preserving resizing to 224×224 pixels, central cropping with 15\% margins to focus on significant content, and normalization to the [0,1] range. This dual-dataset approach allows us to assess both the generalization capability of our evolutionary framework across different synthetic image types and its adaptability to various generative model architectures.
+
+\subsection{Parameters Configuration}
+
+\subsection{Results}
+
+\begin{thebibliography}{9}
+
+\bibitem{bird2023cifake}
+Bird, J., Lotfi, A.: CIFAKE: Image classification and explainable identification of AI-generated synthetic images. arXiv preprint arXiv:2303.14126 (2023)
+
+\bibitem{liu2022detecting}
+Liu, R., Zhang, X., Zhang, B., Dong, C., Lin, L.: Detecting generated images by real images. In: Proceedings of the European Conference on Computer Vision (ECCV), pp. 105--122 (2022)
+
+\bibitem{sinitsa2024fingerprint}
+Sinitsa, D., Fried, O.: Deep image fingerprint: Towards low-budget synthetic image detection and model lineage analysis. In: Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV), pp. 1288--1297 (2024)
+
+\bibitem{yang2025panoptic}
+Yang, Y., Qiu, Y., Cui, P.: All patches matter, more patches better: Enhance AI-generated image detection via panoptic patch learning. arXiv preprint arXiv:2504.01396 (2025)
+
+\bibitem{liu2024fatformer}
+Liu, H., Wang, Y., Li, H., Zhao, R., Liu, L.: Forgery-aware adaptive transformer for generalizable synthetic image detection. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 2905--2914 (2024)
+
+\bibitem{epstein2023online}
+Epstein, D., Krause, M., Riemer, M., Manry, D., Wingate, D.: Online detection of AI-generated images. In: Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops (ICCVW), pp. 2335--2344 (2023)
+
+\bibitem{lin2023genetic}
+Lin, M., Shang, L., Gao, X.: Enhancing interpretability in AI generated image detection with genetic programming. In: 2023 IEEE International Conference on Data Mining Workshops (ICDMW), pp. 371--378. IEEE (2023)
+
+\bibitem{sala2023ai}
+Sala, A.: AI vs Human Generated Dataset. Kaggle (2023). \url{https://www.kaggle.com/datasets/alessandrasala79/ai-vs-human-generated-dataset}
+
+\bibitem{zhu2023genimage}
+Zhu, M., Chen, H., Wang, Q., Li, L., Xue, Y., Wang, Z., Zheng, Z.: GenImage: A Million-Scale Benchmark for Detecting AI-Generated Image. arXiv preprint arXiv:2306.08571 (2023). \url{https://github.com/GenImage-Dataset/GenImage}
+
+\end{thebibliography}
+
+\end{document}
